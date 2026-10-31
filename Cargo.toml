@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/hu-core", "crates/hu-gen", "app/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+# The core does the heavy scanning; keep it fast even in debug builds of the app.
+[profile.dev.package.hu-core]
+opt-level = 3
+
+[profile.dev.package.memchr]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

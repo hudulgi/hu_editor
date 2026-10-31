@@ -1,0 +1,8 @@
+[package]
+name = "hu-gen"
+description = "Synthetic Abaqus / Nastran input decks for testing on huge files"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+itoa = "1"

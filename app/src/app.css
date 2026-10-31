@@ -1,0 +1,53 @@
+:root {
+  --bg: #1e1e1e;
+  --fg: #d4d4d4;
+  --panel: #252526;
+  --border: #3c3c3c;
+  --muted: #9d9d9d;
+  --gutter: #858585;
+  --accent: #007acc;
+  --mono: "Cascadia Mono", Consolas, "D2Coding", Menlo, monospace;
+  --ui: "Segoe UI", system-ui, -apple-system, "Malgun Gothic", sans-serif;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--ui);
+  font-size: 13px;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #3a3d41;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #45494e;
+}
+
+input {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #3c3c3c;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--accent);
+}

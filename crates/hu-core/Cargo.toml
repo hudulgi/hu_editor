@@ -1,0 +1,13 @@
+[package]
+name = "hu-core"
+description = "Disk-backed documents for very large solver input files"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+encoding_rs = "0.8"
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

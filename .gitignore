@@ -1,0 +1,11 @@
+/target
+.DS_Store
+node_modules
+/app/dist
+/app/src-tauri/gen/schemas
+
+# Solver decks (hu-gen test files can be tens of GB)
+*.inp
+*.bdf
+*.dat
+*.nas
