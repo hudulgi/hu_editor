@@ -15,6 +15,7 @@ fn main() {
             commands::path_chain,
             commands::path_kind,
             commands::open_document,
+            commands::new_document,
             commands::close_document,
             commands::index_status,
             commands::disk_changed,
@@ -27,6 +28,7 @@ fn main() {
             commands::copy_box,
             commands::replace_all,
             commands::save,
+            commands::save_as,
             commands::find,
             commands::cancel_find,
         ])

@@ -2,7 +2,7 @@
 //! about to draw; edits are sent as byte ranges and text.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,6 +30,25 @@ struct OpenDoc {
 }
 
 impl Docs {
+    fn add(&self, doc: Document) -> DocInfo {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let path = doc.path();
+        let info = DocInfo {
+            id,
+            name: path.as_deref().map(file_name).unwrap_or_default(),
+            path: path.map(|p| p.display().to_string()),
+            encoding: doc.encoding(),
+            eol: doc.eol(),
+            state: doc.state(),
+        };
+        let open = OpenDoc {
+            doc,
+            find_cancel: Mutex::default(),
+        };
+        self.open.lock().unwrap().insert(id, Arc::new(open));
+        info
+    }
+
     fn get(&self, id: u32) -> Result<Arc<OpenDoc>, String> {
         self.open
             .lock()
@@ -44,7 +63,8 @@ impl Docs {
 #[serde(rename_all = "camelCase")]
 pub struct DocInfo {
     id: u32,
-    path: String,
+    /// `None` for a new document.
+    path: Option<String>,
     name: String,
     encoding: Encoding,
     eol: Eol,
@@ -117,23 +137,18 @@ pub async fn open_document(path: PathBuf, docs: State<'_, Docs>) -> Result<DocIn
         blocking(move || Document::open(&path).map_err(|e| format!("{}: {e}", path.display())))
             .await?
     };
-    let id = docs.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-    let info = DocInfo {
-        id,
-        name: path
-            .file_name()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-        path: path.display().to_string(),
-        encoding: doc.encoding(),
-        eol: doc.eol(),
-        state: doc.state(),
-    };
-    let open = OpenDoc {
-        doc,
-        find_cancel: Mutex::default(),
-    };
-    docs.open.lock().unwrap().insert(id, Arc::new(open));
-    Ok(info)
+    Ok(docs.add(doc))
+}
+
+/// A new, empty document without a file; the frontend names it.
+#[tauri::command]
+pub fn new_document(docs: State<'_, Docs>) -> DocInfo {
+    docs.add(Document::untitled())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -341,11 +356,52 @@ pub async fn save(
                 let _ = on_progress.send(written);
             }
         };
-        let path = open.doc.path().display().to_string();
+        let path = open
+            .doc
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         open.doc
             .save(&AtomicBool::new(false), &mut progress)
             .map_err(|e| format!("{path}: {e}"))?;
         Ok(open.doc.state())
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedAs {
+    path: String,
+    name: String,
+    state: DocState,
+}
+
+/// Saves to `path`, where the document saves from now on.
+#[tauri::command]
+pub async fn save_as(
+    id: u32,
+    path: PathBuf,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+) -> Result<SavedAs, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        let mut last = Instant::now();
+        let mut progress = |written| {
+            if last.elapsed() >= Duration::from_millis(100) {
+                last = Instant::now();
+                let _ = on_progress.send(written);
+            }
+        };
+        open.doc
+            .save_as(&path, &AtomicBool::new(false), &mut progress)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(SavedAs {
+            name: file_name(&path),
+            path: path.display().to_string(),
+            state: open.doc.state(),
+        })
     })
     .await
 }

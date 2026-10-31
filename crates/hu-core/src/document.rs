@@ -102,6 +102,9 @@ pub struct Document {
     state: RwLock<State>,
     encoding: Encoding,
     eol: Eol,
+    /// Where it saves: the file it was opened from or last saved as; `None`
+    /// for a new document.
+    path: RwLock<Option<PathBuf>>,
     disk: Mutex<Stamp>,
     cancel: Arc<AtomicBool>,
 }
@@ -110,7 +113,18 @@ impl Document {
     /// Opens `path` without reading it; the line index is built on a
     /// background thread.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let source = Arc::new(FileSource::open(path.as_ref())?);
+        let path = path.as_ref();
+        Self::from_source(FileSource::open(path)?, Some(path.to_path_buf()))
+    }
+
+    /// A new, empty document with no file yet: UTF-8, with the platform's
+    /// line breaks.
+    pub fn untitled() -> Self {
+        Self::from_source(FileSource::empty(), None).expect("an empty source has nothing to read")
+    }
+
+    fn from_source(source: FileSource, path: Option<PathBuf>) -> io::Result<Self> {
+        let source = Arc::new(source);
         let index = Arc::new(RwLock::new(LineIndex::default()));
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -139,12 +153,14 @@ impl Document {
             }),
             encoding: Encoding::detect(&sample),
             eol: Eol::detect(&sample),
+            path: RwLock::new(path),
             cancel,
         })
     }
 
-    pub fn path(&self) -> &Path {
-        self.original.source.path()
+    /// Where it saves; `None` for a new document.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.path.read().unwrap().clone()
     }
 
     pub fn len(&self) -> u64 {
@@ -477,26 +493,40 @@ impl Document {
         Ok(self.encoding.decode(&bytes).into_owned())
     }
 
-    /// Saves to the file it was opened from. The text goes to a temporary
-    /// file next to it, which then replaces the original, so a failed save
-    /// leaves the original intact. Editing can go on meanwhile; the document
-    /// stays dirty if it changed. Returns `false` if cancelled.
+    /// Saves to the file it was opened from or last saved as. A new
+    /// document has none: use [`save_as`](Self::save_as).
     pub fn save(&self, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> io::Result<bool> {
+        let path = self
+            .path()
+            .ok_or_else(|| io::Error::other("a new document needs a file name: use Save As"))?;
+        self.save_as(&path, cancel, progress)
+    }
+
+    /// Saves to `path`, which becomes where the document saves from now on.
+    /// The text goes to a temporary file next to it, which then replaces
+    /// any file there, so a failed save leaves that file intact. Editing can
+    /// go on meanwhile; the document stays dirty if it changed. Returns
+    /// `false` if cancelled.
+    pub fn save_as(
+        &self,
+        path: &Path,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<bool> {
         let (text, id, _) = self.snapshot();
-        let path = self.path().to_path_buf();
-        let temp = temp_path(&path);
+        let temp = temp_path(path);
         let written = (|| {
             let mut out = BufWriter::with_capacity(8 << 20, File::create(&temp)?);
             if !text.write_to(&mut out, cancel, progress)? {
                 return Ok(false);
             }
             out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-            if let Ok(meta) = fs::metadata(&path) {
+            if let Ok(meta) = fs::metadata(path) {
                 fs::set_permissions(&temp, meta.permissions())?;
             }
-            // The replaced file stays readable through the open handle, so
+            // A replaced original stays readable through the open handle, so
             // unchanged pieces and undo keep working.
-            fs::rename(&temp, &path)?;
+            fs::rename(&temp, path)?;
             Ok(true)
         })();
         if !matches!(written, Ok(true)) {
@@ -504,14 +534,18 @@ impl Document {
             return written;
         }
         self.state.write().unwrap().history.mark_saved(id);
-        let meta = fs::metadata(&path)?;
+        let meta = fs::metadata(path)?;
         *self.disk.lock().unwrap() = (meta.len(), meta.modified().ok());
+        *self.path.write().unwrap() = Some(path.to_path_buf());
         Ok(true)
     }
 
     /// Whether the file on disk changed since it was opened or saved here.
     pub fn changed_on_disk(&self) -> bool {
-        match fs::metadata(self.path()) {
+        let Some(path) = self.path() else {
+            return false;
+        };
+        match fs::metadata(path) {
             Ok(meta) => (meta.len(), meta.modified().ok()) != *self.disk.lock().unwrap(),
             Err(_) => true,
         }

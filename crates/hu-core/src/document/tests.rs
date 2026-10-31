@@ -642,3 +642,69 @@ fn replace_all_without_matches_changes_nothing() {
     assert!(matches!(result, Some((0, None))));
     assert!(!doc.state().dirty);
 }
+
+#[test]
+fn a_new_document_is_saved_as_then_saved() {
+    let doc = Document::untitled();
+    assert_eq!(doc.path(), None);
+    assert_eq!(doc.encoding(), Encoding::Utf8);
+    assert_eq!(doc.wait_for_index().lines, 1);
+    assert!(!doc.state().dirty);
+    assert!(!doc.changed_on_disk());
+
+    doc.edit(0, 0, "*Heading\n** new deck\n", EditKind::Typing, (0, 0));
+    assert!(doc.state().dirty);
+    assert!(
+        doc.save(&AtomicBool::new(false), &mut |_| {}).is_err(),
+        "no file name yet"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.inp");
+    assert!(
+        doc.save_as(&path, &AtomicBool::new(false), &mut |_| {})
+            .unwrap()
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        stored(&doc, "*Heading\n** new deck\n")
+    );
+    assert_eq!(doc.path(), Some(path.clone()));
+    assert!(!doc.state().dirty);
+
+    let end = doc.len();
+    doc.edit(end, end, "*Node\n", EditKind::Other, (end, end));
+    assert!(doc.save(&AtomicBool::new(false), &mut |_| {}).unwrap());
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        stored(&doc, "*Heading\n** new deck\n*Node\n")
+    );
+    assert!(!doc.changed_on_disk());
+    assert_matches(&doc, &stored(&doc, "*Heading\n** new deck\n*Node\n"));
+}
+
+#[test]
+fn save_as_leaves_the_original_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.inp"), dir.path().join("b.inp"));
+    fs::write(&a, b"*Heading\n").unwrap();
+    let doc = Document::open(&a).unwrap();
+    doc.wait_for_index();
+
+    doc.edit(9, 9, "*Node\n", EditKind::Other, (9, 9));
+    assert!(
+        doc.save_as(&b, &AtomicBool::new(false), &mut |_| {})
+            .unwrap()
+    );
+    doc.edit(0, 0, "** b\n", EditKind::Other, (0, 0));
+    assert!(doc.save(&AtomicBool::new(false), &mut |_| {}).unwrap());
+
+    assert_eq!(fs::read(&a).unwrap(), b"*Heading\n");
+    assert_eq!(fs::read(&b).unwrap(), b"** b\n*Heading\n*Node\n");
+    assert_eq!(doc.path(), Some(b));
+    assert_eq!(
+        fs::read_dir(dir.path()).unwrap().count(),
+        2,
+        "no temporary files left"
+    );
+}

@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size } from "./lib/format";
   import { detectLang, LANG_LABEL } from "./lib/syntax";
@@ -53,7 +53,7 @@
   let indexText = $derived.by(() => {
     if (!status) return "";
     if (status.error) return `Index error: ${status.error}`;
-    if (status.complete) return `${fmt(status.lines)} lines`;
+    if (status.complete) return `${fmt(status.lines)} ${status.lines === 1 ? "line" : "lines"}`;
     return `Indexing ${indexPercent}% · ${size(rate)}/s · ${fmt(status.lines)} lines so far`;
   });
 
@@ -77,17 +77,49 @@
 
   /** Whether the current document may be replaced or closed. */
   async function mayLeave() {
+    await editor?.flush();
     if (!doc || !docState?.dirty) return true;
     const choice = await ask();
     if (choice === "cancel") return false;
     return choice === "discard" || (await save());
   }
 
+  const FILTERS = [
+    { name: "Solver input", extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
+    { name: "All files", extensions: ["*"] },
+  ];
+
+  /** Saves; a new document asks for a file name first. */
   async function save() {
+    // Keys typed just before Ctrl+S must make it into the file.
+    await editor?.flush();
+    if (!doc) return false;
+    if (doc.path === null) return saveAs();
+    return saving === null && writing(async (id, progress) => {
+      docState = await api.save(id, progress);
+    });
+  }
+
+  async function saveAs() {
+    await editor?.flush();
     if (!doc || saving !== null) return false;
+    const path = await saveDialog({ defaultPath: doc.path ?? `${doc.name}.inp`, filters: FILTERS });
+    if (!path) return false;
+    return writing(async (id, progress) => {
+      const saved = await api.saveAs(id, path, progress);
+      docState = saved.state;
+      if (doc?.id !== id) return;
+      doc.path = saved.path;
+      doc.name = saved.name;
+      explorer?.reveal(saved.path, false);
+    });
+  }
+
+  /** Runs a save with progress in the status bar; false if it failed. */
+  async function writing(work: (id: number, progress: (written: number) => void) => Promise<void>) {
     saving = 0;
     try {
-      docState = await api.save(doc.id, (written) => (saving = written));
+      await work(doc!.id, (written) => (saving = written));
       changedOnDisk = false;
       return true;
     } catch (e) {
@@ -99,14 +131,7 @@
   }
 
   async function chooseFile() {
-    const path = await openDialog({
-      multiple: false,
-      directory: false,
-      filters: [
-        { name: "Solver input", extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
-        { name: "All files", extensions: ["*"] },
-      ],
-    });
+    const path = await openDialog({ multiple: false, directory: false, filters: FILTERS });
     if (typeof path === "string") await openPath(path);
   }
 
@@ -114,21 +139,33 @@
   async function openPath(path: string, reveal = true) {
     if (!(await mayLeave())) return;
     try {
-      const next = await api.openDocument(path);
-      if (doc) api.closeDocument(doc.id);
-      doc = next;
-      docState = next.state;
-      status = null;
-      caret = null;
-      notice = null;
-      findOpen = false;
-      gotoOpen = false;
-      changedOnDisk = false;
-      if (reveal) explorer?.reveal(next.path, false);
-      watchIndex(next.id);
+      show(await api.openDocument(path));
+      if (reveal) explorer?.reveal(path, false);
     } catch (e) {
       notice = String(e);
     }
+  }
+
+  let untitled = 0;
+
+  /** A new, empty document: Untitled-1, Untitled-2, … */
+  async function newFile() {
+    if (!(await mayLeave())) return;
+    const next = await api.newDocument();
+    show({ ...next, name: `Untitled-${++untitled}` });
+  }
+
+  function show(next: api.DocInfo) {
+    if (doc) api.closeDocument(doc.id);
+    doc = next;
+    docState = next.state;
+    status = null;
+    caret = null;
+    notice = null;
+    findOpen = false;
+    gotoOpen = false;
+    changedOnDisk = false;
+    watchIndex(next.id);
   }
 
   function watchIndex(id: number) {
@@ -194,6 +231,8 @@
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (mod && key === "o") chooseFile();
+    else if (mod && key === "n") newFile();
+    else if (mod && key === "s" && e.shiftKey) saveAs();
     else if (mod && key === "s") save();
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
     else if (mod && (key === "f" || key === "h") && doc) {
@@ -268,17 +307,19 @@
     >
       <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" /></svg>
     </button>
+    <button onclick={newFile} title="New file (Ctrl+N)">New</button>
     <button onclick={chooseFile} title="Open file (Ctrl+O)">Open…</button>
     <button onclick={save} disabled={!docState?.dirty || saving !== null} title="Save (Ctrl+S)">Save</button>
+    <button onclick={saveAs} disabled={!doc || saving !== null} title="Save as (Ctrl+Shift+S)">Save As…</button>
     {#if doc}
-      <span class="path" title={doc.path}>{doc.path}</span>
+      <span class="path" title={doc.path ?? "Not saved yet"}>{doc.path ?? doc.name}</span>
     {/if}
   </header>
 
   {#if changedOnDisk && doc}
     <div class="banner">
       The file changed on disk{docState?.dirty ? " (you have unsaved changes)" : ""}.
-      <button onclick={() => doc && openPath(doc.path)}>Reload</button>
+      <button onclick={() => doc?.path && openPath(doc.path)}>Reload</button>
     </div>
   {/if}
 
@@ -340,7 +381,10 @@
         {/if}
       {:else}
         <div class="empty">
-          <p>Open a deck with <kbd>Ctrl</kbd>+<kbd>O</kbd>, pick one in the explorer, or drop a file here.</p>
+          <p>
+            Open a deck with <kbd>Ctrl</kbd>+<kbd>O</kbd>, pick one in the explorer, or drop a file here.<br />
+            Start a new one with <kbd>Ctrl</kbd>+<kbd>N</kbd>.
+          </p>
           <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
         </div>
       {/if}

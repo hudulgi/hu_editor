@@ -763,6 +763,12 @@
     input?.focus();
   }
 
+  /** Resolves once every key and edit queued so far has been applied. */
+  export async function flush() {
+    await queue;
+    await settled();
+  }
+
   export function caretOffset() {
     return caret;
   }
@@ -827,9 +833,10 @@
 
   // ---- Effects ----------------------------------------------------------
 
-  // A new document starts at the top.
+  // A new document starts at the top (not a renamed one: Save As keeps the id).
+  let docId = $derived(doc.id);
   $effect(() => {
-    void doc.id;
+    void docId;
     untrack(() => {
       view = null;
       viewError = null;

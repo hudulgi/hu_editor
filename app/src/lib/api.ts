@@ -12,7 +12,8 @@ export interface DocState {
 
 export interface DocInfo {
   id: number;
-  path: string;
+  /** Null for a new document that has no file yet. */
+  path: string | null;
   name: string;
   encoding: "utf8" | "cp949";
   eol: "lf" | "crlf";
@@ -114,6 +115,8 @@ export const listDir = (path: string) => invoke<DirEntry[]>("list_dir", { path }
 export const pathChain = (path: string) => invoke<string[]>("path_chain", { path });
 export const pathKind = (path: string) => invoke<"file" | "dir" | null>("path_kind", { path });
 export const openDocument = (path: string) => invoke<DocInfo>("open_document", { path });
+/** A new, empty document without a file (its name is up to the caller). */
+export const newDocument = () => invoke<DocInfo>("new_document");
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });
@@ -173,6 +176,19 @@ export function replaceAll(
     caret,
     onProgress: channel,
   });
+}
+
+export interface SavedAs {
+  path: string;
+  name: string;
+  state: DocState;
+}
+
+/** Saves to `path`, where the document saves from now on. */
+export function saveAs(id: number, path: string, onProgress: (written: number) => void) {
+  const channel = new Channel<number>();
+  channel.onmessage = onProgress;
+  return invoke<SavedAs>("save_as", { id, path, onProgress: channel });
 }
 
 export function save(id: number, onProgress: (written: number) => void) {

@@ -24,7 +24,8 @@ const CACHE_BLOCKS: usize = 256;
 
 pub struct FileSource {
     path: PathBuf,
-    file: File,
+    /// `None` for the empty source of a new document.
+    file: Option<File>,
     len: u64,
     modified: Option<SystemTime>,
     cache: Mutex<BlockCache>,
@@ -36,11 +37,22 @@ impl FileSource {
         let meta = file.metadata()?;
         Ok(Self {
             path: path.to_path_buf(),
-            file,
+            file: Some(file),
             len: meta.len(),
             modified: meta.modified().ok(),
             cache: Mutex::new(BlockCache::new(CACHE_BLOCKS)),
         })
+    }
+
+    /// No file: what a new document starts from.
+    pub fn empty() -> Self {
+        Self {
+            path: PathBuf::new(),
+            file: None,
+            len: 0,
+            modified: None,
+            cache: Mutex::new(BlockCache::new(1)),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -64,7 +76,7 @@ impl FileSource {
         let start = index * BLOCK_SIZE as u64;
         let len = self.len.saturating_sub(start).min(BLOCK_SIZE as u64) as usize;
         let mut buf = vec![0; len];
-        read_exact_at(&self.file, &mut buf, start)?;
+        self.read_at(&mut buf, start)?;
         let block: Arc<[u8]> = buf.into();
         self.cache.lock().unwrap().insert(index, block.clone());
         Ok(block)
@@ -89,7 +101,15 @@ impl FileSource {
 
     /// Fills `buf` from `offset`, bypassing the block cache.
     pub fn read_uncached(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        read_exact_at(&self.file, buf, offset)
+        self.read_at(buf, offset)
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        match &self.file {
+            Some(file) => read_exact_at(file, buf, offset),
+            None if buf.is_empty() => Ok(()),
+            None => Err(io::ErrorKind::UnexpectedEof.into()),
+        }
     }
 
     /// Modification time when it was opened.
