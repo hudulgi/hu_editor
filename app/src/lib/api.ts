@@ -10,6 +10,22 @@ export interface DocInfo {
   len: number;
 }
 
+export interface DirEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  /** Not in the listing (hidden), shown because a revealed path runs through it. */
+  hidden?: boolean;
+}
+
+export interface Root {
+  name: string;
+  path: string;
+  group: "quick" | "drives";
+  kind: "home" | "desktop" | "documents" | "downloads" | "drive" | "network" | "removable";
+}
+
 export interface IndexStatus {
   scanned: number;
   len: number;
@@ -53,6 +69,11 @@ export type FindOutcome =
   | { kind: "cancelled" };
 
 export const launchPath = () => invoke<string | null>("launch_path");
+export const roots = () => invoke<Root[]>("roots");
+export const listDir = (path: string) => invoke<DirEntry[]>("list_dir", { path });
+/** Folders from the root down to `path`, ending with `path`; empty for a relative path. */
+export const pathChain = (path: string) => invoke<string[]>("path_chain", { path });
+export const pathKind = (path: string) => invoke<"file" | "dir" | null>("path_kind", { path });
 export const openDocument = (path: string) => invoke<DocInfo>("open_document", { path });
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });

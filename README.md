@@ -30,7 +30,8 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 
 | 키 | 동작 |
 |---|---|
-| Ctrl+O | 파일 열기 (드래그 앤 드롭도 가능) |
+| Ctrl+O | 파일 열기 (드래그 앤 드롭도 가능, 폴더를 끌어다 놓으면 탐색기에서 펼침) |
+| Ctrl+B | 탐색기 열기 / 닫기 (화살표로 이동, Enter로 열기, ←/→로 접기 / 펼치기, 상단 주소창에 경로 붙여넣기) |
 | Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전 |
 | Ctrl+G | 줄 번호로 이동 |
 | PageUp/Down, Ctrl+Home/End | 페이지 이동, 처음 / 끝 |

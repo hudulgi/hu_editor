@@ -4,7 +4,9 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
+  import { formatNumber as fmt, formatSize as size } from "./lib/format";
   import { detectLang, LANG_LABEL } from "./lib/syntax";
+  import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import Viewer from "./lib/Viewer.svelte";
 
@@ -16,6 +18,7 @@
 
   let viewer = $state<ReturnType<typeof Viewer>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
+  let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
@@ -24,18 +27,13 @@
   let changedOnDisk = $state(false);
   let poll: ReturnType<typeof setInterval> | undefined;
 
-  const number = new Intl.NumberFormat("en-US");
-  const fmt = (n: number) => number.format(n);
+  // Sidebar layout survives restarts.
+  const saved = (key: string) => localStorage.getItem(`hu.${key}`);
+  let sidebarOpen = $state(saved("sidebarOpen") !== "false");
+  let sidebarWidth = $state(Number(saved("sidebarWidth")) || 280);
 
-  function size(bytes: number) {
-    const units = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    while (bytes >= 1024 && i < units.length - 1) {
-      bytes /= 1024;
-      i++;
-    }
-    return `${bytes.toFixed(i ? 1 : 0)} ${units[i]}`;
-  }
+  $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
+  $effect(() => localStorage.setItem("hu.sidebarWidth", String(sidebarWidth)));
 
   let indexPercent = $derived(
     status && status.len ? Math.floor((status.scanned / status.len) * 100) : 0,
@@ -66,7 +64,8 @@
     if (typeof path === "string") await openPath(path);
   }
 
-  async function openPath(path: string) {
+  /** Opens `path`; `reveal` expands the explorer down to it (not wanted when it was picked there). */
+  async function openPath(path: string, reveal = true) {
     try {
       const next = await api.openDocument(path);
       if (doc) api.closeDocument(doc.id);
@@ -77,6 +76,7 @@
       findOpen = false;
       gotoOpen = false;
       changedOnDisk = false;
+      if (reveal) explorer?.reveal(next.path, false);
       getCurrentWindow().setTitle(`${next.name} — HU Editor`);
       watchIndex(next.id);
     } catch (e) {
@@ -134,6 +134,7 @@
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (mod && key === "o") chooseFile();
+    else if (mod && key === "b") sidebarOpen = !sidebarOpen;
     else if (mod && key === "f" && doc) {
       if (findOpen) findBar?.focus();
       else findOpen = true;
@@ -143,15 +144,36 @@
     e.preventDefault();
   }
 
-  async function checkDisk() {
+  async function onfocus() {
+    explorer?.refresh();
     if (doc) changedOnDisk = await api.diskChanged(doc.id).catch(() => false);
+  }
+
+  // Sidebar resizing.
+  let resizing: { x: number; width: number } | null = null;
+
+  function sashDown(e: PointerEvent) {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    resizing = { x: e.clientX, width: sidebarWidth };
+  }
+
+  function sashMove(e: PointerEvent) {
+    if (!resizing) return;
+    sidebarWidth = Math.min(640, Math.max(160, resizing.width + e.clientX - resizing.x));
   }
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWebview()
-      .onDragDropEvent((e) => {
-        if (e.payload.type === "drop" && e.payload.paths.length) openPath(e.payload.paths[0]);
+      .onDragDropEvent(async (e) => {
+        if (e.payload.type !== "drop" || !e.payload.paths.length) return;
+        const path = e.payload.paths[0];
+        if ((await api.pathKind(path)) === "dir") {
+          sidebarOpen = true;
+          explorer?.reveal(path, true);
+        } else {
+          openPath(path);
+        }
       })
       .then((u) => (unlisten = u));
     api.launchPath().then((path) => {
@@ -164,11 +186,20 @@
   });
 </script>
 
-<svelte:window {onkeydown} onfocus={checkDisk} />
+<svelte:window {onkeydown} {onfocus} />
 
 <main>
   <header class="toolbar">
-    <button onclick={chooseFile} title="Open (Ctrl+O)">Open…</button>
+    <button
+      class="toggle"
+      class:on={sidebarOpen}
+      title="Toggle explorer (Ctrl+B)"
+      aria-label="Toggle explorer"
+      onclick={() => (sidebarOpen = !sidebarOpen)}
+    >
+      <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" /></svg>
+    </button>
+    <button onclick={chooseFile} title="Open file (Ctrl+O)">Open…</button>
     {#if doc}
       <span class="path" title={doc.path}>{doc.path}</span>
     {/if}
@@ -181,50 +212,69 @@
     </div>
   {/if}
 
-  <section class="editor">
-    {#if doc}
-      <Viewer
-        bind:this={viewer}
-        {doc}
-        {lang}
-        indexed={status?.scanned ?? 0}
-        lines={status?.lines ?? 0}
-        onview={(v) => (current = v)}
+  <div class="workbench">
+    <div class="sidebar" class:hidden={!sidebarOpen} style:width="{sidebarWidth}px">
+      <Explorer
+        bind:this={explorer}
+        active={doc?.path ?? null}
+        onopen={(path) => openPath(path, false)}
       />
-      {#if findOpen && viewer}
-        <FindBar
-          bind:this={findBar}
+    </div>
+    <div
+      class="sash"
+      class:hidden={!sidebarOpen}
+      role="presentation"
+      onpointerdown={sashDown}
+      onpointermove={sashMove}
+      onpointerup={() => (resizing = null)}
+      onpointercancel={() => (resizing = null)}
+    ></div>
+
+    <section class="editor">
+      {#if doc}
+        <Viewer
+          bind:this={viewer}
           {doc}
-          {viewer}
-          onclose={() => {
-            findOpen = false;
-            viewer?.focus();
-          }}
+          {lang}
+          indexed={status?.scanned ?? 0}
+          lines={status?.lines ?? 0}
+          onview={(v) => (current = v)}
         />
-      {/if}
-      {#if gotoOpen}
-        <div class="goto">
-          <span>Go to line</span>
-          <input
-            bind:this={gotoInput}
-            bind:value={gotoValue}
-            inputmode="numeric"
-            placeholder={status?.complete ? `1 – ${fmt(status.lines)}` : "line"}
-            onkeydown={gotoKeydown}
-            onblur={() => (gotoOpen = false)}
+        {#if findOpen && viewer}
+          <FindBar
+            bind:this={findBar}
+            {doc}
+            {viewer}
+            onclose={() => {
+              findOpen = false;
+              viewer?.focus();
+            }}
           />
+        {/if}
+        {#if gotoOpen}
+          <div class="goto">
+            <span>Go to line</span>
+            <input
+              bind:this={gotoInput}
+              bind:value={gotoValue}
+              inputmode="numeric"
+              placeholder={status?.complete ? `1 – ${fmt(status.lines)}` : "line"}
+              onkeydown={gotoKeydown}
+              onblur={() => (gotoOpen = false)}
+            />
+          </div>
+        {/if}
+      {:else}
+        <div class="empty">
+          <p>Open a deck with <kbd>Ctrl</kbd>+<kbd>O</kbd>, pick one in the explorer, or drop a file here.</p>
+          <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
         </div>
       {/if}
-    {:else}
-      <div class="empty">
-        <p>Open a deck with <kbd>Ctrl</kbd>+<kbd>O</kbd> or drop a file here.</p>
-        <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
-      </div>
-    {/if}
-    {#if notice}
-      <button class="notice" title="Dismiss" onclick={() => (notice = null)}>{notice}</button>
-    {/if}
-  </section>
+      {#if notice}
+        <button class="notice" title="Dismiss" onclick={() => (notice = null)}>{notice}</button>
+      {/if}
+    </section>
+  </div>
 
   <footer class="statusbar">
     {#if doc}
@@ -246,12 +296,31 @@
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     padding: 6px 10px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
+  .toggle {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    color: var(--muted);
+  }
+  .toggle.on {
+    color: var(--fg);
+  }
+  .toggle svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.2;
+  }
   .path {
+    margin-left: 4px;
     overflow: hidden;
     color: var(--muted);
     text-overflow: ellipsis;
@@ -264,10 +333,36 @@
     padding: 6px 10px;
     background: #4d3b00;
   }
+  .workbench {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+  .sidebar {
+    flex: none;
+    min-width: 0;
+  }
+  .sash {
+    flex: none;
+    width: 4px;
+    margin-left: -2px;
+    margin-right: -2px;
+    z-index: 5;
+    cursor: col-resize;
+    border-left: 2px solid transparent;
+    background-clip: content-box;
+    box-shadow: inset 1px 0 0 var(--border);
+  }
+  .sash:hover {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .hidden {
+    display: none;
+  }
   .editor {
     position: relative;
     flex: 1;
-    min-height: 0;
+    min-width: 0;
   }
   .empty {
     display: flex;
@@ -320,6 +415,7 @@
     min-height: 22px;
     padding: 0 10px;
     align-items: center;
+    overflow: hidden;
     background: var(--accent);
     color: #fff;
     font-size: 12px;

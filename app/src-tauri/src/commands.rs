@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hu_core::{Document, FindOptions, FindResult, IndexStatus, Mark, View, ViewTarget};
+use hu_core::{Document, FindOptions, FindResult, IndexStatus, Mark, View, ViewTarget, dir};
 use serde::Serialize;
 use tauri::State;
 use tauri::async_runtime::spawn_blocking;
@@ -46,6 +46,13 @@ pub struct DocInfo {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PathKind {
+    File,
+    Dir,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FindOutcome {
     Found { offset: u64, len: u64 },
@@ -57,6 +64,39 @@ pub enum FindOutcome {
 #[tauri::command]
 pub fn launch_path() -> Option<String> {
     std::env::args().nth(1)
+}
+
+#[tauri::command]
+pub async fn roots() -> Vec<dir::Root> {
+    spawn_blocking(dir::roots).await.unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn list_dir(path: PathBuf) -> Result<Vec<dir::Entry>, String> {
+    spawn_blocking(move || dir::list(&path).map_err(|e| format!("{}: {e}", path.display())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn path_chain(path: PathBuf) -> Vec<String> {
+    dir::chain(&path)
+}
+
+/// `None` when nothing exists at `path`.
+#[tauri::command]
+pub async fn path_kind(path: PathBuf) -> Option<PathKind> {
+    spawn_blocking(move || {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(if meta.is_dir() {
+            PathKind::Dir
+        } else {
+            PathKind::File
+        })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]

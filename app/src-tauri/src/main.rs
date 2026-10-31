@@ -9,6 +9,10 @@ fn main() {
         .manage(commands::Docs::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
+            commands::roots,
+            commands::list_dir,
+            commands::path_chain,
+            commands::path_kind,
             commands::open_document,
             commands::close_document,
             commands::index_status,

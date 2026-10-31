@@ -7,6 +7,7 @@
 //! ([`line_index`]), and the viewport is addressed by byte offset so it never
 //! waits for that index ([`document`]).
 
+pub mod dir;
 pub mod document;
 pub mod line_index;
 pub mod search;
