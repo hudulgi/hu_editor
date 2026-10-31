@@ -89,8 +89,11 @@ function nastranFree(line: string): Token[] {
   return tokens;
 }
 
-/** Splits tokens at mark boundaries and adds the `mark` class inside marks. */
-export function applyMarks(tokens: Token[], marks: [number, number][]): Token[] {
+/** A highlighted range of a line, in UTF-16 indices, and its class. */
+export type Mark = [start: number, end: number, cls: string];
+
+/** Splits tokens at mark boundaries and adds the classes of the marks covering each piece. */
+export function applyMarks(tokens: Token[], marks: Mark[]): Token[] {
   if (!marks.length) return tokens;
   const out: Token[] = [];
   let start = 0;
@@ -105,8 +108,8 @@ export function applyMarks(tokens: Token[], marks: [number, number][]): Token[] 
     for (let i = 0; i + 1 < cuts.length; i++) {
       const [a, b] = [cuts[i], cuts[i + 1]];
       if (a === b) continue;
-      const marked = marks.some(([ma, mb]) => ma <= a && b <= mb);
-      const cls = marked ? [token.cls, "mark"].filter(Boolean).join(" ") : token.cls;
+      const covering = marks.filter(([ma, mb]) => ma <= a && b <= mb).map(([, , cls]) => cls);
+      const cls = [token.cls, ...covering].filter(Boolean).join(" ") || null;
       out.push({ text: token.text.slice(a - start, b - start), cls });
     }
     start = end;

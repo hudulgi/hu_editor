@@ -32,6 +32,11 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 |---|---|
 | Ctrl+O | 파일 열기 (드래그 앤 드롭도 가능, 폴더를 끌어다 놓으면 탐색기에서 펼침) |
 | Ctrl+B | 탐색기 열기 / 닫기 (화살표로 이동, Enter로 열기, ←/→로 접기 / 펼치기, 상단 주소창에 경로 붙여넣기) |
+| Ctrl+S | 저장 (임시 파일에 쓴 뒤 원본과 교체) |
+| Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) | 실행 취소 / 다시 실행 |
+| Ctrl+C / Ctrl+X / Ctrl+V | 복사 / 잘라내기 / 붙여넣기 (선택 없으면 현재 줄) |
+| Ctrl+A, Shift+방향키, 더블·트리플 클릭 | 선택 |
+| Tab | 다음 8칸 경계까지 공백 (Nastran small field) |
 | Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전 |
 | Ctrl+G | 줄 번호로 이동 |
-| PageUp/Down, Ctrl+Home/End | 페이지 이동, 처음 / 끝 |
+| Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |

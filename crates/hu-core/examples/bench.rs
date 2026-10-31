@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ] {
         let started = Instant::now();
-        let view = doc.view(target, ROWS, &[])?;
+        let view = doc.view(target, ROWS)?;
         report(label, started.elapsed());
         println!(
             "  first line {:?}: {:?}",
@@ -67,7 +67,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 line: state % status.lines,
             },
             ROWS,
-            &[],
         )?;
         worst = worst.max(one.elapsed());
     }
@@ -84,7 +83,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     delta: 3,
                 },
                 ROWS,
-                &[],
             )?
             .top;
     }
@@ -97,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             backward: false,
             wrap: true,
         };
-        let result = doc.find(
+        let result = doc.text().find(
             needle.as_bytes(),
             0,
             &options,

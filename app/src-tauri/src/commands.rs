@@ -1,5 +1,5 @@
-//! IPC commands. The frontend never sees the file, only the lines it is
-//! about to draw.
+//! IPC commands. The frontend never holds the file, only the lines it is
+//! about to draw; edits are sent as byte ranges and text.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,11 +7,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hu_core::{Document, FindOptions, FindResult, IndexStatus, Mark, View, ViewTarget, dir};
+use hu_core::{
+    DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions, FindResult, IndexStatus,
+    View, ViewTarget, dir,
+};
 use serde::Serialize;
-use tauri::State;
 use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::Channel;
+use tauri::{AppHandle, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[derive(Default)]
 pub struct Docs {
@@ -42,7 +46,9 @@ pub struct DocInfo {
     id: u32,
     path: String,
     name: String,
-    len: u64,
+    encoding: Encoding,
+    eol: Eol,
+    state: DocState,
 }
 
 #[derive(Serialize)]
@@ -60,6 +66,13 @@ pub enum FindOutcome {
     Cancelled,
 }
 
+/// Runs blocking work (disk reads) off the async runtime.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
 /// File passed on the command line ("Open with" on Windows).
 #[tauri::command]
 pub fn launch_path() -> Option<String> {
@@ -73,9 +86,7 @@ pub async fn roots() -> Vec<dir::Root> {
 
 #[tauri::command]
 pub async fn list_dir(path: PathBuf) -> Result<Vec<dir::Entry>, String> {
-    spawn_blocking(move || dir::list(&path).map_err(|e| format!("{}: {e}", path.display())))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || dir::list(&path).map_err(|e| format!("{}: {e}", path.display()))).await
 }
 
 #[tauri::command]
@@ -101,7 +112,11 @@ pub async fn path_kind(path: PathBuf) -> Option<PathKind> {
 
 #[tauri::command]
 pub async fn open_document(path: PathBuf, docs: State<'_, Docs>) -> Result<DocInfo, String> {
-    let doc = Document::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let doc = {
+        let path = path.clone();
+        blocking(move || Document::open(&path).map_err(|e| format!("{}: {e}", path.display())))
+            .await?
+    };
     let id = docs.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let info = DocInfo {
         id,
@@ -109,7 +124,9 @@ pub async fn open_document(path: PathBuf, docs: State<'_, Docs>) -> Result<DocIn
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
         path: path.display().to_string(),
-        len: doc.len(),
+        encoding: doc.encoding(),
+        eol: doc.eol(),
+        state: doc.state(),
     };
     let open = OpenDoc {
         doc,
@@ -131,7 +148,8 @@ pub fn close_document(id: u32, docs: State<'_, Docs>) {
 
 #[tauri::command]
 pub async fn index_status(id: u32, docs: State<'_, Docs>) -> Result<IndexStatus, String> {
-    Ok(docs.get(id)?.doc.index_status())
+    let open = docs.get(id)?;
+    blocking(move || Ok(open.doc.index_status())).await
 }
 
 #[tauri::command]
@@ -144,14 +162,79 @@ pub async fn view(
     id: u32,
     target: ViewTarget,
     rows: usize,
-    marks: Vec<Mark>,
     docs: State<'_, Docs>,
 ) -> Result<View, String> {
     let open = docs.get(id)?;
-    spawn_blocking(move || open.doc.view(target, rows, &marks))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    blocking(move || open.doc.view(target, rows).map_err(|e| e.to_string())).await
+}
+
+/// Replaces `[start, end)` with `text`. `anchor` and `caret` are the
+/// selection before the edit, restored by undo.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn edit(
+    id: u32,
+    start: u64,
+    end: u64,
+    text: String,
+    kind: EditKind,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<EditResult, String> {
+    let open = docs.get(id)?;
+    blocking(move || Ok(open.doc.edit(start, end, &text, kind, (anchor, caret)))).await
+}
+
+#[tauri::command]
+pub async fn undo(id: u32, docs: State<'_, Docs>) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || Ok(open.doc.undo())).await
+}
+
+#[tauri::command]
+pub async fn redo(id: u32, docs: State<'_, Docs>) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || Ok(open.doc.redo())).await
+}
+
+/// Puts `[start, end)` on the clipboard without sending it to the frontend.
+#[tauri::command]
+pub async fn copy(
+    id: u32,
+    start: u64,
+    end: u64,
+    app: AppHandle,
+    docs: State<'_, Docs>,
+) -> Result<(), String> {
+    let open = docs.get(id)?;
+    let text = blocking(move || open.doc.copy_text(start, end).map_err(|e| e.to_string())).await?;
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
+}
+
+/// Streams the number of bytes written to `on_progress` while it runs.
+#[tauri::command]
+pub async fn save(
+    id: u32,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+) -> Result<DocState, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        let mut last = Instant::now();
+        let mut progress = |written| {
+            if last.elapsed() >= Duration::from_millis(100) {
+                last = Instant::now();
+                let _ = on_progress.send(written);
+            }
+        };
+        let path = open.doc.path().display().to_string();
+        open.doc
+            .save(&AtomicBool::new(false), &mut progress)
+            .map_err(|e| format!("{path}: {e}"))?;
+        Ok(open.doc.state())
+    })
+    .await
 }
 
 /// Streams the number of bytes searched to `on_progress` while it runs.
@@ -171,8 +254,9 @@ pub async fn find(
     let previous = std::mem::replace(&mut *open.find_cancel.lock().unwrap(), cancel.clone());
     previous.store(true, Ordering::Relaxed);
 
+    let needle = open.doc.encoding().encode(&needle).into_owned();
     let len = needle.len() as u64;
-    let result = spawn_blocking(move || {
+    let result = blocking(move || {
         let options = FindOptions {
             case_sensitive,
             backward,
@@ -186,11 +270,11 @@ pub async fn find(
             }
         };
         open.doc
-            .find(needle.as_bytes(), from, &options, &cancel, &mut progress)
+            .text()
+            .find(&needle, from, &options, &cancel, &mut progress)
+            .map_err(|e| e.to_string())
     })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .await?;
 
     Ok(match result {
         FindResult::Found(offset) => FindOutcome::Found { offset, len },

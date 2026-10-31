@@ -92,13 +92,84 @@ impl FileSource {
         read_exact_at(&self.file, buf, offset)
     }
 
-    /// Whether the file on disk no longer matches what was opened
-    /// (overwritten, replaced, truncated or deleted).
-    pub fn changed_on_disk(&self) -> bool {
-        match std::fs::metadata(&self.path) {
-            Ok(meta) => meta.len() != self.len || meta.modified().ok() != self.modified,
-            Err(_) => true,
+    /// Modification time when it was opened.
+    pub fn modified(&self) -> Option<SystemTime> {
+        self.modified
+    }
+
+    /// Feeds consecutive cached slices covering `[from, to)` to `f`, with the
+    /// offset of each, until it returns `Some`.
+    pub fn scan<T>(
+        &self,
+        from: u64,
+        to: u64,
+        mut f: impl FnMut(u64, &[u8]) -> Option<T>,
+    ) -> io::Result<Option<T>> {
+        let mut pos = from;
+        while pos < to {
+            let index = pos / BLOCK_SIZE as u64;
+            let block = self.block(index)?;
+            let base = index * BLOCK_SIZE as u64;
+            let lo = (pos - base) as usize;
+            let hi = ((to - base) as usize).min(block.len());
+            if lo >= hi {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if let Some(found) = f(pos, &block[lo..hi]) {
+                return Ok(Some(found));
+            }
+            pos = base + hi as u64;
         }
+        Ok(None)
+    }
+
+    /// Like [`scan`](Self::scan), from the end of the range backward.
+    pub fn scan_rev<T>(
+        &self,
+        from: u64,
+        to: u64,
+        mut f: impl FnMut(u64, &[u8]) -> Option<T>,
+    ) -> io::Result<Option<T>> {
+        let mut end = to;
+        while end > from {
+            let index = (end - 1) / BLOCK_SIZE as u64;
+            let block = self.block(index)?;
+            let base = index * BLOCK_SIZE as u64;
+            let lo = from.saturating_sub(base) as usize;
+            let hi = (end - base) as usize;
+            if hi > block.len() {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if let Some(found) = f(base + lo as u64, &block[lo..hi]) {
+                return Ok(Some(found));
+            }
+            end = base.max(from);
+        }
+        Ok(None)
+    }
+
+    /// Occurrences of `byte` in `[from, to)`.
+    pub fn count(&self, byte: u8, from: u64, to: u64) -> io::Result<u64> {
+        let mut count = 0;
+        self.scan(from, to, |_, bytes| {
+            count += memchr::memchr_iter(byte, bytes).count() as u64;
+            None::<()>
+        })?;
+        Ok(count)
+    }
+
+    /// Offset just past the `n`-th `byte` at or after `from` (`n >= 1`).
+    pub fn after_nth(&self, byte: u8, from: u64, n: u64) -> io::Result<Option<u64>> {
+        let mut left = n;
+        self.scan(from, self.len, |pos, bytes| {
+            for i in memchr::memchr_iter(byte, bytes) {
+                left -= 1;
+                if left == 0 {
+                    return Some(pos + i as u64 + 1);
+                }
+            }
+            None
+        })
     }
 }
 

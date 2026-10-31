@@ -6,17 +6,20 @@
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size } from "./lib/format";
   import { detectLang, LANG_LABEL } from "./lib/syntax";
+  import Editor from "./lib/Editor.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
-  import Viewer from "./lib/Viewer.svelte";
+
+  type Choice = "save" | "discard" | "cancel";
 
   let doc = $state<api.DocInfo | null>(null);
+  let docState = $state<api.DocState | null>(null);
   let status = $state<api.IndexStatus | null>(null);
   let rate = $state(0);
-  let current = $state<api.View | null>(null);
+  let caret = $state<{ line: number | null; col: number; selected: number } | null>(null);
   let lang = $derived(doc ? detectLang(doc.name) : "plain");
 
-  let viewer = $state<ReturnType<typeof Viewer>>();
+  let editor = $state<ReturnType<typeof Editor>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
@@ -25,6 +28,8 @@
   let gotoInput = $state<HTMLInputElement>();
   let notice = $state<string | null>(null);
   let changedOnDisk = $state(false);
+  let saving = $state<number | null>(null);
+  let prompt = $state<{ name: string; answer: (choice: Choice) => void } | null>(null);
   let poll: ReturnType<typeof setInterval> | undefined;
 
   // Sidebar layout survives restarts.
@@ -34,6 +39,11 @@
 
   $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
   $effect(() => localStorage.setItem("hu.sidebarWidth", String(sidebarWidth)));
+
+  $effect(() => {
+    const title = doc ? `${docState?.dirty ? "● " : ""}${doc.name} — HU Editor` : "HU Editor";
+    getCurrentWindow().setTitle(title);
+  });
 
   let indexPercent = $derived(
     status && status.len ? Math.floor((status.scanned / status.len) * 100) : 0,
@@ -47,10 +57,44 @@
   });
 
   let position = $derived.by(() => {
-    if (!current) return "";
-    if (current.firstLine !== null) return `Ln ${fmt(current.firstLine + 1)}`;
-    return `Offset ${fmt(current.top)}`;
+    if (!caret) return "";
+    const line = caret.line === null ? "Ln …" : `Ln ${fmt(caret.line + 1)}`;
+    const selected = caret.selected ? ` (${fmt(caret.selected)} selected)` : "";
+    return `${line}, Col ${caret.col}${selected}`;
   });
+
+  /** Asks whether to save unsaved changes before they are dropped. */
+  function ask(): Promise<Choice> {
+    return new Promise((answer) => (prompt = { name: doc?.name ?? "", answer }));
+  }
+
+  function answer(choice: Choice) {
+    prompt?.answer(choice);
+    prompt = null;
+  }
+
+  /** Whether the current document may be replaced or closed. */
+  async function mayLeave() {
+    if (!doc || !docState?.dirty) return true;
+    const choice = await ask();
+    if (choice === "cancel") return false;
+    return choice === "discard" || (await save());
+  }
+
+  async function save() {
+    if (!doc || saving !== null) return false;
+    saving = 0;
+    try {
+      docState = await api.save(doc.id, (written) => (saving = written));
+      changedOnDisk = false;
+      return true;
+    } catch (e) {
+      notice = `Save failed: ${e}`;
+      return false;
+    } finally {
+      saving = null;
+    }
+  }
 
   async function chooseFile() {
     const path = await openDialog({
@@ -66,18 +110,19 @@
 
   /** Opens `path`; `reveal` expands the explorer down to it (not wanted when it was picked there). */
   async function openPath(path: string, reveal = true) {
+    if (!(await mayLeave())) return;
     try {
       const next = await api.openDocument(path);
       if (doc) api.closeDocument(doc.id);
       doc = next;
+      docState = next.state;
       status = null;
-      current = null;
+      caret = null;
       notice = null;
       findOpen = false;
       gotoOpen = false;
       changedOnDisk = false;
       if (reveal) explorer?.reveal(next.path, false);
-      getCurrentWindow().setTitle(`${next.name} — HU Editor`);
       watchIndex(next.id);
     } catch (e) {
       notice = String(e);
@@ -100,6 +145,18 @@
     poll = setInterval(tick, 250);
   }
 
+  // Edits change the line count; refresh it once typing pauses.
+  let statusRefresh: ReturnType<typeof setTimeout> | undefined;
+  function edited(state: api.DocState) {
+    docState = state;
+    clearTimeout(statusRefresh);
+    const id = doc?.id;
+    statusRefresh = setTimeout(async () => {
+      const next = id === undefined ? null : await api.indexStatus(id).catch(() => null);
+      if (next && doc?.id === id) status = next;
+    }, 150);
+  }
+
   function openGoto() {
     gotoValue = "";
     gotoOpen = true;
@@ -112,16 +169,16 @@
       notice = `Line index has reached line ${fmt(status.lines)} so far (${indexPercent}%).`;
       return;
     }
-    viewer?.gotoLine(Math.min(line, status.lines) - 1);
+    editor?.gotoLine(Math.min(line, status.lines) - 1);
     gotoOpen = false;
-    viewer?.focus();
+    editor?.focus();
   }
 
   function gotoKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") submitGoto();
     else if (e.key === "Escape") {
       gotoOpen = false;
-      viewer?.focus();
+      editor?.focus();
     } else return;
     e.preventDefault();
   }
@@ -131,9 +188,11 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (prompt) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (mod && key === "o") chooseFile();
+    else if (mod && key === "s") save();
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
     else if (mod && key === "f" && doc) {
       if (findOpen) findBar?.focus();
@@ -163,7 +222,7 @@
   }
 
   onMount(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisten: (() => void)[] = [];
     getCurrentWebview()
       .onDragDropEvent(async (e) => {
         if (e.payload.type !== "drop" || !e.payload.paths.length) return;
@@ -175,12 +234,18 @@
           openPath(path);
         }
       })
-      .then((u) => (unlisten = u));
+      .then((u) => unlisten.push(u));
+    // Closing the window with unsaved changes asks first.
+    getCurrentWindow()
+      .onCloseRequested(async (e) => {
+        if (!(await mayLeave())) e.preventDefault();
+      })
+      .then((u) => unlisten.push(u));
     api.launchPath().then((path) => {
       if (path) openPath(path);
     });
     return () => {
-      unlisten?.();
+      unlisten.forEach((u) => u());
       clearInterval(poll);
     };
   });
@@ -200,6 +265,7 @@
       <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" /></svg>
     </button>
     <button onclick={chooseFile} title="Open file (Ctrl+O)">Open…</button>
+    <button onclick={save} disabled={!docState?.dirty || saving !== null} title="Save (Ctrl+S)">Save</button>
     {#if doc}
       <span class="path" title={doc.path}>{doc.path}</span>
     {/if}
@@ -207,7 +273,7 @@
 
   {#if changedOnDisk && doc}
     <div class="banner">
-      The file changed on disk.
+      The file changed on disk{docState?.dirty ? " (you have unsaved changes)" : ""}.
       <button onclick={() => doc && openPath(doc.path)}>Reload</button>
     </div>
   {/if}
@@ -230,24 +296,27 @@
       onpointercancel={() => (resizing = null)}
     ></div>
 
-    <section class="editor">
+    <section class="pane">
       {#if doc}
-        <Viewer
-          bind:this={viewer}
+        <Editor
+          bind:this={editor}
           {doc}
           {lang}
           indexed={status?.scanned ?? 0}
           lines={status?.lines ?? 0}
-          onview={(v) => (current = v)}
+          oncaret={(c) => (caret = c)}
+          onstate={edited}
+          onerror={(message) => (notice = message)}
         />
-        {#if findOpen && viewer}
+        {#if findOpen && editor}
           <FindBar
             bind:this={findBar}
             {doc}
-            {viewer}
+            len={docState?.len ?? 0}
+            viewer={editor}
             onclose={() => {
               findOpen = false;
-              viewer?.focus();
+              editor?.focus();
             }}
           />
         {/if}
@@ -277,14 +346,36 @@
   </div>
 
   <footer class="statusbar">
-    {#if doc}
-      <span>{size(doc.len)}</span>
+    {#if doc && docState}
       <span>{position}</span>
+      <span>{size(docState.len)}</span>
+      {#if saving !== null}
+        <span>Saving {docState.len ? Math.floor((saving / docState.len) * 100) : 0}%</span>
+      {:else if docState.dirty}
+        <span>Modified</span>
+      {/if}
       <span class="spacer"></span>
       <span>{indexText}</span>
+      <span>{doc.encoding === "cp949" ? "CP949" : "UTF-8"}</span>
+      <span>{doc.eol === "crlf" ? "CRLF" : "LF"}</span>
       <span>{LANG_LABEL[lang]}</span>
     {/if}
   </footer>
+
+  {#if prompt}
+    <div class="backdrop" role="presentation">
+      <div class="dialog" role="alertdialog" aria-labelledby="save-title">
+        <p id="save-title">Save changes to <b>{prompt.name}</b>?</p>
+        <p class="muted">Your changes will be lost if you don't save them.</p>
+        <div class="buttons">
+          <!-- svelte-ignore a11y_autofocus -->
+          <button class="primary" autofocus onclick={() => answer("save")}>Save</button>
+          <button onclick={() => answer("discard")}>Don't Save</button>
+          <button onclick={() => answer("cancel")}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -300,6 +391,10 @@
     padding: 6px 10px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+  }
+  .toolbar button:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .toggle {
     display: grid;
@@ -359,7 +454,7 @@
   .hidden {
     display: none;
   }
-  .editor {
+  .pane {
     position: relative;
     flex: 1;
     min-width: 0;
@@ -423,5 +518,35 @@
   }
   .spacer {
     flex: 1;
+  }
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .dialog {
+    min-width: 360px;
+    padding: 18px 20px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+  .dialog p {
+    margin: 0 0 8px;
+  }
+  .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
 </style>

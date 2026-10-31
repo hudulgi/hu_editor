@@ -3,18 +3,20 @@
   import * as api from "./api";
 
   interface Target {
-    reveal(offset: number, len: number): void;
-    clearMarks(): void;
-    topOffset(): number;
+    /** Selects `[from, to)` and scrolls it into view. */
+    select(from: number, to: number): void;
+    caretOffset(): number;
   }
 
   interface Props {
     doc: api.DocInfo;
+    /** Document length, for progress. */
+    len: number;
     viewer: Target;
     onclose: () => void;
   }
 
-  let { doc, viewer, onclose }: Props = $props();
+  let { doc, len, viewer, onclose }: Props = $props();
 
   let input: HTMLInputElement;
   let needle = $state("");
@@ -25,7 +27,7 @@
   let last: { offset: number; needle: string; caseSensitive: boolean } | null = null;
   let seq = 0;
 
-  let percent = $derived(doc.len ? Math.min(100, Math.floor((searched / doc.len) * 100)) : 0);
+  let percent = $derived(len ? Math.min(100, Math.floor((searched / len) * 100)) : 0);
 
   export function focus() {
     input.focus();
@@ -36,7 +38,7 @@
   export async function run(backward: boolean) {
     if (!needle) return;
     const again = last && last.needle === needle && last.caseSensitive === caseSensitive;
-    const from = again ? (backward ? last!.offset : last!.offset + 1) : viewer.topOffset();
+    const from = again ? (backward ? last!.offset : last!.offset + 1) : viewer.caretOffset();
     const mine = ++seq;
     searching = true;
     searched = 0;
@@ -50,11 +52,10 @@
         last = { offset: result.offset, needle, caseSensitive };
         const wrapped = backward ? result.offset >= from : result.offset < from;
         message = wrapped ? "Wrapped around" : "";
-        viewer.reveal(result.offset, result.len);
+        viewer.select(result.offset, result.offset + result.len);
       } else if (result.kind === "notFound") {
         last = null;
         message = "No results";
-        viewer.clearMarks();
       }
     } catch (e) {
       if (mine === seq) message = String(e);
@@ -72,7 +73,6 @@
 
   function close() {
     if (searching) cancel();
-    viewer.clearMarks();
     onclose();
   }
 

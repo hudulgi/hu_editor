@@ -1,14 +1,22 @@
-//! Literal search over the whole file, streamed from disk in large chunks
-//! so it never pollutes the viewport's block cache.
+//! Literal search over the whole document, read in large chunks so it never
+//! pollutes the viewport's block cache.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::memmem::{Finder, FinderRev};
 
-use crate::source::FileSource;
-
 const CHUNK: usize = 4 << 20;
+
+/// Random-access bytes to search.
+pub trait Reader {
+    fn len(&self) -> u64;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Fills `buf` with the bytes at `offset`.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FindOptions {
@@ -30,7 +38,7 @@ pub enum FindResult {
 /// before `from` when searching backward). `progress` receives the number of
 /// bytes searched so far. Case-insensitive search folds ASCII only.
 pub fn find(
-    source: &FileSource,
+    source: &dyn Reader,
     needle: &[u8],
     from: u64,
     options: &FindOptions,
@@ -41,7 +49,7 @@ pub fn find(
 }
 
 fn find_in_chunks(
-    source: &FileSource,
+    source: &dyn Reader,
     needle: &[u8],
     from: u64,
     options: &FindOptions,
@@ -79,7 +87,7 @@ fn find_in_chunks(
 }
 
 struct Search<'a> {
-    source: &'a FileSource,
+    source: &'a dyn Reader,
     forward: Finder<'static>,
     backward: FinderRev<'static>,
     needle_len: u64,
@@ -92,7 +100,7 @@ struct Search<'a> {
 
 impl<'a> Search<'a> {
     fn new(
-        source: &'a FileSource,
+        source: &'a dyn Reader,
         needle: &[u8],
         case_sensitive: bool,
         chunk: usize,
@@ -164,7 +172,7 @@ impl<'a> Search<'a> {
     fn read(&mut self, pos: u64, end: u64) -> io::Result<usize> {
         let len = (end - pos).min(self.buf.len() as u64) as usize;
         let buf = &mut self.buf[..len];
-        self.source.read_uncached(pos, buf)?;
+        self.source.read_at(pos, buf)?;
         if !self.case_sensitive {
             buf.make_ascii_lowercase();
         }
@@ -180,7 +188,17 @@ impl<'a> Search<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+
+    impl Reader for &[u8] {
+        fn len(&self) -> u64 {
+            <[u8]>::len(self) as u64
+        }
+
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            buf.copy_from_slice(&self[offset as usize..offset as usize + buf.len()]);
+            Ok(())
+        }
+    }
 
     fn naive(hay: &[u8], needle: &[u8], from: usize, options: &FindOptions) -> FindResult {
         let matches: Vec<usize> = (0..=hay.len().saturating_sub(needle.len()))
@@ -203,10 +221,8 @@ mod tests {
 
     #[test]
     fn matches_naive_search_across_chunk_boundaries() {
-        let hay = b"*Node\n1, 2, 3\n*NSET, nset=Top\n*nset, NSET=BOTTOM\n2, 3\n*Nset, nset=SIDE\n";
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(hay).unwrap();
-        let source = FileSource::open(file.path()).unwrap();
+        let hay: &[u8] =
+            b"*Node\n1, 2, 3\n*NSET, nset=Top\n*nset, NSET=BOTTOM\n2, 3\n*Nset, nset=SIDE\n";
         let cancel = AtomicBool::new(false);
 
         for needle in [
@@ -221,7 +237,7 @@ mod tests {
                     };
                     for from in 0..=hay.len() {
                         let got = find_in_chunks(
-                            &source,
+                            &hay,
                             needle.as_bytes(),
                             from as u64,
                             &options,
@@ -240,12 +256,10 @@ mod tests {
 
     #[test]
     fn cancelled_search_stops() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(&[b'x'; 1000]).unwrap();
-        let source = FileSource::open(file.path()).unwrap();
+        let hay: &[u8] = &[b'x'; 1000];
         let cancel = AtomicBool::new(true);
         let result = find(
-            &source,
+            &hay,
             b"needle",
             0,
             &FindOptions::default(),
