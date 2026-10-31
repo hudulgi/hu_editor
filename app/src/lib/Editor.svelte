@@ -51,7 +51,12 @@
   let input: HTMLTextAreaElement;
   let height = $state(0);
   let trackH = $state(0);
-  let rows = $derived(Math.max(1, Math.floor(height / LINE_H)));
+  let rows = $state(1);
+  // A hidden editor (another tab is showing) has no height: keep its rows
+  // rather than shrinking the view to one line.
+  $effect(() => {
+    if (height > 0) rows = Math.max(1, Math.floor(height / LINE_H));
+  });
   let view = $state<api.View | null>(null);
   let viewError = $state<string | null>(null);
 
@@ -216,17 +221,19 @@
   async function lineAt(row: number): Promise<Line | null> {
     if (!view) return null;
     if (row >= 0 && row < view.lines.length) return view.lines[row];
+    // Found by offset after scrolling: the view may have changed size meanwhile.
     if (row < 0) {
       if (view.top === 0) return null;
+      const first = view.lines[0].offset;
       scrollLines(-1);
       await settled();
-      return view.lines[0];
+      return view.lines.findLast((l) => l.offset < first) ?? null;
     }
     const last = view.lines[view.lines.length - 1];
     if (last.offset + last.len >= view.len) return null;
     scrollLines(1);
     await settled();
-    return view.lines[view.lines.length - 1];
+    return view.lines.find((l) => l.offset > last.offset) ?? null;
   }
 
   // ---- Caret movement -------------------------------------------------
@@ -557,6 +564,7 @@
       }
       case "PageUp":
       case "PageDown": {
+        if (mod) return;
         const dir = e.key === "PageUp" ? -1 : 1;
         task = () => motion((line, row) => page(line, row, dir), ext, true);
         break;

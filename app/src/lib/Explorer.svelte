@@ -8,7 +8,7 @@
   import { onMount, tick } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import * as api from "./api";
-  import { baseName, formatSize } from "./format";
+  import { baseName, formatSize, isWindows, samePath } from "./format";
   import { detectLang } from "./syntax";
 
   interface Props {
@@ -24,8 +24,7 @@
     | { kind: "entry"; key: string; entry: api.DirEntry; depth: number; root?: api.Root }
     | { kind: "note"; key: string; text: string; depth: number };
 
-  const windows = navigator.userAgent.includes("Windows");
-  const samePath = (a: string, b: string) => (windows ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const windows = isWindows;
   const GROUPS = [
     ["quick", "Quick Access"],
     ["drives", windows ? "This PC" : "Locations"],

@@ -1,25 +1,37 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
-  import { formatNumber as fmt, formatSize as size } from "./lib/format";
+  import { formatNumber as fmt, formatSize as size, parentName, samePath } from "./lib/format";
   import { detectLang, LANG_LABEL } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
+  import TabBar, { type TabItem } from "./lib/TabBar.svelte";
 
   type Choice = "save" | "discard" | "cancel";
 
-  let doc = $state<api.DocInfo | null>(null);
-  let docState = $state<api.DocState | null>(null);
-  let status = $state<api.IndexStatus | null>(null);
-  let rate = $state(0);
-  let caret = $state<CaretInfo | null>(null);
-  let lang = $derived(doc ? detectLang(doc.name) : "plain");
+  /** An open document and what the app shows about it. Each tab keeps its
+   * own editor (caret, selection, scroll position) mounted while hidden. */
+  interface Tab {
+    doc: api.DocInfo;
+    state: api.DocState;
+    status: api.IndexStatus | null;
+    /** Indexing speed, bytes per second. */
+    rate: number;
+    caret: CaretInfo | null;
+    changedOnDisk: boolean;
+  }
 
-  let editor = $state<ReturnType<typeof Editor>>();
+  let tabs = $state<Tab[]>([]);
+  let activeId = $state<number | null>(null);
+  let active = $derived(tabs.find((t) => t.doc.id === activeId) ?? null);
+  const editors: Record<number, ReturnType<typeof Editor> | undefined> = $state({});
+  let editor = $derived(activeId === null ? undefined : editors[activeId]);
+  let lang = $derived(active ? detectLang(active.doc.name) : "plain");
+
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
@@ -28,10 +40,10 @@
   let gotoValue = $state("");
   let gotoInput = $state<HTMLInputElement>();
   let notice = $state<string | null>(null);
-  let changedOnDisk = $state(false);
-  let saving = $state<number | null>(null);
-  let prompt = $state<{ name: string; answer: (choice: Choice) => void } | null>(null);
-  let poll: ReturnType<typeof setInterval> | undefined;
+  let saving = $state<{ id: number; written: number } | null>(null);
+  let prompt = $state<{ names: string[]; answer: (choice: Choice) => void } | null>(null);
+  const polls = new Map<number, ReturnType<typeof setInterval>>();
+  const statusRefresh = new Map<number, ReturnType<typeof setTimeout>>();
 
   // Sidebar layout survives restarts.
   const saved = (key: string) => localStorage.getItem(`hu.${key}`);
@@ -41,23 +53,46 @@
   $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
   $effect(() => localStorage.setItem("hu.sidebarWidth", String(sidebarWidth)));
 
+  // The open files come back next time (new documents without a file do not).
+  let restored = false;
   $effect(() => {
-    const title = doc ? `${docState?.dirty ? "● " : ""}${doc.name} — HU Editor` : "HU Editor";
+    const paths = tabs.flatMap((t) => (t.doc.path === null ? [] : [t.doc.path]));
+    const current = active?.doc.path ?? null;
+    if (restored) localStorage.setItem("hu.session", JSON.stringify({ paths, active: current }));
+  });
+
+  $effect(() => {
+    const title = active ? `${active.state.dirty ? "● " : ""}${active.doc.name} — HU Editor` : "HU Editor";
     getCurrentWindow().setTitle(title);
   });
 
+  let tabItems = $derived.by((): TabItem[] => {
+    const count = new Map<string, number>();
+    for (const tab of tabs) count.set(tab.doc.name, (count.get(tab.doc.name) ?? 0) + 1);
+    return tabs.map(({ doc, state }) => ({
+      id: doc.id,
+      name: doc.name,
+      path: doc.path,
+      dirty: state.dirty,
+      // Same name in two folders: show the folder.
+      hint: doc.path && count.get(doc.name)! > 1 ? parentName(doc.path) : null,
+    }));
+  });
+
   let indexPercent = $derived(
-    status && status.len ? Math.floor((status.scanned / status.len) * 100) : 0,
+    active?.status && active.status.len ? Math.floor((active.status.scanned / active.status.len) * 100) : 0,
   );
 
   let indexText = $derived.by(() => {
+    const status = active?.status;
     if (!status) return "";
     if (status.error) return `Index error: ${status.error}`;
     if (status.complete) return `${fmt(status.lines)} ${status.lines === 1 ? "line" : "lines"}`;
-    return `Indexing ${indexPercent}% · ${size(rate)}/s · ${fmt(status.lines)} lines so far`;
+    return `Indexing ${indexPercent}% · ${size(active!.rate)}/s · ${fmt(status.lines)} lines so far`;
   });
 
   let position = $derived.by(() => {
+    const caret = active?.caret;
     if (!caret) return "";
     const line = caret.line === null ? "Ln …" : `Ln ${fmt(caret.line + 1)}`;
     if (caret.box) return `${line} · Box ${caret.box.rows === null ? "…" : fmt(caret.box.rows)} × ${caret.box.cols}`;
@@ -65,24 +100,96 @@
     return `${line}, Col ${caret.col}${selected}`;
   });
 
-  /** Asks whether to save unsaved changes before they are dropped. */
-  function ask(): Promise<Choice> {
-    return new Promise((answer) => (prompt = { name: doc?.name ?? "", answer }));
+  const tabOf = (id: number) => tabs.find((t) => t.doc.id === id);
+
+  // ---- Tabs ---------------------------------------------------------------
+
+  function activate(id: number) {
+    activeId = id;
+    gotoOpen = false;
+    tick().then(() => editors[id]?.focus());
+  }
+
+  /** Adds a tab next to the active one, or in place of `replacing`. */
+  function add(doc: api.DocInfo, replacing: Tab | null = null) {
+    const tab: Tab = { doc, state: doc.state, status: null, rate: 0, caret: null, changedOnDisk: false };
+    const at = replacing ? tabs.indexOf(replacing) : active ? tabs.indexOf(active) + 1 : tabs.length;
+    if (replacing) {
+      drop(replacing.doc.id);
+      tabs[at] = tab;
+    } else {
+      tabs.splice(at, 0, tab);
+    }
+    activate(doc.id);
+    watchIndex(doc.id);
+  }
+
+  /** Lets go of a document in the backend. */
+  function drop(id: number) {
+    api.closeDocument(id);
+    clearInterval(polls.get(id));
+    clearTimeout(statusRefresh.get(id));
+    polls.delete(id);
+    statusRefresh.delete(id);
+    delete editors[id];
+  }
+
+  /** Closes a tab, asking first if it has unsaved changes. */
+  async function closeTab(id: number) {
+    const tab = tabOf(id);
+    if (!tab) return false;
+    await editors[id]?.flush();
+    if (tab.state.dirty) {
+      activate(id);
+      const choice = await ask([tab.doc.name]);
+      if (choice === "cancel" || (choice === "save" && !(await saveTab(tab)))) return false;
+    }
+    const at = tabs.findIndex((t) => t.doc.id === id);
+    drop(id);
+    tabs.splice(at, 1);
+    if (activeId === id) {
+      const next = tabs[Math.min(at, tabs.length - 1)];
+      if (next) activate(next.doc.id);
+      else activeId = null;
+    }
+    return true;
+  }
+
+  function cycle(step: number) {
+    if (!active || tabs.length < 2) return;
+    const at = tabs.indexOf(active);
+    activate(tabs[(at + step + tabs.length) % tabs.length].doc.id);
+  }
+
+  // ---- Unsaved changes ------------------------------------------------------
+
+  /** Asks whether to save unsaved changes in the named files before they are dropped. */
+  function ask(names: string[]): Promise<Choice> {
+    return new Promise((answer) => (prompt = { names, answer }));
   }
 
   function answer(choice: Choice) {
     prompt?.answer(choice);
     prompt = null;
+    tick().then(() => editor?.focus());
   }
 
-  /** Whether the current document may be replaced or closed. */
-  async function mayLeave() {
-    await editor?.flush();
-    if (!doc || !docState?.dirty) return true;
-    const choice = await ask();
-    if (choice === "cancel") return false;
-    return choice === "discard" || (await save());
+  /** Whether the window may close: unsaved files are saved or given up. */
+  async function mayCloseAll() {
+    await Promise.all(tabs.map((t) => editors[t.doc.id]?.flush()));
+    const dirty = tabs.filter((t) => t.state.dirty);
+    if (!dirty.length) return true;
+    if (dirty.length === 1) activate(dirty[0].doc.id);
+    const choice = await ask(dirty.map((t) => t.doc.name));
+    if (choice !== "save") return choice === "discard";
+    for (const tab of dirty) {
+      activate(tab.doc.id);
+      if (!(await saveTab(tab))) return false;
+    }
+    return true;
   }
+
+  // ---- Files ----------------------------------------------------------------
 
   const FILTERS = [
     { name: "Solver input", extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
@@ -90,37 +197,36 @@
   ];
 
   /** Saves; a new document asks for a file name first. */
-  async function save() {
+  async function saveTab(tab: Tab) {
     // Keys typed just before Ctrl+S must make it into the file.
-    await editor?.flush();
-    if (!doc) return false;
-    if (doc.path === null) return saveAs();
-    return saving === null && writing(async (id, progress) => {
-      docState = await api.save(id, progress);
+    await editors[tab.doc.id]?.flush();
+    if (tab.doc.path === null) return saveTabAs(tab);
+    if (saving) return false;
+    return writing(tab, async (progress) => {
+      tab.state = await api.save(tab.doc.id, progress);
     });
   }
 
-  async function saveAs() {
-    await editor?.flush();
-    if (!doc || saving !== null) return false;
-    const path = await saveDialog({ defaultPath: doc.path ?? `${doc.name}.inp`, filters: FILTERS });
+  async function saveTabAs(tab: Tab) {
+    await editors[tab.doc.id]?.flush();
+    if (saving) return false;
+    const path = await saveDialog({ defaultPath: tab.doc.path ?? `${tab.doc.name}.inp`, filters: FILTERS });
     if (!path) return false;
-    return writing(async (id, progress) => {
-      const saved = await api.saveAs(id, path, progress);
-      docState = saved.state;
-      if (doc?.id !== id) return;
-      doc.path = saved.path;
-      doc.name = saved.name;
-      explorer?.reveal(saved.path, false);
+    return writing(tab, async (progress) => {
+      const done = await api.saveAs(tab.doc.id, path, progress);
+      tab.state = done.state;
+      tab.doc.path = done.path;
+      tab.doc.name = done.name;
+      if (tab.doc.id === activeId) explorer?.reveal(done.path, false);
     });
   }
 
   /** Runs a save with progress in the status bar; false if it failed. */
-  async function writing(work: (id: number, progress: (written: number) => void) => Promise<void>) {
-    saving = 0;
+  async function writing(tab: Tab, work: (progress: (written: number) => void) => Promise<void>) {
+    saving = { id: tab.doc.id, written: 0 };
     try {
-      await work(doc!.id, (written) => (saving = written));
-      changedOnDisk = false;
+      await work((written) => saving && (saving.written = written));
+      tab.changedOnDisk = false;
       return true;
     } catch (e) {
       notice = `Save failed: ${e}`;
@@ -135,66 +241,80 @@
     if (typeof path === "string") await openPath(path);
   }
 
-  /** Opens `path`; `reveal` expands the explorer down to it (not wanted when it was picked there). */
+  /**
+   * Shows `path` in a tab: the one it is already open in, or a new one.
+   * `reveal` expands the explorer down to it (not wanted when picked there).
+   */
   async function openPath(path: string, reveal = true) {
-    if (!(await mayLeave())) return;
+    const open = tabs.find((t) => t.doc.path !== null && samePath(t.doc.path, path));
+    if (open) {
+      activate(open.doc.id);
+    } else {
+      try {
+        const doc = await api.openDocument(path);
+        // A blank, untouched new document gives way to the file.
+        const blank = active && active.doc.path === null && !active.state.dirty && active.state.len === 0;
+        add(doc, blank ? active : null);
+      } catch (e) {
+        notice = String(e);
+        return;
+      }
+    }
+    if (reveal) explorer?.reveal(path, false);
+  }
+
+  let untitled = 0;
+
+  /** A new, empty document in its own tab: Untitled-1, Untitled-2, … */
+  async function newFile() {
+    const doc = await api.newDocument();
+    add({ ...doc, name: `Untitled-${++untitled}` });
+  }
+
+  /** Reopens a tab's file after it changed on disk; unsaved changes go. */
+  async function reload(tab: Tab) {
+    if (!tab.doc.path) return;
     try {
-      show(await api.openDocument(path));
-      if (reveal) explorer?.reveal(path, false);
+      add(await api.openDocument(tab.doc.path), tab);
     } catch (e) {
       notice = String(e);
     }
   }
 
-  let untitled = 0;
-
-  /** A new, empty document: Untitled-1, Untitled-2, … */
-  async function newFile() {
-    if (!(await mayLeave())) return;
-    const next = await api.newDocument();
-    show({ ...next, name: `Untitled-${++untitled}` });
-  }
-
-  function show(next: api.DocInfo) {
-    if (doc) api.closeDocument(doc.id);
-    doc = next;
-    docState = next.state;
-    status = null;
-    caret = null;
-    notice = null;
-    findOpen = false;
-    gotoOpen = false;
-    changedOnDisk = false;
-    watchIndex(next.id);
-  }
-
   function watchIndex(id: number) {
-    clearInterval(poll);
+    clearInterval(polls.get(id));
     let last = { at: performance.now(), scanned: 0 };
-    const tick = async () => {
+    const poll = async () => {
       const next = await api.indexStatus(id).catch(() => null);
-      if (!next || doc?.id !== id) return;
+      const tab = tabOf(id);
+      if (!next || !tab) return;
       const at = performance.now();
-      if (at > last.at) rate = ((next.scanned - last.scanned) / (at - last.at)) * 1000;
+      if (at > last.at) tab.rate = ((next.scanned - last.scanned) / (at - last.at)) * 1000;
       last = { at, scanned: next.scanned };
-      status = next;
-      if (next.complete || next.error) clearInterval(poll);
+      tab.status = next;
+      if (next.complete || next.error) clearInterval(polls.get(id));
     };
-    tick();
-    poll = setInterval(tick, 250);
+    poll();
+    polls.set(id, setInterval(poll, 250));
   }
 
-  // Edits change the line count; refresh it once typing pauses.
-  let statusRefresh: ReturnType<typeof setTimeout> | undefined;
-  function edited(state: api.DocState) {
-    docState = state;
-    clearTimeout(statusRefresh);
-    const id = doc?.id;
-    statusRefresh = setTimeout(async () => {
-      const next = id === undefined ? null : await api.indexStatus(id).catch(() => null);
-      if (next && doc?.id === id) status = next;
-    }, 150);
+  /** Edits change the line count; refresh it once typing pauses. */
+  function edited(id: number, state: api.DocState) {
+    const tab = tabOf(id);
+    if (!tab) return;
+    tab.state = state;
+    clearTimeout(statusRefresh.get(id));
+    statusRefresh.set(
+      id,
+      setTimeout(async () => {
+        const next = await api.indexStatus(id).catch(() => null);
+        const tab = tabOf(id);
+        if (next && tab) tab.status = next;
+      }, 150),
+    );
   }
+
+  // ---- Go to line, keys -------------------------------------------------------
 
   function openGoto() {
     gotoValue = "";
@@ -202,8 +322,9 @@
   }
 
   function submitGoto() {
+    const status = active?.status;
     const line = Number.parseInt(gotoValue.replaceAll(",", ""), 10);
-    if (!doc || !status || !Number.isFinite(line) || line < 1) return;
+    if (!status || !Number.isFinite(line) || line < 1) return;
     if (!status.complete && line > status.lines) {
       notice = `Line index has reached line ${fmt(status.lines)} so far (${indexPercent}%).`;
       return;
@@ -232,15 +353,17 @@
     const key = e.key.toLowerCase();
     if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
-    else if (mod && key === "s" && e.shiftKey) saveAs();
-    else if (mod && key === "s") save();
+    else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
+    else if (mod && key === "w" && active) closeTab(active.doc.id);
+    else if (e.ctrlKey && e.key === "Tab") cycle(e.shiftKey ? -1 : 1);
+    else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) cycle(e.key === "PageDown" ? 1 : -1);
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
-    else if (mod && (key === "f" || key === "h") && doc) {
+    else if (mod && (key === "f" || key === "h") && active) {
       if (key === "h") replacing = true;
       else if (!findOpen) replacing = false;
       if (findOpen) findBar?.focus();
       else findOpen = true;
-    } else if (mod && key === "g" && doc) openGoto();
+    } else if (mod && key === "g" && active) openGoto();
     else if (e.key === "F3" && findOpen) findBar?.run(e.shiftKey);
     else return;
     e.preventDefault();
@@ -248,7 +371,9 @@
 
   async function onfocus() {
     explorer?.refresh();
-    if (doc) changedOnDisk = await api.diskChanged(doc.id).catch(() => false);
+    for (const tab of tabs) {
+      if (tab.doc.path !== null) tab.changedOnDisk = await api.diskChanged(tab.doc.id).catch(() => false);
+    }
   }
 
   // Sidebar resizing.
@@ -264,32 +389,46 @@
     sidebarWidth = Math.min(640, Math.max(160, resizing.width + e.clientX - resizing.x));
   }
 
+  /** Reopens the files of the last session, then the one passed on the command line. */
+  async function restore() {
+    const session = JSON.parse(localStorage.getItem("hu.session") ?? "null") as {
+      paths: string[];
+      active: string | null;
+    } | null;
+    for (const path of session?.paths ?? []) {
+      if ((await api.pathKind(path)) === "file") await openPath(path, false);
+    }
+    const launched = await api.launchPath();
+    const current = launched ?? session?.active;
+    if (current) await openPath(current, true);
+    restored = true;
+  }
+
   onMount(() => {
     const unlisten: (() => void)[] = [];
     getCurrentWebview()
       .onDragDropEvent(async (e) => {
         if (e.payload.type !== "drop" || !e.payload.paths.length) return;
-        const path = e.payload.paths[0];
-        if ((await api.pathKind(path)) === "dir") {
-          sidebarOpen = true;
-          explorer?.reveal(path, true);
-        } else {
-          openPath(path);
+        for (const path of e.payload.paths) {
+          if ((await api.pathKind(path)) === "dir") {
+            sidebarOpen = true;
+            explorer?.reveal(path, true);
+          } else {
+            await openPath(path);
+          }
         }
       })
       .then((u) => unlisten.push(u));
     // Closing the window with unsaved changes asks first.
     getCurrentWindow()
       .onCloseRequested(async (e) => {
-        if (!(await mayLeave())) e.preventDefault();
+        if (!(await mayCloseAll())) e.preventDefault();
       })
       .then((u) => unlisten.push(u));
-    api.launchPath().then((path) => {
-      if (path) openPath(path);
-    });
+    restore();
     return () => {
       unlisten.forEach((u) => u());
-      clearInterval(poll);
+      polls.forEach(clearInterval);
     };
   });
 </script>
@@ -309,17 +448,21 @@
     </button>
     <button onclick={newFile} title="New file (Ctrl+N)">New</button>
     <button onclick={chooseFile} title="Open file (Ctrl+O)">Open…</button>
-    <button onclick={save} disabled={!docState?.dirty || saving !== null} title="Save (Ctrl+S)">Save</button>
-    <button onclick={saveAs} disabled={!doc || saving !== null} title="Save as (Ctrl+Shift+S)">Save As…</button>
-    {#if doc}
-      <span class="path" title={doc.path ?? "Not saved yet"}>{doc.path ?? doc.name}</span>
+    <button onclick={() => active && saveTab(active)} disabled={!active?.state.dirty || !!saving} title="Save (Ctrl+S)"
+      >Save</button
+    >
+    <button onclick={() => active && saveTabAs(active)} disabled={!active || !!saving} title="Save as (Ctrl+Shift+S)"
+      >Save As…</button
+    >
+    {#if active}
+      <span class="path" title={active.doc.path ?? "Not saved yet"}>{active.doc.path ?? active.doc.name}</span>
     {/if}
   </header>
 
-  {#if changedOnDisk && doc}
+  {#if active?.changedOnDisk}
     <div class="banner">
-      The file changed on disk{docState?.dirty ? " (you have unsaved changes)" : ""}.
-      <button onclick={() => doc?.path && openPath(doc.path)}>Reload</button>
+      The file changed on disk{active.state.dirty ? " (you have unsaved changes)" : ""}.
+      <button onclick={() => active && reload(active)}>Reload</button>
     </div>
   {/if}
 
@@ -327,7 +470,7 @@
     <div class="sidebar" class:hidden={!sidebarOpen} style:width="{sidebarWidth}px">
       <Explorer
         bind:this={explorer}
-        active={doc?.path ?? null}
+        active={active?.doc.path ?? null}
         onopen={(path) => openPath(path, false)}
       />
     </div>
@@ -342,43 +485,50 @@
     ></div>
 
     <section class="pane">
-      {#if doc}
-        <Editor
-          bind:this={editor}
-          {doc}
-          {lang}
-          indexed={status?.scanned ?? 0}
-          lines={status?.lines ?? 0}
-          oncaret={(c) => (caret = c)}
-          onstate={edited}
-          onerror={(message) => (notice = message)}
-        />
-        {#if findOpen && editor}
-          <FindBar
-            bind:this={findBar}
-            bind:replacing
-            {doc}
-            len={docState?.len ?? 0}
-            viewer={editor}
-            onclose={() => {
-              findOpen = false;
-              editor?.focus();
-            }}
-          />
-        {/if}
-        {#if gotoOpen}
-          <div class="goto">
-            <span>Go to line</span>
-            <input
-              bind:this={gotoInput}
-              bind:value={gotoValue}
-              inputmode="numeric"
-              placeholder={status?.complete ? `1 – ${fmt(status.lines)}` : "line"}
-              onkeydown={gotoKeydown}
-              onblur={() => (gotoOpen = false)}
+      {#if tabs.length}
+        <TabBar tabs={tabItems} active={activeId} onselect={activate} onclose={closeTab} />
+        <div class="editors">
+          {#each tabs as tab (tab.doc.id)}
+            <div class="slot" class:hidden={tab.doc.id !== activeId}>
+              <Editor
+                bind:this={editors[tab.doc.id]}
+                doc={tab.doc}
+                lang={detectLang(tab.doc.name)}
+                indexed={tab.status?.scanned ?? 0}
+                lines={tab.status?.lines ?? 0}
+                oncaret={(c) => (tab.caret = c)}
+                onstate={(state) => edited(tab.doc.id, state)}
+                onerror={(message) => (notice = message)}
+              />
+            </div>
+          {/each}
+          {#if findOpen && active && editor}
+            <FindBar
+              bind:this={findBar}
+              bind:replacing
+              doc={active.doc}
+              len={active.state.len}
+              viewer={editor}
+              onclose={() => {
+                findOpen = false;
+                editor?.focus();
+              }}
             />
-          </div>
-        {/if}
+          {/if}
+          {#if gotoOpen}
+            <div class="goto">
+              <span>Go to line</span>
+              <input
+                bind:this={gotoInput}
+                bind:value={gotoValue}
+                inputmode="numeric"
+                placeholder={active?.status?.complete ? `1 – ${fmt(active.status.lines)}` : "line"}
+                onkeydown={gotoKeydown}
+                onblur={() => (gotoOpen = false)}
+              />
+            </div>
+          {/if}
+        </div>
       {:else}
         <div class="empty">
           <p>
@@ -395,21 +545,21 @@
   </div>
 
   <footer class="statusbar">
-    {#if doc && docState}
+    {#if active}
       <span>{position}</span>
-      <span>{size(docState.len)}</span>
-      {#if saving !== null}
-        <span>Saving {docState.len ? Math.floor((saving / docState.len) * 100) : 0}%</span>
-      {:else if docState.dirty}
+      <span>{size(active.state.len)}</span>
+      {#if saving?.id === active.doc.id}
+        <span>Saving {active.state.len ? Math.floor((saving.written / active.state.len) * 100) : 0}%</span>
+      {:else if active.state.dirty}
         <span>Modified</span>
       {/if}
       <span class="spacer"></span>
-      {#if caret?.columnMode}
+      {#if active.caret?.columnMode}
         <span class="mode" title="Column mode (Alt+C): Shift+arrows and dragging select boxes">COL</span>
       {/if}
       <span>{indexText}</span>
-      <span>{doc.encoding === "cp949" ? "CP949" : "UTF-8"}</span>
-      <span>{doc.eol === "crlf" ? "CRLF" : "LF"}</span>
+      <span>{active.doc.encoding === "cp949" ? "CP949" : "UTF-8"}</span>
+      <span>{active.doc.eol === "crlf" ? "CRLF" : "LF"}</span>
       <span>{LANG_LABEL[lang]}</span>
     {/if}
   </footer>
@@ -417,11 +567,22 @@
   {#if prompt}
     <div class="backdrop" role="presentation">
       <div class="dialog" role="alertdialog" aria-labelledby="save-title">
-        <p id="save-title">Save changes to <b>{prompt.name}</b>?</p>
+        {#if prompt.names.length === 1}
+          <p id="save-title">Save changes to <b>{prompt.names[0]}</b>?</p>
+        {:else}
+          <p id="save-title">Save changes to these {prompt.names.length} files?</p>
+          <ul>
+            {#each prompt.names as name, i (i)}
+              <li>{name}</li>
+            {/each}
+          </ul>
+        {/if}
         <p class="muted">Your changes will be lost if you don't save them.</p>
         <div class="buttons">
           <!-- svelte-ignore a11y_autofocus -->
-          <button class="primary" autofocus onclick={() => answer("save")}>Save</button>
+          <button class="primary" autofocus onclick={() => answer("save")}
+            >{prompt.names.length === 1 ? "Save" : "Save All"}</button
+          >
           <button onclick={() => answer("discard")}>Don't Save</button>
           <button onclick={() => answer("cancel")}>Cancel</button>
         </div>
@@ -508,8 +669,19 @@
   }
   .pane {
     position: relative;
+    display: flex;
     flex: 1;
+    flex-direction: column;
     min-width: 0;
+  }
+  .editors {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .slot {
+    position: absolute;
+    inset: 0;
   }
   .empty {
     display: flex;
@@ -595,6 +767,12 @@
   }
   .dialog p {
     margin: 0 0 8px;
+  }
+  .dialog ul {
+    max-height: 200px;
+    margin: 0 0 8px;
+    padding-left: 20px;
+    overflow: auto;
   }
   .buttons {
     display: flex;

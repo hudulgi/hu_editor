@@ -36,6 +36,14 @@
   let message = $state("");
   /** The match last found and selected. */
   let last: { offset: number; len: number; needle: string; caseSensitive: boolean } | null = null;
+
+  // The bar stays open across tabs; a match belongs to the tab it was found in.
+  let docId = $derived(doc.id);
+  $effect(() => {
+    void docId;
+    last = null;
+    message = "";
+  });
   let seq = 0;
 
   let percent = $derived(len ? Math.min(100, Math.floor((searched / len) * 100)) : 0);
