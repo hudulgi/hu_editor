@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hu_core::{
-    DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions, FindResult, IndexStatus,
-    View, ViewTarget, dir,
+    BoxRows, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions, FindResult,
+    IndexStatus, View, ViewTarget, dir,
 };
 use serde::Serialize;
 use tauri::async_runtime::spawn_blocking;
@@ -210,6 +210,119 @@ pub async fn copy(
     let open = docs.get(id)?;
     let text = blocking(move || open.doc.copy_text(start, end).map_err(|e| e.to_string())).await?;
     app.clipboard().write_text(text).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoxEdit {
+    result: EditResult,
+    /// Where the box's last line starts after the edit.
+    last_line: u64,
+}
+
+/// Replaces the columns `[left, right)` of a box selection's lines with
+/// `texts` (one for all lines, or one per line).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn edit_box(
+    id: u32,
+    top: u64,
+    rows: BoxRows,
+    left: u32,
+    right: u32,
+    texts: Vec<String>,
+    kind: EditKind,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<BoxEdit>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        let edited = open
+            .doc
+            .edit_box(top, rows, left, right, &texts, kind, (anchor, caret));
+        Ok(edited
+            .map_err(|e| e.to_string())?
+            .map(|(result, last_line)| BoxEdit { result, last_line }))
+    })
+    .await
+}
+
+/// Puts a box selection on the clipboard, one line per row.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn copy_box(
+    id: u32,
+    top: u64,
+    bottom: u64,
+    left: u32,
+    right: u32,
+    app: AppHandle,
+    docs: State<'_, Docs>,
+) -> Result<(), String> {
+    let open = docs.get(id)?;
+    let text = blocking(move || {
+        open.doc
+            .box_text(top, bottom, left, right)
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ReplaceOutcome {
+    Replaced {
+        count: usize,
+        result: Option<EditResult>,
+    },
+    Cancelled,
+}
+
+/// Replaces every match as one undo step, streaming the bytes searched to
+/// `on_progress`. Cancelled like a search.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn replace_all(
+    id: u32,
+    needle: String,
+    replacement: String,
+    case_sensitive: bool,
+    anchor: u64,
+    caret: u64,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+) -> Result<ReplaceOutcome, String> {
+    let open = docs.get(id)?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let previous = std::mem::replace(&mut *open.find_cancel.lock().unwrap(), cancel.clone());
+    previous.store(true, Ordering::Relaxed);
+    blocking(move || {
+        let mut last = Instant::now();
+        let mut progress = |searched| {
+            if last.elapsed() >= Duration::from_millis(100) {
+                last = Instant::now();
+                let _ = on_progress.send(searched);
+            }
+        };
+        let done = open
+            .doc
+            .replace_all(
+                &needle,
+                &replacement,
+                case_sensitive,
+                (anchor, caret),
+                &cancel,
+                &mut progress,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(match done {
+            Some((count, result)) => ReplaceOutcome::Replaced { count, result },
+            None => ReplaceOutcome::Cancelled,
+        })
+    })
+    .await
 }
 
 /// Streams the number of bytes written to `on_progress` while it runs.

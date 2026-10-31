@@ -1,3 +1,15 @@
+<script lang="ts" module>
+  /** Caret line (null until the index has reached it), column, selected bytes, box size. */
+  export interface CaretInfo {
+    line: number | null;
+    col: number;
+    selected: number;
+    /** Box selection size; `rows` is null when the box reaches off screen. */
+    box: { rows: number | null; cols: number } | null;
+    columnMode: boolean;
+  }
+</script>
+
 <script lang="ts">
   // The text editor. Only the visible lines live here; the caret, the
   // selection and the viewport are byte offsets into the document, so
@@ -11,6 +23,7 @@
 
   import { onMount, tick, untrack } from "svelte";
   import * as api from "./api";
+  import { displayCol, indexAt, TAB, textWidth } from "./columns";
   import { applyMarks, tokenize, type Lang, type Mark } from "./syntax";
 
   interface Props {
@@ -21,8 +34,7 @@
     /** Lines known so far, for the gutter width. */
     lines: number;
     onview?: (view: api.View) => void;
-    /** Caret line (null until the index has reached it), column and selected bytes. */
-    oncaret?: (caret: { line: number | null; col: number; selected: number }) => void;
+    oncaret?: (caret: CaretInfo) => void;
     onstate?: (state: api.DocState) => void;
     onerror?: (message: string) => void;
   }
@@ -31,8 +43,6 @@
 
   const LINE_H = 20;
   const MIN_THUMB = 24;
-  /** Tab inserts spaces up to the next multiple: a Nastran small field. */
-  const TAB = 8;
   const WORD = /[\p{L}\p{N}_.]/u;
 
   let root: HTMLDivElement;
@@ -56,6 +66,26 @@
   let composition = $state("");
   let caretAt = $state<{ x: number; y: number } | null>(null);
   let blink = $state(0);
+
+  // Box (column) selection. A corner is a line (its start offset) and a
+  // display column, so the box stays rectangular past line ends and across
+  // two-column Hangul.
+  interface Box {
+    anchorLine: number;
+    anchorCol: number;
+    caretLine: number;
+    caretCol: number;
+  }
+  let box = $state<Box | null>(null);
+  /** Alt+C: plain Shift+arrows and dragging select boxes (UltraEdit's column mode). */
+  let columnMode = $state(false);
+  let boxTop = $derived(box ? Math.min(box.anchorLine, box.caretLine) : 0);
+  let boxBottom = $derived(box ? Math.max(box.anchorLine, box.caretLine) : 0);
+  let boxLeft = $derived(box ? Math.min(box.anchorCol, box.caretCol) : 0);
+  let boxRight = $derived(box ? Math.max(box.anchorCol, box.caretCol) : 0);
+  let boxRects = $state<{ x: number; y: number; w: number }[]>([]);
+  /** Width of one column in pixels, for the space past line ends. */
+  let cellW = 8;
 
   // ---- Viewport requests ----------------------------------------------
   // One request in flight; scrolling meanwhile is merged into the next one,
@@ -356,6 +386,136 @@
     if (result) await applied(result);
   }
 
+  // ---- Box selection ------------------------------------------------------
+
+  const lineRow = (start: number) => (view ? view.lines.findIndex((l) => l.offset === start) : -1);
+
+  /** Starts a box at the caret, unless there is one. */
+  function startBox() {
+    if (box) return;
+    const row = rowOf(caret);
+    if (!view || row < 0) return;
+    const line = view.lines[row];
+    const col = displayCol(line.text, colOf(line, caret));
+    box = { anchorLine: line.offset, anchorCol: col, caretLine: line.offset, caretCol: col };
+  }
+
+  /** Leaves box mode, with the caret where the box's caret corner was. */
+  function endBox() {
+    if (!box) return;
+    const row = lineRow(box.caretLine);
+    const line = row >= 0 ? view!.lines[row] : null;
+    anchor = caret = line ? offsetOf(line, indexAt(line.text, box.caretCol, "left")) : box.caretLine;
+    preferredCol = null;
+    box = null;
+  }
+
+  async function boxMove(dx: number, dy: number) {
+    startBox();
+    if (!box || !view) return;
+    box.caretCol = Math.max(0, box.caretCol + dx);
+    if (!dy) return;
+    if (lineRow(box.caretLine) < 0) {
+      jump({ kind: "offset", offset: box.caretLine, context: dy < 0 ? 0 : rows - 1 });
+      await settled();
+    }
+    const row = lineRow(box.caretLine);
+    const next = row >= 0 ? await lineAt(row + dy) : null;
+    if (next && box) box.caretLine = next.offset;
+  }
+
+  /**
+   * Replaces columns `[left, right)` of every box line with `texts` (one for
+   * all lines, or one per line), leaving a zero-width box at column `col`.
+   */
+  async function boxEdit(
+    texts: string[],
+    kind: api.EditKind,
+    left: number,
+    right: number,
+    col: number,
+    rowsOf: api.BoxRows = { kind: "until", bottom: boxBottom },
+  ) {
+    if (!box) return;
+    const top = boxTop;
+    const topIsAnchor = box.anchorLine <= box.caretLine;
+    const edited = await api.editBox(doc.id, top, rowsOf, left, right, texts, kind, anchor, caret);
+    if (!edited) return;
+    onstate?.(edited.result.state);
+    if (view) jump({ kind: "scroll", anchor: shift(view.top, edited.result.change), delta: 0 });
+    const [anchorLine, caretLine] = topIsAnchor ? [top, edited.lastLine] : [edited.lastLine, top];
+    box = { anchorLine, caretLine, anchorCol: col, caretCol: col };
+    anchor = caret = edited.result.caret;
+    await settled();
+  }
+
+  function boxInsert(text: string, kind: api.EditKind) {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    if (lines.length === 1) return boxEdit(lines, kind, boxLeft, boxRight, boxLeft + textWidth(lines[0]));
+    // A block of lines goes in line by line from the top, like UltraEdit.
+    const width = Math.max(...lines.map(textWidth));
+    return boxEdit(lines, "other", boxLeft, boxRight, boxLeft + width, { kind: "count", count: lines.length });
+  }
+
+  function boxDelete(back: boolean) {
+    if (boxLeft < boxRight) return boxEdit([""], "other", boxLeft, boxRight, boxLeft);
+    if (back) return boxLeft > 0 ? boxEdit([""], "other", boxLeft - 1, boxLeft, boxLeft - 1) : undefined;
+    return boxEdit([""], "other", boxLeft, boxLeft + 1, boxLeft);
+  }
+
+  async function boxCopy(cut: boolean) {
+    if (boxLeft === boxRight) return;
+    await api.copyBox(doc.id, boxTop, boxBottom, boxLeft, boxRight);
+    if (cut) await boxDelete(true);
+  }
+
+  /** Line start and display column under a point; past a line's end counts columns of space. */
+  function boxPoint(clientX: number, clientY: number) {
+    if (!view?.lines.length || !lineBox) return null;
+    const top = lineBox.getBoundingClientRect().top;
+    const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - top) / LINE_H)));
+    const line = view.lines[row];
+    const el = lineBox.children[row] as HTMLElement;
+    const x = clientX - el.getBoundingClientRect().left;
+    const end = xAt(el, line.text.length);
+    if (x >= end) return { line: line.offset, col: textWidth(line.text) + Math.round((x - end) / cellW) };
+    return { line: line.offset, col: displayCol(line.text, colOf(line, offsetAt(clientX, clientY)!)) };
+  }
+
+  /** Box keys; `false` when the key should get its normal meaning. */
+  function boxKey(e: KeyboardEvent, mod: boolean): boolean {
+    const arrows: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    };
+    if (e.key in arrows && e.shiftKey && !mod && (e.altKey || columnMode)) {
+      const [dx, dy] = arrows[e.key];
+      enqueue(() => boxMove(dx, dy));
+      return true;
+    }
+    if (!box) return false;
+    const key = e.key.toLowerCase();
+    let task: (() => unknown) | null = null;
+    if (e.key === "Backspace" || e.key === "Delete") task = () => boxDelete(e.key === "Backspace");
+    else if (e.key === "Tab" && !mod) task = () => boxInsert(" ".repeat(TAB - (boxLeft % TAB)), "typing");
+    else if (e.key === "Escape") task = endBox;
+    else if (mod && (key === "c" || key === "x")) task = () => boxCopy(key === "x");
+    // Modifiers alone, typed characters (input event), paste (paste event)
+    // and the app's own shortcuts keep the box.
+    else if (["Shift", "Alt", "Control", "Meta"].includes(e.key)) return true;
+    else if (!mod && !e.altKey && e.key.length === 1) return false;
+    else if (mod && !["z", "y", "a"].includes(key)) return false;
+    else {
+      endBox();
+      return false;
+    }
+    enqueue(task);
+    return true;
+  }
+
   // ---- Input ----------------------------------------------------------
 
   let queue: Promise<unknown> = Promise.resolve();
@@ -368,6 +528,18 @@
     // While composing, the IME owns the keys.
     if (e.isComposing || e.keyCode === 229) return;
     const mod = e.ctrlKey || e.metaKey;
+    // Alt+C toggles column mode; `code`, since Option+C types ç on a Mac.
+    if (e.altKey && !mod && e.code === "KeyC") {
+      columnMode = !columnMode;
+      e.preventDefault();
+      return;
+    }
+    if (boxKey(e, mod)) {
+      e.preventDefault();
+      e.stopPropagation();
+      blink++;
+      return;
+    }
     const ext = e.shiftKey;
     let task: (() => unknown) | null = null;
     switch (e.key) {
@@ -439,7 +611,7 @@
     if (!text) return;
     input.value = "";
     blink++;
-    enqueue(() => insert(text, "typing"));
+    enqueue(() => (box ? boxInsert(text, "typing") : insert(text, "typing")));
   }
 
   function oninput(e: Event) {
@@ -449,7 +621,7 @@
   function onpaste(e: ClipboardEvent) {
     e.preventDefault();
     const text = e.clipboardData?.getData("text/plain");
-    if (text) enqueue(() => insert(text, "other"));
+    if (text) enqueue(() => (box ? boxInsert(text, "other") : insert(text, "other")));
   }
 
   // ---- Mouse ------------------------------------------------------------
@@ -483,7 +655,7 @@
     return offsetOf(line, range.toString().length);
   }
 
-  let dragging = false;
+  let dragging: "text" | "box" | null = null;
   let dragPoint = { x: 0, y: 0 };
   let autoScroll: ReturnType<typeof setInterval> | undefined;
 
@@ -492,11 +664,23 @@
     if (e.button !== 0) return;
     e.preventDefault();
     input.focus();
+    blink++;
+    if (e.altKey || columnMode) {
+      const point = boxPoint(e.clientX, e.clientY);
+      if (!point) return;
+      const extend = e.shiftKey;
+      enqueue(() => {
+        if (box && extend) Object.assign(box, { caretLine: point.line, caretCol: point.col });
+        else box = { anchorLine: point.line, anchorCol: point.col, caretLine: point.line, caretCol: point.col };
+      });
+      startDrag("box");
+      return;
+    }
     const offset = offsetAt(e.clientX, e.clientY);
     if (offset === null) return;
     const clicks = e.detail;
     const extend = e.shiftKey;
-    blink++;
+    box = null;
     enqueue(() => {
       if (clicks === 2) selectWord(offset);
       else if (clicks >= 3) selectLine(offset);
@@ -506,11 +690,13 @@
         preferredCol = null;
       }
     });
-    if (clicks <= 1) {
-      dragging = true;
-      window.addEventListener("mousemove", onDragMove);
-      window.addEventListener("mouseup", endDrag, { once: true });
-    }
+    if (clicks <= 1) startDrag("text");
+  }
+
+  function startDrag(kind: "text" | "box") {
+    dragging = kind;
+    window.addEventListener("mousemove", onDragMove);
+    window.addEventListener("mouseup", endDrag, { once: true });
   }
 
   function onDragMove(e: MouseEvent) {
@@ -529,12 +715,17 @@
   }
 
   function dragTo() {
+    if (dragging === "box") {
+      const point = boxPoint(dragPoint.x, dragPoint.y);
+      if (point && box) Object.assign(box, { caretLine: point.line, caretCol: point.col });
+      return;
+    }
     const offset = offsetAt(dragPoint.x, dragPoint.y);
     if (dragging && offset !== null) caret = offset;
   }
 
   function endDrag() {
-    dragging = false;
+    dragging = null;
     clearInterval(autoScroll);
     window.removeEventListener("mousemove", onDragMove);
   }
@@ -576,9 +767,42 @@
     return caret;
   }
 
+  /** Selection as `[anchor, caret]`. */
+  export function selection(): [number, number] {
+    return [anchor, caret];
+  }
+
+  /** Replaces the selection with `text` (Find and Replace). */
+  export function replaceSelection(text: string) {
+    return new Promise<void>((resolve) =>
+      enqueue(async () => {
+        await insert(text, "other");
+        resolve();
+      }),
+    );
+  }
+
+  /** Shows the result of a change made elsewhere (Replace All), keeping the place. */
+  export function applyResult(result: api.EditResult) {
+    return new Promise<void>((resolve) =>
+      enqueue(async () => {
+        onstate?.(result.state);
+        box = null;
+        const first = view?.firstLine;
+        const at = view ? shift(view.top, result.change) : 0;
+        jump(first != null ? { kind: "line", line: first } : { kind: "scroll", anchor: at, delta: 0 });
+        await settled();
+        anchor = caret = view?.lines[0]?.offset ?? 0;
+        preferredCol = null;
+        resolve();
+      }),
+    );
+  }
+
   /** Selects `[from, to)` and scrolls it into view, a third down the page. */
   export function select(from: number, to: number) {
     enqueue(async () => {
+      box = null;
       anchor = from;
       caret = to;
       preferredCol = null;
@@ -609,6 +833,7 @@
     untrack(() => {
       view = null;
       viewError = null;
+      box = null;
       anchor = caret = 0;
       preferredCol = null;
       jump({ kind: "fraction", fraction: 0 });
@@ -637,7 +862,46 @@
     untrack(() => tick().then(placeCaret));
   });
 
+  $effect(() => {
+    void view;
+    void box?.anchorLine;
+    void box?.anchorCol;
+    void box?.caretLine;
+    void box?.caretCol;
+    untrack(() => tick().then(placeBox));
+  });
+
+  /** Highlight rectangles of the box on visible lines (or carets when it has no width). */
+  function placeBox() {
+    if (!box || !view || !lineBox) {
+      boxRects = [];
+      return;
+    }
+    const rects: typeof boxRects = [];
+    view.lines.forEach((line, row) => {
+      if (line.offset < boxTop || line.offset > boxBottom) return;
+      const el = lineBox!.children[row] as HTMLElement;
+      const left = xAtCol(el, line, boxLeft);
+      const right = boxRight > boxLeft ? xAtCol(el, line, boxRight) : left;
+      rects.push({ x: left, y: row * LINE_H, w: Math.max(2, right - left) });
+    });
+    boxRects = rects;
+    // The textarea (IME window) follows the box's caret corner.
+    const row = lineRow(box.caretLine);
+    if (row >= 0) {
+      caretAt = { x: xAtCol(lineBox.children[row] as HTMLElement, view.lines[row], box.caretCol), y: row * LINE_H };
+    }
+  }
+
+  /** Horizontal position of display column `col`, counting columns of space past the end. */
+  function xAtCol(el: HTMLElement, line: Line, col: number) {
+    const width = textWidth(line.text);
+    if (col >= width) return xAt(el, line.text.length) + (col - width) * cellW;
+    return xAt(el, indexAt(line.text, col, "left"));
+  }
+
   function placeCaret() {
+    if (box) return;
     const row = rowOf(caret);
     const el = row >= 0 ? (lineBox?.children[row] as HTMLElement | undefined) : undefined;
     if (!view || !el) {
@@ -672,13 +936,22 @@
     void caret;
     void anchor;
     void view;
+    void box?.anchorLine;
+    void box?.anchorCol;
+    void box?.caretLine;
+    void box?.caretCol;
+    void columnMode;
     untrack(() => {
-      const row = rowOf(caret);
+      // In a box, the position is its caret corner.
+      const row = box ? lineRow(box.caretLine) : rowOf(caret);
       const line = row >= 0 && view ? view.lines[row] : null;
+      const boxRows = box && lineRow(boxTop) >= 0 && lineRow(boxBottom) >= 0 ? lineRow(boxBottom) - lineRow(boxTop) + 1 : null;
       oncaret?.({
         line: line && view?.firstLine != null ? view.firstLine + row : null,
-        col: line ? colOf(line, caret) + 1 : 1,
-        selected: selEnd - selStart,
+        col: box ? box.caretCol + 1 : line ? colOf(line, caret) + 1 : 1,
+        selected: box ? 0 : selEnd - selStart,
+        box: box ? { rows: boxRows, cols: boxRight - boxLeft } : null,
+        columnMode,
       });
     });
   });
@@ -686,6 +959,7 @@
   // ---- Rendering helpers -------------------------------------------------
 
   function marksOf(line: Line): Mark[] {
+    if (box) return [];
     const a = Math.max(selStart, line.offset);
     const b = Math.min(selEnd, line.offset + line.len);
     return a < b ? [[colOf(line, a), colOf(line, b), "sel"]] : [];
@@ -693,7 +967,7 @@
 
   /** The selection runs on past the end of this line. */
   function selectsBreak(line: Line) {
-    return selStart <= line.offset + line.len && selEnd > line.offset + line.len;
+    return !box && selStart <= line.offset + line.len && selEnd > line.offset + line.len;
   }
 
   let wheelPx = 0;
@@ -708,6 +982,11 @@
   }
 
   onMount(() => {
+    const context = document.createElement("canvas").getContext("2d");
+    if (context) {
+      context.font = getComputedStyle(root).font;
+      cellW = context.measureText("0".repeat(100)).width / 100;
+    }
     // Registered by hand: preventDefault needs a non-passive listener.
     root.addEventListener("wheel", onWheel, { passive: false });
     focus();
@@ -757,7 +1036,7 @@
   let caretRow = $derived(rowOf(caret));
 </script>
 
-<div class="editor" class:focused bind:this={root}>
+<div class="editor" class:focused class:column-mode={columnMode} bind:this={root}>
   <div class="gutter" style:width="{gutterCh}ch">
     {#if view}
       {#each view.lines as line, i (line.offset)}
@@ -772,16 +1051,19 @@
     bind:clientHeight={height}
     {onmousedown}
   >
+    {#each boxRects as rect, i (i)}
+      <div class="box" class:bar={boxLeft === boxRight} style:left="{rect.x}px" style:top="{rect.y}px" style:width="{rect.w}px"></div>
+    {/each}
     <div class="lines" bind:this={lineBox}>
       {#if view}
         {#each view.lines as line, i (line.offset)}
-          <div class="line" class:current={i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, lang), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel"> </span>{/if}</div>
+          <div class="line" class:current={!box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, lang), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel"> </span>{/if}</div>
         {/each}
       {/if}
     </div>
     {#if caretAt}
       {#key blink}
-        <div class="caret" class:hidden={!focused || composing} style:left="{caretAt.x}px" style:top="{caretAt.y}px"></div>
+        <div class="caret" class:hidden={!focused || composing || box} style:left="{caretAt.x}px" style:top="{caretAt.y}px"></div>
       {/key}
     {/if}
     <textarea
@@ -859,12 +1141,35 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    white-space: pre;
-    tab-size: 8;
     cursor: text;
   }
   .lines {
     min-width: max-content;
+  }
+  /* On the lines only: template whitespace around them must not render. */
+  .line {
+    white-space: pre;
+    tab-size: 8;
+  }
+  .text {
+    isolation: isolate;
+  }
+  .box {
+    position: absolute;
+    height: 20px;
+    z-index: -1;
+    background: #264f78;
+    pointer-events: none;
+  }
+  .box.bar {
+    z-index: 1;
+    background: #aeafad;
+  }
+  .editor:not(.focused) .box {
+    background: #3a3d41;
+  }
+  .column-mode .text {
+    cursor: crosshair;
   }
   .line.current {
     box-shadow: inset 0 0 0 1px #282828;

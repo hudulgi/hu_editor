@@ -6,7 +6,7 @@
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size } from "./lib/format";
   import { detectLang, LANG_LABEL } from "./lib/syntax";
-  import Editor from "./lib/Editor.svelte";
+  import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
 
@@ -16,13 +16,14 @@
   let docState = $state<api.DocState | null>(null);
   let status = $state<api.IndexStatus | null>(null);
   let rate = $state(0);
-  let caret = $state<{ line: number | null; col: number; selected: number } | null>(null);
+  let caret = $state<CaretInfo | null>(null);
   let lang = $derived(doc ? detectLang(doc.name) : "plain");
 
   let editor = $state<ReturnType<typeof Editor>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
+  let replacing = $state(false);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
   let gotoInput = $state<HTMLInputElement>();
@@ -59,6 +60,7 @@
   let position = $derived.by(() => {
     if (!caret) return "";
     const line = caret.line === null ? "Ln …" : `Ln ${fmt(caret.line + 1)}`;
+    if (caret.box) return `${line} · Box ${caret.box.rows === null ? "…" : fmt(caret.box.rows)} × ${caret.box.cols}`;
     const selected = caret.selected ? ` (${fmt(caret.selected)} selected)` : "";
     return `${line}, Col ${caret.col}${selected}`;
   });
@@ -194,7 +196,9 @@
     if (mod && key === "o") chooseFile();
     else if (mod && key === "s") save();
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
-    else if (mod && key === "f" && doc) {
+    else if (mod && (key === "f" || key === "h") && doc) {
+      if (key === "h") replacing = true;
+      else if (!findOpen) replacing = false;
       if (findOpen) findBar?.focus();
       else findOpen = true;
     } else if (mod && key === "g" && doc) openGoto();
@@ -311,6 +315,7 @@
         {#if findOpen && editor}
           <FindBar
             bind:this={findBar}
+            bind:replacing
             {doc}
             len={docState?.len ?? 0}
             viewer={editor}
@@ -355,6 +360,9 @@
         <span>Modified</span>
       {/if}
       <span class="spacer"></span>
+      {#if caret?.columnMode}
+        <span class="mode" title="Column mode (Alt+C): Shift+arrows and dragging select boxes">COL</span>
+      {/if}
       <span>{indexText}</span>
       <span>{doc.encoding === "cp949" ? "CP949" : "UTF-8"}</span>
       <span>{doc.eol === "crlf" ? "CRLF" : "LF"}</span>
@@ -518,6 +526,12 @@
   }
   .spacer {
     flex: 1;
+  }
+  .mode {
+    padding: 0 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.25);
+    font-weight: 600;
   }
   .backdrop {
     position: fixed;

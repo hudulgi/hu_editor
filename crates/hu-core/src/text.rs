@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::decode::decode_line;
+use crate::decode::{column_range, decode_line};
 use crate::original::Original;
 use crate::pieces::{Added, Pieces, Source};
 use crate::search::{self, FindOptions, FindResult, Reader};
@@ -24,6 +24,28 @@ const MAX_LINE_SCAN: u64 = 1 << 20;
 /// At most this many bytes of a line are sent to the view.
 const MAX_LINE_DISPLAY: u64 = 16 * 1024;
 const COPY_CHUNK: usize = 8 << 20;
+/// A box (column) selection spans at most this many lines.
+pub const MAX_BOX_LINES: usize = 1_000_000;
+
+/// Which lines a box selection covers, from its top line.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BoxRows {
+    /// Down to the line starting at `bottom`.
+    Until { bottom: u64 },
+    /// This many lines, or as many as there are.
+    Count { count: usize },
+}
+
+/// One line of a box selection: the bytes it covers, and the spaces missing
+/// up to its left edge when the line is shorter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoxLine {
+    pub line: u64,
+    pub start: u64,
+    pub end: u64,
+    pub pad: u32,
+}
 
 /// Where the viewport should go.
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -299,6 +321,46 @@ impl Text {
             None if limit < len => (limit, Some(limit)),
             None => (len, None),
         })
+    }
+
+    /// The lines of a box selection from the line containing `top`, between
+    /// display columns `left` and `right`.
+    pub fn box_lines(
+        &self,
+        top: u64,
+        rows: BoxRows,
+        left: u32,
+        right: u32,
+    ) -> io::Result<Vec<BoxLine>> {
+        let mut out = Vec::new();
+        let mut line = self.line_start(top)?;
+        loop {
+            let (content_end, next) = self.line_bounds(line)?;
+            let mut bytes = self.read_range(line, content_end)?;
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            let (start, end, pad) = column_range(&bytes, left, right);
+            out.push(BoxLine {
+                line,
+                start: line + start as u64,
+                end: line + end as u64,
+                pad,
+            });
+            let done = match rows {
+                BoxRows::Until { bottom } => line >= bottom,
+                BoxRows::Count { count } => out.len() >= count,
+            };
+            match next {
+                Some(next) if !done => line = next,
+                _ => return Ok(out),
+            }
+            if out.len() >= MAX_BOX_LINES {
+                return Err(io::Error::other(format!(
+                    "a box selection is limited to {MAX_BOX_LINES} lines"
+                )));
+            }
+        }
     }
 
     pub fn read_range(&self, start: u64, end: u64) -> io::Result<Vec<u8>> {

@@ -37,6 +37,9 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 | Ctrl+C / Ctrl+X / Ctrl+V | 복사 / 잘라내기 / 붙여넣기 (선택 없으면 현재 줄) |
 | Ctrl+A, Shift+방향키, 더블·트리플 클릭 | 선택 |
 | Tab | 다음 8칸 경계까지 공백 (Nastran small field) |
+| Alt+드래그, Alt+Shift+방향키 | 박스(컬럼) 선택. 입력·Backspace·Delete·Tab·복사·붙여넣기가 모든 줄에 적용 (짧은 줄은 공백으로 채움, 여러 줄 붙여넣기는 위에서부터 한 줄씩) |
+| Alt+C | 컬럼 모드 켜기 / 끄기 (켜면 Shift+방향키와 드래그가 박스 선택, 상태바에 COL) |
 | Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전 |
+| Ctrl+H, Enter, Ctrl+Alt+Enter | 바꾸기, 바꾸고 다음 찾기, 모두 바꾸기 (한 번에 실행 취소, 최대 200만 건) |
 | Ctrl+G | 줄 번호로 이동 |
 | Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |

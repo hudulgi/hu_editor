@@ -86,6 +86,71 @@ fn find_in_chunks(
     }
 }
 
+/// Offsets of all non-overlapping matches, left to right; `None` if
+/// cancelled. More than `limit` matches is an error, so a careless replace
+/// cannot run away with memory.
+pub fn find_all(
+    source: &dyn Reader,
+    needle: &[u8],
+    case_sensitive: bool,
+    limit: usize,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<Option<Vec<u64>>> {
+    find_all_in_chunks(
+        source,
+        needle,
+        case_sensitive,
+        limit,
+        cancel,
+        progress,
+        CHUNK,
+    )
+}
+
+fn find_all_in_chunks(
+    source: &dyn Reader,
+    needle: &[u8],
+    case_sensitive: bool,
+    limit: usize,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+    chunk: usize,
+) -> io::Result<Option<Vec<u64>>> {
+    let len = source.len();
+    let n = needle.len() as u64;
+    let mut found = Vec::new();
+    if n == 0 {
+        return Ok(Some(found));
+    }
+    let mut search = Search::new(source, needle, case_sensitive, chunk, cancel, progress);
+    let mut pos = 0;
+    // Chunks overlap, so a match can be seen twice; and matches must not overlap.
+    let mut free_from = 0;
+    while pos + n <= len {
+        if search.cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let read = search.read(pos, len)?;
+        for i in search.forward.find_iter(&search.buf[..read]) {
+            let at = pos + i as u64;
+            if at >= free_from {
+                if found.len() == limit {
+                    return Err(io::Error::other(format!("more than {limit} matches")));
+                }
+                found.push(at);
+                free_from = at + n;
+            }
+        }
+        search.report(read);
+        if pos + read as u64 >= len {
+            break;
+        }
+        pos += read as u64 - (n - 1);
+    }
+    Ok(Some(found))
+}
+
 struct Search<'a> {
     source: &'a dyn Reader,
     forward: Finder<'static>,
@@ -252,6 +317,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn find_all_matches_naive_scan_across_chunks() {
+        let hay: &[u8] = b"aaaa*Nset*NSET aaa nset*nset";
+        let cancel = AtomicBool::new(false);
+        let all = |needle: &[u8], case_sensitive, chunk| {
+            find_all_in_chunks(
+                &hay,
+                needle,
+                case_sensitive,
+                100,
+                &cancel,
+                &mut |_| {},
+                chunk,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        for chunk in [4, 8, 1000] {
+            assert_eq!(
+                all(b"aa", true, chunk),
+                [0, 2, 15],
+                "non-overlapping, chunk {chunk}"
+            );
+            assert_eq!(all(b"*nset", false, chunk), [4, 9, 23]);
+            assert_eq!(all(b"*nset", true, chunk), [23]);
+        }
+        let too_many = find_all_in_chunks(&hay, b"a", true, 3, &cancel, &mut |_| {}, 8);
+        assert!(too_many.is_err());
     }
 
     #[test]

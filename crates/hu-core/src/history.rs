@@ -84,8 +84,12 @@ impl History {
             && now.duration_since(top.at) < GROUP_WINDOW
         {
             let grouped = match kind {
-                EditKind::Typing if old_len == 0 && offset == top.offset + top.len => {
-                    top.len += new_len;
+                // Inside the text the group typed so far (right after it, or
+                // across its lines in column mode).
+                EditKind::Typing
+                    if offset >= top.offset && offset + old_len <= top.offset + top.len =>
+                {
+                    top.len = top.len + new_len - old_len;
                     true
                 }
                 EditKind::Backspace

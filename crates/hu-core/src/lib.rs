@@ -20,8 +20,8 @@ pub mod source;
 pub mod text;
 
 pub use decode::Encoding;
-pub use document::{Change, DocState, Document, EditResult, Eol, MAX_COPY};
+pub use document::{Change, DocState, Document, EditResult, Eol, MAX_COPY, MAX_REPLACE};
 pub use history::EditKind;
 pub use line_index::IndexStatus;
 pub use search::{FindOptions, FindResult};
-pub use text::{Text, View, ViewError, ViewLine, ViewTarget};
+pub use text::{BoxLine, BoxRows, Text, View, ViewError, ViewLine, ViewTarget};

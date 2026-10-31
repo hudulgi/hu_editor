@@ -89,6 +89,19 @@ export interface EditResult {
 /** Consecutive typing, backspacing or deleting undoes as one step. */
 export type EditKind = "typing" | "backspace" | "delete" | "other";
 
+/** Lines of a box selection, from its top line. */
+export type BoxRows = { kind: "until"; bottom: number } | { kind: "count"; count: number };
+
+export interface BoxEdit {
+  result: EditResult;
+  /** Where the box's last line starts after the edit. */
+  lastLine: number;
+}
+
+export type ReplaceOutcome =
+  | { kind: "replaced"; count: number; result: EditResult | null }
+  | { kind: "cancelled" };
+
 export type FindOutcome =
   | { kind: "found"; offset: number; len: number }
   | { kind: "notFound" }
@@ -123,6 +136,44 @@ export const undo = (id: number) => invoke<EditResult | null>("undo", { id });
 export const redo = (id: number) => invoke<EditResult | null>("redo", { id });
 /** Puts `[start, end)` on the clipboard. */
 export const copy = (id: number, start: number, end: number) => invoke<void>("copy", { id, start, end });
+
+/** Replaces display columns `[left, right)` of the box's lines with `texts` (one for all, or one per line). */
+export const editBox = (
+  id: number,
+  top: number,
+  rows: BoxRows,
+  left: number,
+  right: number,
+  texts: string[],
+  kind: EditKind,
+  anchor: number,
+  caret: number,
+) => invoke<BoxEdit | null>("edit_box", { id, top, rows, left, right, texts, kind, anchor, caret });
+
+export const copyBox = (id: number, top: number, bottom: number, left: number, right: number) =>
+  invoke<void>("copy_box", { id, top, bottom, left, right });
+
+export function replaceAll(
+  id: number,
+  needle: string,
+  replacement: string,
+  caseSensitive: boolean,
+  anchor: number,
+  caret: number,
+  onProgress: (searched: number) => void,
+) {
+  const channel = new Channel<number>();
+  channel.onmessage = onProgress;
+  return invoke<ReplaceOutcome>("replace_all", {
+    id,
+    needle,
+    replacement,
+    caseSensitive,
+    anchor,
+    caret,
+    onProgress: channel,
+  });
+}
 
 export function save(id: number, onProgress: (written: number) => void) {
   const channel = new Channel<number>();

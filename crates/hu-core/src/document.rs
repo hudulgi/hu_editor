@@ -19,11 +19,14 @@ use crate::history::{EditKind, History};
 use crate::line_index::{self, IndexStatus, LineIndex};
 use crate::original::Original;
 use crate::pieces::{Added, Piece, Pieces, Source, total_len};
+use crate::search;
 use crate::source::FileSource;
-use crate::text::{Text, View, ViewError, ViewTarget};
+use crate::text::{BoxRows, Text, View, ViewError, ViewTarget};
 
 /// Larger selections are not copied to the clipboard.
 pub const MAX_COPY: u64 = 256 << 20;
+/// Replace All stops at this many matches.
+pub const MAX_REPLACE: usize = 2_000_000;
 const SNIFF_LEN: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -75,6 +78,8 @@ pub struct EditResult {
 struct State {
     pieces: Pieces,
     history: History,
+    /// Bumped by every change to the text.
+    version: u64,
 }
 
 impl State {
@@ -130,6 +135,7 @@ impl Document {
             state: RwLock::new(State {
                 pieces: Pieces::new(whole),
                 history: History::default(),
+                version: 0,
             }),
             encoding: Encoding::detect(&sample),
             eol: Eol::detect(&sample),
@@ -163,11 +169,11 @@ impl Document {
 
     /// A snapshot of the current text.
     pub fn text(&self) -> Text {
-        self.text_and_id().0
+        self.snapshot().0
     }
 
-    /// The text with the id of its state in the history.
-    fn text_and_id(&self) -> (Text, u64) {
+    /// The text, the id of its state in the history, and its version.
+    fn snapshot(&self) -> (Text, u64, u64) {
         // Fill in line counts the background index has made available.
         if self.state.read().unwrap().pieces.has_unknown_newlines() {
             self.state
@@ -182,7 +188,7 @@ impl Document {
             original: self.original.clone(),
             added: self.added.clone(),
         };
-        (text, state.history.current())
+        (text, state.history.current(), state.version)
     }
 
     pub fn view(&self, target: ViewTarget, rows: usize) -> Result<View, ViewError> {
@@ -223,19 +229,12 @@ impl Document {
         let start = start.min(len);
         let end = end.clamp(start, len);
         let replaced = state.pieces.splice(start, end, &[], &count);
-        if !bytes.is_empty() {
-            let at = self.added.append(&bytes);
-            let newlines = Some(memchr::memchr_iter(b'\n', &bytes).count() as u64);
-            let piece = Piece {
-                source: Source::Added,
-                start: at,
-                len: bytes.len() as u64,
-                newlines,
-            };
+        if let Some(piece) = self.added_piece(&bytes) {
             state.pieces.insert_added(start, piece, &count);
         }
         let new_len = bytes.len() as u64;
         state.history.record(start, new_len, replaced, kind, before);
+        state.version += 1;
         let caret = start + new_len;
         EditResult {
             change: Change {
@@ -258,6 +257,7 @@ impl Document {
         let restored = total_len(&change.replaced);
         let removed = state.pieces.splice(start, end, &change.replaced, &count);
         state.history.push_redo(&change, restored, removed);
+        state.version += 1;
         Some(EditResult {
             change: Change {
                 start,
@@ -278,6 +278,7 @@ impl Document {
         let new_len = total_len(&change.replaced);
         let removed = state.pieces.splice(start, end, &change.replaced, &count);
         state.history.push_undo(&change, new_len, removed);
+        state.version += 1;
         let caret = start + new_len;
         Some(EditResult {
             change: Change {
@@ -288,6 +289,177 @@ impl Document {
             anchor: caret,
             caret,
             state: state.doc_state(),
+        })
+    }
+
+    /// Replaces the columns `[left, right)` of a box selection's lines with
+    /// `texts`: one text for every line, or one per line (lines without one
+    /// stay as they are). A line too short to reach `left` is padded with
+    /// spaces before text goes in. One undo step. Also returns where the
+    /// box's last line starts afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_box(
+        &self,
+        top: u64,
+        rows: BoxRows,
+        left: u32,
+        right: u32,
+        texts: &[String],
+        kind: EditKind,
+        before: (u64, u64),
+    ) -> io::Result<Option<(EditResult, u64)>> {
+        let texts: Vec<Vec<u8>> = texts.iter().map(|t| self.encode(t)).collect();
+        for _ in 0..3 {
+            let (text, _, version) = self.snapshot();
+            let mut edits = Vec::new();
+            let mut shift = 0i64;
+            let mut last = top;
+            for (i, line) in text
+                .box_lines(top, rows, left, right)?
+                .into_iter()
+                .enumerate()
+            {
+                last = line.line.saturating_add_signed(shift);
+                let Some(insert) = (if texts.len() == 1 {
+                    texts.first()
+                } else {
+                    texts.get(i)
+                }) else {
+                    continue;
+                };
+                let mut bytes = Vec::new();
+                if !insert.is_empty() {
+                    bytes.resize(line.pad as usize, b' ');
+                    bytes.extend_from_slice(insert);
+                }
+                if line.start == line.end && bytes.is_empty() {
+                    continue;
+                }
+                shift += bytes.len() as i64 - (line.end - line.start) as i64;
+                edits.push((line.start, line.end, self.added_piece(&bytes)));
+            }
+            let mut state = self.state.write().unwrap();
+            if state.version == version {
+                return Ok(self
+                    .apply(&mut state, &edits, kind, before)
+                    .map(|r| (r, last)));
+            }
+        }
+        Err(io::Error::other("the document kept changing; try again"))
+    }
+
+    /// A box selection's lines joined with the file's line break, for the
+    /// clipboard.
+    pub fn box_text(&self, top: u64, bottom: u64, left: u32, right: u32) -> io::Result<String> {
+        let text = self.text();
+        let lines = text.box_lines(top, BoxRows::Until { bottom }, left, right)?;
+        let size: u64 = lines.iter().map(|l| l.end - l.start).sum();
+        if size > MAX_COPY {
+            return Err(io::Error::other(format!(
+                "selection is too large to copy ({} MB; the limit is {} MB)",
+                size >> 20,
+                MAX_COPY >> 20
+            )));
+        }
+        let parts = lines
+            .iter()
+            .map(|l| {
+                Ok(self
+                    .encoding
+                    .decode(&text.read_range(l.start, l.end)?)
+                    .into_owned())
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(parts.join(match self.eol {
+            Eol::Lf => "\n",
+            Eol::Crlf => "\r\n",
+        }))
+    }
+
+    /// Replaces every match of `needle` with `replacement` as one undo step.
+    /// Returns how many were replaced, or `None` if cancelled. All
+    /// replacements point at one copy of the text, so even a million of
+    /// them cost only their pieces.
+    pub fn replace_all(
+        &self,
+        needle: &str,
+        replacement: &str,
+        case_sensitive: bool,
+        before: (u64, u64),
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<Option<(usize, Option<EditResult>)>> {
+        let needle = self.encoding.encode(needle).into_owned();
+        let piece = self.added_piece(&self.encode(replacement));
+        for _ in 0..3 {
+            let (text, _, version) = self.snapshot();
+            let Some(found) = search::find_all(
+                &text,
+                &needle,
+                case_sensitive,
+                MAX_REPLACE,
+                cancel,
+                progress,
+            )?
+            else {
+                return Ok(None);
+            };
+            let n = needle.len() as u64;
+            let edits: Vec<_> = found.iter().map(|&at| (at, at + n, piece)).collect();
+            let mut state = self.state.write().unwrap();
+            if state.version == version {
+                let result = self.apply(&mut state, &edits, EditKind::Other, before);
+                return Ok(Some((found.len(), result)));
+            }
+        }
+        Err(io::Error::other(
+            "the document kept changing during the replace; try again",
+        ))
+    }
+
+    /// Applies sorted, non-overlapping edits `(start, end, new text)` in one
+    /// pass, as one change. `None` without edits.
+    fn apply(
+        &self,
+        state: &mut State,
+        edits: &[(u64, u64, Option<Piece>)],
+        kind: EditKind,
+        before: (u64, u64),
+    ) -> Option<EditResult> {
+        let (start, end) = (edits.first()?.0, edits.last()?.1);
+        let count = |p: &Piece| self.newlines(p);
+        let replaced = state.pieces.range(start, end, &count);
+        let mut pieces = Vec::with_capacity(edits.len() * 2);
+        let mut pos = start;
+        for &(from, to, piece) in edits {
+            pieces.extend(state.pieces.range(pos, from, &count));
+            pieces.extend(piece);
+            pos = to;
+        }
+        let new_len = total_len(&pieces);
+        state.pieces.splice(start, end, &pieces, &count);
+        state.history.record(start, new_len, replaced, kind, before);
+        state.version += 1;
+        let caret = start + new_len;
+        Some(EditResult {
+            change: Change {
+                start,
+                old_len: end - start,
+                new_len,
+            },
+            anchor: caret,
+            caret,
+            state: state.doc_state(),
+        })
+    }
+
+    /// Appends `bytes` to the added text, as a piece.
+    fn added_piece(&self, bytes: &[u8]) -> Option<Piece> {
+        (!bytes.is_empty()).then(|| Piece {
+            source: Source::Added,
+            start: self.added.append(bytes),
+            len: bytes.len() as u64,
+            newlines: Some(memchr::memchr_iter(b'\n', bytes).count() as u64),
         })
     }
 
@@ -310,7 +482,7 @@ impl Document {
     /// leaves the original intact. Editing can go on meanwhile; the document
     /// stays dirty if it changed. Returns `false` if cancelled.
     pub fn save(&self, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> io::Result<bool> {
-        let (text, id) = self.text_and_id();
+        let (text, id, _) = self.snapshot();
         let path = self.path().to_path_buf();
         let temp = temp_path(&path);
         let written = (|| {

@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use super::*;
 use crate::search::{FindOptions, FindResult};
 use crate::source::BLOCK_SIZE;
+use crate::text::BoxRows;
 
 fn open(content: &[u8]) -> (tempfile::NamedTempFile, Document) {
     let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -460,4 +461,184 @@ fn very_long_lines_are_broken() {
     assert!(view.lines[0].truncated);
     assert_eq!(view.lines[0].text.len(), 16 * 1024);
     assert_eq!(view.lines[2].text.len(), 10);
+}
+
+fn all_text(doc: &Document) -> String {
+    String::from_utf8(doc.text().read_range(0, doc.len()).unwrap()).unwrap()
+}
+
+const FIELDS: &str = "GRID    1       0.      0.\nGRID    2       1.      0.\nGRID    3\nGRID    4       3.      0.\n";
+
+#[test]
+fn box_copy_and_replace_one_column() {
+    let (_file, doc) = open(FIELDS.as_bytes());
+    let bottom = doc.text().line_offset(3).unwrap().unwrap();
+    assert_eq!(
+        doc.box_text(0, bottom, 16, 24).unwrap(),
+        "0.      \n1.      \n\n3.      "
+    );
+
+    let (result, last) = doc
+        .edit_box(
+            0,
+            BoxRows::Until { bottom },
+            16,
+            24,
+            &["9.".into()],
+            EditKind::Other,
+            (0, 0),
+        )
+        .unwrap()
+        .unwrap();
+    let after =
+        "GRID    1       9.0.\nGRID    2       9.0.\nGRID    3       9.\nGRID    4       9.0.\n";
+    assert_eq!(
+        all_text(&doc),
+        after,
+        "the short line is padded to the column"
+    );
+    assert_eq!(last, doc.text().line_offset(3).unwrap().unwrap());
+    assert_eq!(result.change.start, 16);
+    assert_matches(&doc, after.as_bytes());
+
+    doc.undo().unwrap();
+    assert_eq!(all_text(&doc), FIELDS, "one undo step");
+}
+
+#[test]
+fn column_typing_undoes_as_one_step() {
+    let (_file, doc) = open(b"x\ny\nz\n");
+    let rows = |n| BoxRows::Count { count: n };
+    doc.edit_box(0, rows(3), 0, 0, &["a".into()], EditKind::Typing, (0, 0))
+        .unwrap();
+    doc.edit_box(0, rows(3), 1, 1, &["b".into()], EditKind::Typing, (1, 1))
+        .unwrap();
+    assert_eq!(all_text(&doc), "abx\naby\nabz\n");
+    doc.undo().unwrap();
+    assert_eq!(all_text(&doc), "x\ny\nz\n");
+    assert!(!doc.state().can_undo);
+}
+
+#[test]
+fn box_follows_display_columns() {
+    let (_file, doc) = open("** 한글 a\n** abcd b\n".as_bytes());
+    let bottom = doc.text().line_offset(1).unwrap().unwrap();
+    // Columns 3..5 are 한 on the first line and "ab" on the second.
+    doc.edit_box(
+        0,
+        BoxRows::Until { bottom },
+        3,
+        5,
+        &[String::new()],
+        EditKind::Delete,
+        (0, 0),
+    )
+    .unwrap();
+    assert_eq!(all_text(&doc), "** 글 a\n** cd b\n");
+}
+
+#[test]
+fn box_paste_spreads_lines() {
+    let (_file, doc) = open(b"1\n2\n3\n");
+    let (_, last) = doc
+        .edit_box(
+            0,
+            BoxRows::Count { count: 2 },
+            1,
+            1,
+            &[",A".into(), ",B".into()],
+            EditKind::Other,
+            (0, 0),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(all_text(&doc), "1,A\n2,B\n3\n");
+    assert_eq!(last, 4);
+}
+
+fn naive_replace(
+    model: &[u8],
+    needle: &[u8],
+    with: &[u8],
+    case_sensitive: bool,
+) -> (Vec<u8>, usize) {
+    let (mut out, mut count, mut i) = (Vec::new(), 0, 0);
+    while i < model.len() {
+        let hit = model.len() - i >= needle.len() && {
+            let window = &model[i..i + needle.len()];
+            if case_sensitive {
+                window == needle
+            } else {
+                window.eq_ignore_ascii_case(needle)
+            }
+        };
+        if hit {
+            out.extend_from_slice(with);
+            i += needle.len();
+            count += 1;
+        } else {
+            out.push(model[i]);
+            i += 1;
+        }
+    }
+    (out, count)
+}
+
+#[test]
+fn replace_all_matches_a_naive_replace() {
+    let mut model = sample(3000);
+    let (_file, doc) = open(&model);
+    // Edit first, so the replace runs over pieces.
+    let mut rng = Rng(11);
+    for _ in 0..30 {
+        let start = rng.below(model.len() as u64);
+        doc.edit(start, start, "*element x", EditKind::Other, (start, start));
+        model.splice(
+            start as usize..start as usize,
+            b"*element x".iter().copied(),
+        );
+    }
+    let cancel = AtomicBool::new(false);
+    for (needle, with, case_sensitive) in [
+        ("*Element", "*ELEM", true),
+        ("*element", "", false),
+        ("0000", "0\n0", true),
+    ] {
+        let (expected, count) = naive_replace(
+            &model,
+            needle.as_bytes(),
+            &stored(&doc, with),
+            case_sensitive,
+        );
+        let (replaced, _) = doc
+            .replace_all(needle, with, case_sensitive, (0, 0), &cancel, &mut |_| {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(replaced, count, "{needle:?}");
+        assert!(count > 0);
+        assert_matches(&doc, &expected);
+        model = expected;
+    }
+    // Each Replace All is one undo step.
+    for _ in 0..3 {
+        doc.undo().unwrap();
+    }
+    assert!(doc.state().can_undo, "the earlier edits remain");
+}
+
+#[test]
+fn replace_all_without_matches_changes_nothing() {
+    let (_file, doc) = open(b"*Heading\n");
+    let result = doc
+        .replace_all(
+            "missing",
+            "x",
+            true,
+            (0, 0),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(matches!(result, Some((0, None))));
+    assert!(!doc.state().dirty);
 }

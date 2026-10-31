@@ -132,6 +132,29 @@ impl Pieces {
         }
     }
 
+    /// Copies of the pieces covering `[start, end)`, clipped to it, without
+    /// changing the table.
+    pub fn range(&self, start: u64, end: u64, count: Counter) -> Vec<Piece> {
+        let mut out = Vec::new();
+        let mut i = self.index_of(start);
+        while start < end && i < self.pieces.len() && self.starts[i] < end {
+            let (piece, base) = (self.pieces[i], self.starts[i]);
+            let lo = start.max(base) - base;
+            let hi = end.min(base + piece.len) - base;
+            let mut part = Piece {
+                start: piece.start + lo,
+                len: hi - lo,
+                ..piece
+            };
+            if part.len != piece.len {
+                part.newlines = count(&part);
+            }
+            out.push(part);
+            i += 1;
+        }
+        out
+    }
+
     pub fn has_unknown_newlines(&self) -> bool {
         self.pieces.iter().any(|p| p.newlines.is_none())
     }
