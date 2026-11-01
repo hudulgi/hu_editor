@@ -12,17 +12,18 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::decode::Encoding;
+use crate::decode::{Decoding, Encoding};
 use crate::dialect::{self, Dialect};
 use crate::history::{EditKind, History};
 use crate::line_index::{self, IndexStatus, LineIndex};
 use crate::original::Original;
 use crate::pieces::{Added, Piece, Pieces, Source, total_len};
+use crate::problem::Problem;
 use crate::search;
 use crate::source::FileSource;
-use crate::text::{BoxRows, Text, View, ViewError, ViewTarget};
+use crate::text::{BoxRows, Text, View, ViewTarget};
 
 /// Larger selections are not copied to the clipboard.
 pub const MAX_COPY: u64 = 256 << 20;
@@ -30,7 +31,7 @@ pub const MAX_COPY: u64 = 256 << 20;
 pub const MAX_REPLACE: usize = 2_000_000;
 const SNIFF_LEN: usize = 1 << 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Eol {
     Lf,
@@ -42,9 +43,13 @@ impl Eol {
         match memchr::memchr(b'\n', sample) {
             Some(i) if i > 0 && sample[i - 1] == b'\r' => Eol::Crlf,
             Some(_) => Eol::Lf,
-            None if cfg!(windows) => Eol::Crlf,
-            None => Eol::Lf,
+            None => Eol::platform(),
         }
+    }
+
+    /// The platform's line break.
+    pub fn platform() -> Self {
+        if cfg!(windows) { Eol::Crlf } else { Eol::Lf }
     }
 }
 
@@ -100,6 +105,18 @@ struct Reading {
     encoding: Encoding,
     /// The user chose it, rather than it being detected.
     chosen: bool,
+    /// For lines that are not UTF-8 while not chosen.
+    fallback: Encoding,
+}
+
+impl Reading {
+    fn decoding(self) -> Decoding {
+        if self.chosen {
+            Decoding::Chosen(self.encoding)
+        } else {
+            Decoding::Auto(self.fallback)
+        }
+    }
 }
 
 /// Size and modification time of the file as last opened or saved here.
@@ -122,26 +139,38 @@ impl Document {
     /// Opens `path` without reading it; the line index is built on a
     /// background thread.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        Self::open_as(path, None)
+        Self::open_as(path, None, Encoding::Cp949)
     }
 
-    /// Opens `path` to read in `chosen`, or in the encoding detected.
-    pub fn open_as(path: impl AsRef<Path>, chosen: Option<Encoding>) -> io::Result<Self> {
+    /// Opens `path` to read in `chosen`; without one, in the encoding
+    /// detected, with `fallback` for what is not UTF-8.
+    pub fn open_as(
+        path: impl AsRef<Path>,
+        chosen: Option<Encoding>,
+        fallback: Encoding,
+    ) -> io::Result<Self> {
         let path = path.as_ref();
-        Self::from_source(FileSource::open(path)?, Some(path.to_path_buf()), chosen)
+        Self::from_source(
+            FileSource::open(path)?,
+            Some(path.to_path_buf()),
+            chosen,
+            fallback,
+        )
     }
 
-    /// A new, empty document with no file yet: UTF-8, with the platform's
-    /// line breaks.
-    pub fn untitled() -> Self {
-        Self::from_source(FileSource::empty(), None, None)
-            .expect("an empty source has nothing to read")
+    /// A new, empty document with no file yet.
+    pub fn untitled(encoding: Encoding, eol: Eol) -> Self {
+        let mut doc = Self::from_source(FileSource::empty(), None, Some(encoding), Encoding::Cp949)
+            .expect("an empty source has nothing to read");
+        doc.eol = eol;
+        doc
     }
 
     fn from_source(
         source: FileSource,
         path: Option<PathBuf>,
         chosen: Option<Encoding>,
+        fallback: Encoding,
     ) -> io::Result<Self> {
         let source = Arc::new(source);
         let index = Arc::new(RwLock::new(LineIndex::default()));
@@ -171,8 +200,9 @@ impl Document {
                 version: 0,
             }),
             reading: RwLock::new(Reading {
-                encoding: chosen.unwrap_or_else(|| Encoding::detect(&sample)),
+                encoding: chosen.unwrap_or_else(|| Encoding::detect(&sample, fallback)),
                 chosen: chosen.is_some(),
+                fallback,
             }),
             eol: Eol::detect(&sample),
             path: RwLock::new(path),
@@ -197,26 +227,30 @@ impl Document {
         self.reading.read().unwrap().encoding
     }
 
-    /// Reads the same bytes in `chosen`, or back in the encoding detected.
-    /// The file does not change. Refused with unsaved changes when the
-    /// encoding would change: they are in the current one, and saving would
-    /// mix the two.
-    pub fn set_encoding(&self, chosen: Option<Encoding>) -> io::Result<Encoding> {
+    /// Reads the same bytes in `chosen`, or back in the encoding detected,
+    /// with `fallback` for what is not UTF-8. The file does not change.
+    /// Refused with unsaved changes when the encoding would change: they are
+    /// in the current one, and saving would mix the two.
+    pub fn set_encoding(
+        &self,
+        chosen: Option<Encoding>,
+        fallback: Encoding,
+    ) -> io::Result<Encoding> {
         let encoding = match chosen {
             Some(encoding) => encoding,
             None => {
                 let text = self.text();
-                Encoding::detect(&text.read_range(0, text.len().min(SNIFF_LEN as u64))?)
+                let sample = text.read_range(0, text.len().min(SNIFF_LEN as u64))?;
+                Encoding::detect(&sample, fallback)
             }
         };
         if encoding != self.encoding() && self.state().dirty {
-            return Err(io::Error::other(
-                "save or undo your changes before reading the file in another encoding",
-            ));
+            return Err(Problem::UnsavedChanges.into());
         }
         *self.reading.write().unwrap() = Reading {
             encoding,
             chosen: chosen.is_some(),
+            fallback,
         };
         Ok(encoding)
     }
@@ -244,18 +278,18 @@ impl Document {
                 .pieces
                 .settle(&|p| self.newlines(p));
         }
-        let reading = *self.reading.read().unwrap();
+        let decoding = self.reading.read().unwrap().decoding();
         let state = self.state.read().unwrap();
         let text = Text {
             pieces: state.pieces.clone(),
             original: self.original.clone(),
             added: self.added.clone(),
-            chosen: reading.chosen.then_some(reading.encoding),
+            decoding,
         };
         (text, state.history.current(), state.version)
     }
 
-    pub fn view(&self, target: ViewTarget, rows: usize) -> Result<View, ViewError> {
+    pub fn view(&self, target: ViewTarget, rows: usize) -> io::Result<View> {
         self.text().view(target, rows)
     }
 
@@ -409,7 +443,7 @@ impl Document {
                     .map(|r| (r, last)));
             }
         }
-        Err(io::Error::other("the document kept changing; try again"))
+        Err(Problem::KeptChanging.into())
     }
 
     /// A box selection's lines joined with the file's line break, for the
@@ -419,11 +453,11 @@ impl Document {
         let lines = text.box_lines(top, BoxRows::Until { bottom }, left, right)?;
         let size: u64 = lines.iter().map(|l| l.end - l.start).sum();
         if size > MAX_COPY {
-            return Err(io::Error::other(format!(
-                "selection is too large to copy ({} MB; the limit is {} MB)",
-                size >> 20,
-                MAX_COPY >> 20
-            )));
+            return Err(Problem::TooLargeToCopy {
+                size_mb: size >> 20,
+                limit_mb: MAX_COPY >> 20,
+            }
+            .into());
         }
         let parts = lines
             .iter()
@@ -476,9 +510,7 @@ impl Document {
                 return Ok(Some((found.len(), result)));
             }
         }
-        Err(io::Error::other(
-            "the document kept changing during the replace; try again",
-        ))
+        Err(Problem::KeptChanging.into())
     }
 
     /// Applies sorted, non-overlapping edits `(start, end, new text)` in one
@@ -538,11 +570,11 @@ impl Document {
     pub fn copy_text(&self, start: u64, end: u64) -> io::Result<String> {
         let len = end.saturating_sub(start);
         if len > MAX_COPY {
-            return Err(io::Error::other(format!(
-                "selection is too large to copy ({} MB; the limit is {} MB)",
-                len >> 20,
-                MAX_COPY >> 20
-            )));
+            return Err(Problem::TooLargeToCopy {
+                size_mb: len >> 20,
+                limit_mb: MAX_COPY >> 20,
+            }
+            .into());
         }
         let bytes = self.text().read_range(start, end)?;
         Ok(self.encoding().decode(&bytes).into_owned())
@@ -551,9 +583,7 @@ impl Document {
     /// Saves to the file it was opened from or last saved as. A new
     /// document has none: use [`save_as`](Self::save_as).
     pub fn save(&self, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> io::Result<bool> {
-        let path = self
-            .path()
-            .ok_or_else(|| io::Error::other("a new document needs a file name: use Save As"))?;
+        let path = self.path().ok_or(Problem::NeedsFileName)?;
         self.save_as(&path, cancel, progress)
     }
 

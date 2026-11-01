@@ -24,6 +24,8 @@
   import { onMount, tick, untrack } from "svelte";
   import * as api from "./api";
   import { displayCol, indexAt, TAB, textWidth } from "./columns";
+  import { describeError, t } from "./i18n";
+  import { fontStack, lineHeight, settings } from "./settings.svelte";
   import { applyMarks, tokenize, type Lang, type Mark } from "./syntax";
 
   interface Props {
@@ -41,7 +43,6 @@
 
   let { doc, lang, indexed, lines, onview, oncaret, onstate, onerror }: Props = $props();
 
-  const LINE_H = 20;
   const MIN_THUMB = 24;
   const WORD = /[\p{L}\p{N}_.]/u;
 
@@ -51,11 +52,12 @@
   let input: HTMLTextAreaElement;
   let height = $state(0);
   let trackH = $state(0);
+  let lineH = $derived(lineHeight(settings.fontSize));
   let rows = $state(1);
   // A hidden editor (another tab is showing) has no height: keep its rows
   // rather than shrinking the view to one line.
   $effect(() => {
-    if (height > 0) rows = Math.max(1, Math.floor(height / LINE_H));
+    if (height > 0) rows = Math.max(1, Math.floor(height / lineH));
   });
   let view = $state<api.View | null>(null);
   let viewError = $state<string | null>(null);
@@ -90,7 +92,7 @@
   let boxRight = $derived(box ? Math.max(box.anchorCol, box.caretCol) : 0);
   let boxRects = $state<{ x: number; y: number; w: number }[]>([]);
   /** Width of one column in pixels, for the space past line ends. */
-  let cellW = 8;
+  let cellW = $state(8);
 
   // ---- Viewport requests ----------------------------------------------
   // One request in flight; scrolling meanwhile is merged into the next one,
@@ -129,7 +131,7 @@
           viewError = null;
           onview?.(next);
         },
-        (e) => (viewError = String(e)),
+        (e) => (viewError = describeError(e)),
       )
       .finally(() => {
         inflight = false;
@@ -358,12 +360,17 @@
     if (next) await replace(caret, next.offset, "", "delete");
   }
 
+  /** What the Tab key inserts at column `col`. */
+  function tabText(col: number) {
+    return settings.tabSpaces ? " ".repeat(settings.tabSize - (col % settings.tabSize)) : "\t";
+  }
+
   async function tab() {
     await revealCaret();
     const row = rowOf(caret);
     if (!view || row < 0) return;
     const col = colOf(view.lines[row], selStart);
-    await insert(" ".repeat(TAB - (col % TAB)), "typing");
+    await insert(tabText(col), "typing");
   }
 
   /** The selection, or the caret's whole line like VSCode when nothing is selected. */
@@ -465,6 +472,12 @@
     return boxEdit(lines, "other", boxLeft, boxRight, boxLeft + width, { kind: "count", count: lines.length });
   }
 
+  function boxTab() {
+    const left = boxLeft;
+    if (settings.tabSpaces) return boxInsert(tabText(left), "typing");
+    return boxEdit(["\t"], "typing", left, boxRight, left + TAB - (left % TAB));
+  }
+
   function boxDelete(back: boolean) {
     if (boxLeft < boxRight) return boxEdit([""], "other", boxLeft, boxRight, boxLeft);
     if (back) return boxLeft > 0 ? boxEdit([""], "other", boxLeft - 1, boxLeft, boxLeft - 1) : undefined;
@@ -481,7 +494,7 @@
   function boxPoint(clientX: number, clientY: number) {
     if (!view?.lines.length || !lineBox) return null;
     const top = lineBox.getBoundingClientRect().top;
-    const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - top) / LINE_H)));
+    const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - top) / lineH)));
     const line = view.lines[row];
     const el = lineBox.children[row] as HTMLElement;
     const x = clientX - el.getBoundingClientRect().left;
@@ -507,7 +520,7 @@
     const key = e.key.toLowerCase();
     let task: (() => unknown) | null = null;
     if (e.key === "Backspace" || e.key === "Delete") task = () => boxDelete(e.key === "Backspace");
-    else if (e.key === "Tab" && !mod) task = () => boxInsert(" ".repeat(TAB - (boxLeft % TAB)), "typing");
+    else if (e.key === "Tab" && !mod) task = boxTab;
     else if (e.key === "Escape") task = endBox;
     else if (mod && (key === "c" || key === "x")) task = () => boxCopy(key === "x");
     // Modifiers alone, typed characters (input event), paste (paste event)
@@ -528,7 +541,7 @@
   let queue: Promise<unknown> = Promise.resolve();
 
   function enqueue(task: () => unknown) {
-    queue = queue.then(task).catch((e) => onerror?.(String(e)));
+    queue = queue.then(task).catch((e) => onerror?.(describeError(e)));
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -651,11 +664,11 @@
   function offsetAt(clientX: number, clientY: number) {
     if (!view?.lines.length || !lineBox) return null;
     const box = lineBox.getBoundingClientRect();
-    const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - box.top) / LINE_H)));
+    const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - box.top) / lineH)));
     const line = view.lines[row];
     const el = lineBox.children[row] as HTMLElement;
     const rect = el.getBoundingClientRect();
-    const point = caretPoint(clientX, rect.top + LINE_H / 2);
+    const point = caretPoint(clientX, rect.top + lineH / 2);
     if (!point || !el.contains(point.node)) return offsetOf(line, clientX <= rect.left ? 0 : line.text.length);
     const range = document.createRange();
     range.setStart(el, 0);
@@ -882,11 +895,22 @@
     });
   });
 
+  // Width of a column, for the space past line ends.
+  $effect(() => {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return;
+    context.font = `${settings.fontSize}px ${fontStack()}`;
+    cellW = context.measureText("0".repeat(100)).width / 100;
+  });
+
   // Place the caret (and the textarea, so the IME window follows it).
   $effect(() => {
     void view;
     void caret;
     void composition;
+    void lineH;
+    void cellW;
+    void settings.fontFamily;
     untrack(() => tick().then(placeCaret));
   });
 
@@ -896,6 +920,9 @@
     void box?.anchorCol;
     void box?.caretLine;
     void box?.caretCol;
+    void lineH;
+    void cellW;
+    void settings.fontFamily;
     untrack(() => tick().then(placeBox));
   });
 
@@ -911,13 +938,13 @@
       const el = lineBox!.children[row] as HTMLElement;
       const left = xAtCol(el, line, boxLeft);
       const right = boxRight > boxLeft ? xAtCol(el, line, boxRight) : left;
-      rects.push({ x: left, y: row * LINE_H, w: Math.max(2, right - left) });
+      rects.push({ x: left, y: row * lineH, w: Math.max(2, right - left) });
     });
     boxRects = rects;
     // The textarea (IME window) follows the box's caret corner.
     const row = lineRow(box.caretLine);
     if (row >= 0) {
-      caretAt = { x: xAtCol(lineBox.children[row] as HTMLElement, view.lines[row], box.caretCol), y: row * LINE_H };
+      caretAt = { x: xAtCol(lineBox.children[row] as HTMLElement, view.lines[row], box.caretCol), y: row * lineH };
     }
   }
 
@@ -937,7 +964,7 @@
       return;
     }
     const x = xAt(el, colOf(view.lines[row], caret));
-    caretAt = { x, y: row * LINE_H };
+    caretAt = { x, y: row * lineH };
     // Keep the caret in view horizontally.
     if (x < scroller.scrollLeft + 4) scroller.scrollLeft = Math.max(0, x - 40);
     else if (x > scroller.scrollLeft + scroller.clientWidth - 16) scroller.scrollLeft = x - scroller.clientWidth + 40;
@@ -1002,19 +1029,14 @@
   function onWheel(e: WheelEvent) {
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // horizontal: native
     e.preventDefault();
-    const scale = e.deltaMode === 1 ? LINE_H : e.deltaMode === 2 ? rows * LINE_H : 1;
+    const scale = e.deltaMode === 1 ? lineH : e.deltaMode === 2 ? rows * lineH : 1;
     wheelPx += e.deltaY * scale;
-    const n = Math.trunc(wheelPx / LINE_H);
-    wheelPx -= n * LINE_H;
+    const n = Math.trunc(wheelPx / lineH);
+    wheelPx -= n * lineH;
     scrollLines(n);
   }
 
   onMount(() => {
-    const context = document.createElement("canvas").getContext("2d");
-    if (context) {
-      context.font = getComputedStyle(root).font;
-      cellW = context.measureText("0".repeat(100)).width / 100;
-    }
     // Registered by hand: preventDefault needs a non-passive listener.
     root.addEventListener("wheel", onWheel, { passive: false });
     focus();
@@ -1064,14 +1086,22 @@
   let caretRow = $derived(rowOf(caret));
 </script>
 
-<div class="editor" class:focused class:column-mode={columnMode} bind:this={root}>
-  <div class="gutter" style:width="{gutterCh}ch">
-    {#if view}
-      {#each view.lines as line, i (line.offset)}
-        <div class="ln" class:current={i === caretRow}>{view.firstLine === null ? "" : view.firstLine + i + 1}</div>
-      {/each}
-    {/if}
-  </div>
+<div
+  class="editor"
+  class:focused
+  class:column-mode={columnMode}
+  class:no-shading={!settings.fieldShading}
+  bind:this={root}
+>
+  {#if settings.lineNumbers}
+    <div class="gutter" style:width="{gutterCh}ch">
+      {#if view}
+        {#each view.lines as line, i (line.offset)}
+          <div class="ln" class:current={settings.highlightLine && i === caretRow}>{view.firstLine === null ? "" : view.firstLine + i + 1}</div>
+        {/each}
+      {/if}
+    </div>
+  {/if}
   <div
     class="text"
     role="presentation"
@@ -1085,7 +1115,7 @@
     <div class="lines" bind:this={lineBox}>
       {#if view}
         {#each view.lines as line, i (line.offset)}
-          <div class="line" class:current={!box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, lang), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel"> </span>{/if}</div>
+          <div class="line" class:current={settings.highlightLine && !box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, settings.syntaxHighlight ? lang : "plain"), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel"> </span>{/if}</div>
         {/each}
       {/if}
     </div>
@@ -1104,7 +1134,7 @@
       autocomplete="off"
       autocapitalize="off"
       spellcheck="false"
-      aria-label="Editor"
+      aria-label={t("editor.label")}
       {onkeydown}
       {oninput}
       {onpaste}
@@ -1143,8 +1173,8 @@
     display: flex;
     height: 100%;
     font-family: var(--mono);
-    font-size: 13px;
-    line-height: 20px;
+    font-size: var(--font-size);
+    line-height: var(--line-h);
     background: var(--bg);
     color: var(--fg);
   }
@@ -1158,7 +1188,7 @@
   }
   .ln,
   .line {
-    height: 20px;
+    height: var(--line-h);
   }
   .ln.current {
     color: var(--fg);
@@ -1184,7 +1214,7 @@
   }
   .box {
     position: absolute;
-    height: 20px;
+    height: var(--line-h);
     z-index: -1;
     background: #264f78;
     pointer-events: none;
@@ -1205,7 +1235,7 @@
   .caret {
     position: absolute;
     width: 2px;
-    height: 20px;
+    height: var(--line-h);
     background: #aeafad;
     pointer-events: none;
     animation: blink 1.06s steps(1) infinite;
@@ -1220,7 +1250,7 @@
   }
   .input {
     position: absolute;
-    height: 20px;
+    height: var(--line-h);
     margin: 0;
     padding: 0;
     border: none;
@@ -1231,7 +1261,7 @@
     color: transparent;
     caret-color: transparent;
     font: inherit;
-    line-height: 20px;
+    line-height: var(--line-h);
     white-space: pre;
     opacity: 0;
     z-index: -1;
@@ -1292,6 +1322,9 @@
   }
   .lines :global(.fb) {
     background: rgba(255, 255, 255, 0.06);
+  }
+  .no-shading .lines :global(.fb) {
+    background: none;
   }
   .lines :global(.sel) {
     background: #264f78;

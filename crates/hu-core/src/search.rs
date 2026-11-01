@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::memmem::{Finder, FinderRev};
 
+use crate::problem::Problem;
+
 const CHUNK: usize = 4 << 20;
 
 /// Random-access bytes to search.
@@ -136,7 +138,7 @@ fn find_all_in_chunks(
             let at = pos + i as u64;
             if at >= free_from {
                 if found.len() == limit {
-                    return Err(io::Error::other(format!("more than {limit} matches")));
+                    return Err(Problem::TooManyMatches { limit }.into());
                 }
                 found.push(at);
                 free_from = at + n;

@@ -6,16 +6,16 @@
 //! Queries are addressed by byte offset, so scrolling and jumping never wait
 //! for the background line index; line numbers appear once it gets there.
 
-use std::fmt;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::decode::{Converter, Encoding, column_range, decode_line};
+use crate::decode::{Converter, Decoding, Encoding, column_range, decode_line};
 use crate::original::Original;
 use crate::pieces::{Added, Pieces, Source};
+use crate::problem::Problem;
 use crate::search::{self, FindOptions, FindResult, Reader};
 
 /// Lines longer than this are broken for display, so a file without line
@@ -91,41 +91,12 @@ pub struct ViewLine {
     pub truncated: bool,
 }
 
-#[derive(Debug)]
-pub enum ViewError {
-    Io(io::Error),
-    /// A line number beyond what the background index has reached.
-    NotIndexed {
-        lines: u64,
-    },
-}
-
-impl fmt::Display for ViewError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ViewError::Io(e) => e.fmt(f),
-            ViewError::NotIndexed { lines } => {
-                write!(f, "line index has only reached line {lines} so far")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ViewError {}
-
-impl From<io::Error> for ViewError {
-    fn from(e: io::Error) -> Self {
-        ViewError::Io(e)
-    }
-}
-
 #[derive(Clone)]
 pub struct Text {
     pub(crate) pieces: Pieces,
     pub(crate) original: Original,
     pub(crate) added: Arc<Added>,
-    /// The encoding the user chose to read it in, if any.
-    pub(crate) chosen: Option<Encoding>,
+    pub(crate) decoding: Decoding,
 }
 
 impl Text {
@@ -137,7 +108,7 @@ impl Text {
         self.pieces.is_empty()
     }
 
-    pub fn view(&self, target: ViewTarget, rows: usize) -> Result<View, ViewError> {
+    pub fn view(&self, target: ViewTarget, rows: usize) -> io::Result<View> {
         let rows = rows.max(1);
         let max_top = self.last_page_top(rows)?;
         let top = match target {
@@ -152,9 +123,10 @@ impl Text {
                 Some(offset) => offset,
                 None if self.original.index.read().unwrap().status(0).complete => max_top,
                 None => {
-                    return Err(ViewError::NotIndexed {
+                    return Err(Problem::NotIndexed {
                         lines: self.known_newlines()?,
-                    });
+                    }
+                    .into());
                 }
             },
             ViewTarget::Offset { offset, context } => {
@@ -191,7 +163,7 @@ impl Text {
             bytes.pop();
             len -= 1;
         }
-        let decoded = decode_line(&bytes, self.chosen);
+        let decoded = decode_line(&bytes, self.decoding);
         Ok(ViewLine {
             offset: start,
             len,
@@ -342,7 +314,7 @@ impl Text {
             if bytes.last() == Some(&b'\r') {
                 bytes.pop();
             }
-            let (start, end, pad) = column_range(&bytes, left, right, self.chosen);
+            let (start, end, pad) = column_range(&bytes, left, right, self.decoding);
             out.push(BoxLine {
                 line,
                 start: line + start as u64,
@@ -358,9 +330,10 @@ impl Text {
                 _ => return Ok(out),
             }
             if out.len() >= MAX_BOX_LINES {
-                return Err(io::Error::other(format!(
-                    "a box selection is limited to {MAX_BOX_LINES} lines"
-                )));
+                return Err(Problem::BoxTooTall {
+                    limit: MAX_BOX_LINES,
+                }
+                .into());
             }
         }
     }

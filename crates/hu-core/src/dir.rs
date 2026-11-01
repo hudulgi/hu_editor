@@ -15,6 +15,8 @@ pub struct Entry {
     pub is_dir: bool,
     /// File size in bytes; 0 for directories.
     pub size: u64,
+    /// A dot file, or marked hidden by the OS.
+    pub hidden: bool,
 }
 
 /// A top-level location in the explorer.
@@ -112,7 +114,7 @@ fn drives() -> Vec<Root> {
         kind: RootKind::Drive,
     }];
     #[cfg(target_os = "macos")]
-    if let Ok(volumes) = list(Path::new("/Volumes")) {
+    if let Ok(volumes) = list(Path::new("/Volumes"), false) {
         // The boot volume is a link back to `/`.
         let is_boot = |path: &str| fs::canonicalize(path).is_ok_and(|p| p == Path::new("/"));
         roots.extend(
@@ -130,24 +132,22 @@ fn drives() -> Vec<Root> {
     roots
 }
 
-/// Lists `dir` in no particular order, leaving out hidden entries (dot
-/// files, and files the OS marks hidden). Entries that cannot be read, such
-/// as broken links, are skipped.
-pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
+/// Lists `dir` in no particular order, with hidden entries (dot files, and
+/// files the OS marks hidden) if asked. Entries that cannot be read, such as
+/// broken links, are skipped.
+pub fn list(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir)? {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
         // Follow links so a linked folder expands like a folder.
         let meta = match entry.file_type() {
             Ok(kind) if kind.is_symlink() => fs::metadata(entry.path()),
             _ => entry.metadata(),
         };
         let Ok(meta) = meta else { continue };
-        if is_hidden(&meta) {
+        let hidden = name.starts_with('.') || is_hidden(&meta);
+        if hidden && !show_hidden {
             continue;
         }
         entries.push(Entry {
@@ -155,6 +155,7 @@ pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
             path: entry.path().display().to_string(),
             is_dir: meta.is_dir(),
             size: if meta.is_dir() { 0 } else { meta.len() },
+            hidden,
         });
     }
     Ok(entries)
@@ -203,7 +204,7 @@ mod tests {
         fs::write(root.path().join(".DS_Store"), b"").unwrap();
         fs::create_dir(root.path().join("includes")).unwrap();
 
-        let mut entries = list(root.path()).unwrap();
+        let mut entries = list(root.path(), false).unwrap();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         let summary: Vec<_> = entries
             .iter()
@@ -211,7 +212,13 @@ mod tests {
             .collect();
         assert_eq!(summary, [("includes", true, 0), ("model.inp", false, 9)]);
         assert_eq!(Path::new(&entries[1].path), root.path().join("model.inp"));
-        assert!(list(&root.path().join("missing")).is_err());
+        assert!(list(&root.path().join("missing"), false).is_err());
+
+        let shown = list(root.path(), true).unwrap();
+        let dot = shown.iter().find(|e| e.name == ".DS_Store").unwrap();
+        assert!(dot.hidden);
+        assert_eq!(shown.len(), 3);
+        assert!(!shown.iter().any(|e| e.name == "model.inp" && e.hidden));
     }
 
     #[test]

@@ -32,7 +32,7 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 |---|---|
 | Ctrl+O | 파일 열기 (드래그 앤 드롭도 가능, 폴더를 끌어다 놓으면 탐색기에서 펼침) |
 | Ctrl+B | 탐색기 열기 / 닫기 (화살표로 이동, Enter로 열기, ←/→로 접기 / 펼치기, 상단 주소창에 경로 붙여넣기) |
-| Ctrl+N | 새 파일 (Untitled-1, UTF-8, OS 기본 줄바꿈) |
+| Ctrl+N | 새 파일 (인코딩·줄바꿈은 설정에 따름, 기본은 UTF-8·OS 기본 줄바꿈) |
 | Ctrl+W, 가운데 클릭 | 탭 닫기 (저장 안 한 변경이 있으면 물어봄) |
 | Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+PageDown / PageUp | 다음 / 이전 탭 (열려 있던 파일은 다음 실행 때 다시 열림) |
 | Ctrl+S | 저장 (임시 파일에 쓴 뒤 원본과 교체; 새 파일은 이름부터 물어봄) |
@@ -48,3 +48,15 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 | 상태바의 인코딩 표시 클릭 | Read as: 다른 인코딩으로 다시 읽기 (파일은 그대로, 선택은 파일별로 기억) / Save as: 변환해서 저장 (없는 글자나 깨진 바이트가 있으면 중단) |
 | Ctrl+G | 줄 번호로 이동 |
 | Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |
+| Ctrl+, | 설정 |
+
+## 설정
+
+Ctrl+, 또는 툴바의 톱니바퀴로 엽니다. 바꾸면 바로 적용되고, 다른 PC로 복사할 수 있는 파일에 저장됩니다 (Windows: `%APPDATA%\dev.hueditor.editor\settings.json`).
+
+- **일반**: 언어 (English / 한국어, 처음에는 OS 언어를 따름), 시작할 때 지난 파일 다시 열기, 탐색기에 숨김 파일 표시
+- **편집기**: 글꼴과 크기, 줄 번호, 현재 줄 강조, Tab 키 입력 (스페이스 칸 수 또는 탭 문자), 문법 강조, Nastran 필드 음영
+- **파일**: 새 파일의 인코딩·줄바꿈, UTF-8이 아닌 파일의 인코딩 (이후 여는 파일에 적용), 내용으로 판단할 수 없는 `.blk` 파일의 솔버
+- **단축키**: 목록 보기 (변경은 아직 안 됨)
+
+언어를 추가하려면 `app/src/lib/i18n/`에 파일을 하나 더 만듭니다. 인코딩·솔버·카드 이름과 OS가 주는 오류 메시지는 번역하지 않습니다.

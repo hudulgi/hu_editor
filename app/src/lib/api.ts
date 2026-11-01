@@ -27,7 +27,7 @@ export interface DirEntry {
   path: string;
   isDir: boolean;
   size: number;
-  /** Not in the listing (hidden), shown because a revealed path runs through it. */
+  /** A dot file or marked hidden by the OS, listed on request or because a revealed path runs through it. */
   hidden?: boolean;
 }
 
@@ -112,18 +112,22 @@ export type FindOutcome =
 
 export const launchPath = () => invoke<string | null>("launch_path");
 export const roots = () => invoke<Root[]>("roots");
-export const listDir = (path: string) => invoke<DirEntry[]>("list_dir", { path });
+export const listDir = (path: string, showHidden: boolean) => invoke<DirEntry[]>("list_dir", { path, showHidden });
 /** Folders from the root down to `path`, ending with `path`; empty for a relative path. */
 export const pathChain = (path: string) => invoke<string[]>("path_chain", { path });
 export const pathKind = (path: string) => invoke<"file" | "dir" | null>("path_kind", { path });
-/** Opens `path` to read in `encoding`, or in the one detected. */
-export const openDocument = (path: string, encoding: Encoding | null = null) =>
-  invoke<DocInfo>("open_document", { path, encoding });
+/** Opens `path` to read in `encoding`; without one, in the one detected, with `fallback` for what is not UTF-8. */
+export const openDocument = (path: string, encoding: Encoding | null, fallback: Encoding) =>
+  invoke<DocInfo>("open_document", { path, encoding, fallback });
 /** Reads the same bytes in `encoding`, or back in the one detected; returns the encoding in use. */
-export const setEncoding = (id: number, encoding: Encoding | null) =>
-  invoke<Encoding>("set_encoding", { id, encoding });
-/** A new, empty document without a file (its name is up to the caller). */
-export const newDocument = () => invoke<DocInfo>("new_document");
+export const setEncoding = (id: number, encoding: Encoding | null, fallback: Encoding) =>
+  invoke<Encoding>("set_encoding", { id, encoding, fallback });
+/** The settings file's text; null before the first change. */
+export const loadSettings = () => invoke<string | null>("load_settings");
+export const saveSettings = (text: string) => invoke<void>("save_settings", { text });
+/** A new, empty document without a file (its name is up to the caller); no `eol` means the platform's. */
+export const newDocument = (encoding: Encoding, eol: "crlf" | "lf" | null) =>
+  invoke<DocInfo>("new_document", { encoding, eol });
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });

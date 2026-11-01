@@ -10,10 +10,9 @@ export interface Token {
   cls: string | null;
 }
 
-export const LANG_LABEL: Record<Lang, string> = {
+export const LANG_LABEL: Record<Exclude<Lang, "plain">, string> = {
   abaqus: "Abaqus",
   nastran: "Nastran",
-  plain: "Plain text",
 };
 
 const NASTRAN_EXT = ["bdf", "dat", "nas", "bulk", "fem"];

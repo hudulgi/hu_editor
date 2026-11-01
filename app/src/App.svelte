@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -7,9 +7,13 @@
   import { formatNumber as fmt, formatSize as size, isWindows, parentName, samePath } from "./lib/format";
   import { dependsOnContent, detectLang, LANG_LABEL, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
-  import EncodingMenu, { ENCODING_LABEL } from "./lib/EncodingMenu.svelte";
+  import { ENCODING_LABEL } from "./lib/encodings";
+  import EncodingMenu from "./lib/EncodingMenu.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
+  import { describeError, t } from "./lib/i18n";
+  import SettingsDialog from "./lib/SettingsDialog.svelte";
+  import { settings, settingsFile } from "./lib/settings.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
 
   type Choice = "save" | "discard" | "cancel";
@@ -50,6 +54,7 @@
   let findOpen = $state(false);
   let replacing = $state(false);
   let encodingOpen = $state(false);
+  let settingsOpen = $state(false);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
   let gotoInput = $state<HTMLInputElement>();
@@ -101,18 +106,20 @@
   let indexText = $derived.by(() => {
     const status = active?.status;
     if (!status) return "";
-    if (status.error) return `Index error: ${status.error}`;
-    if (status.complete) return `${fmt(status.lines)} ${status.lines === 1 ? "line" : "lines"}`;
-    return `Indexing ${indexPercent}% · ${size(active!.rate)}/s · ${fmt(status.lines)} lines so far`;
+    if (status.error) return t("status.indexError", { error: status.error });
+    if (status.complete) return t(status.lines === 1 ? "status.oneLine" : "status.lines", { count: fmt(status.lines) });
+    return t("status.indexing", { percent: indexPercent, rate: size(active!.rate), lines: fmt(status.lines) });
   });
 
   let position = $derived.by(() => {
     const caret = active?.caret;
     if (!caret) return "";
-    const line = caret.line === null ? "Ln …" : `Ln ${fmt(caret.line + 1)}`;
-    if (caret.box) return `${line} · Box ${caret.box.rows === null ? "…" : fmt(caret.box.rows)} × ${caret.box.cols}`;
-    const selected = caret.selected ? ` (${fmt(caret.selected)} selected)` : "";
-    return `${line}, Col ${caret.col}${selected}`;
+    const line = caret.line === null ? "…" : fmt(caret.line + 1);
+    if (caret.box) {
+      return t("status.box", { line, rows: caret.box.rows === null ? "…" : fmt(caret.box.rows), cols: caret.box.cols });
+    }
+    const position = t("status.position", { line, col: caret.col });
+    return caret.selected ? t("status.selected", { position, count: fmt(caret.selected) }) : position;
   });
 
   const tabOf = (id: number) => tabs.find((t) => t.doc.id === id);
@@ -129,8 +136,22 @@
   /** The highlighting for a document: from its name or, if that could mean either solver, its content. */
   async function langOf(id: number, name: string): Promise<Lang> {
     if (!dependsOnContent(name)) return detectLang(name);
-    return (await api.detectDialect(id).catch(() => null)) ?? "nastran";
+    return (await api.detectDialect(id).catch(() => null)) ?? settings.blkDefault;
   }
+
+  $effect(() => {
+    if (settingsFile.error) notice = t("notice.settingsNotSaved", { error: settingsFile.error });
+  });
+
+  // The default decides the .blk files whose content does not.
+  $effect(() => {
+    void settings.blkDefault;
+    untrack(() => {
+      for (const tab of tabs) {
+        if (dependsOnContent(tab.doc.name)) langOf(tab.doc.id, tab.doc.name).then((lang) => (tab.lang = lang));
+      }
+    });
+  });
 
   /** Adds a tab next to the active one, or in place of `replacing`. */
   function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null) {
@@ -223,9 +244,9 @@
 
   // ---- Files ----------------------------------------------------------------
 
-  const FILTERS = [
-    { name: "Solver input", extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
-    { name: "All files", extensions: ["*"] },
+  const filters = () => [
+    { name: t("filter.solver"), extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
+    { name: t("filter.all"), extensions: ["*"] },
   ];
 
   /** Saves; a new document asks for a file name first. */
@@ -242,7 +263,7 @@
   async function saveTabAs(tab: Tab) {
     await editors[tab.doc.id]?.flush();
     if (saving) return false;
-    const path = await saveDialog({ defaultPath: tab.doc.path ?? `${tab.doc.name}.inp`, filters: FILTERS });
+    const path = await saveDialog({ defaultPath: tab.doc.path ?? `${tab.doc.name}.inp`, filters: filters() });
     if (!path) return false;
     return writing(tab, async (progress) => {
       const done = await api.saveAs(tab.doc.id, path, progress);
@@ -263,7 +284,7 @@
       tab.changedOnDisk = false;
       return true;
     } catch (e) {
-      notice = `Save failed: ${e}`;
+      notice = t("notice.saveFailed", { error: describeError(e) });
       return false;
     } finally {
       saving = null;
@@ -292,9 +313,9 @@
     const id = tab.doc.id;
     await editors[id]?.flush();
     try {
-      tab.doc.encoding = await api.setEncoding(id, encoding);
+      tab.doc.encoding = await api.setEncoding(id, encoding, settings.fallbackEncoding);
     } catch (e) {
-      notice = String(e);
+      notice = describeError(e);
       return;
     }
     tab.chosenEncoding = encoding !== null;
@@ -315,7 +336,7 @@
       return;
     }
     const path =
-      tab.doc.path ?? (await saveDialog({ defaultPath: `${tab.doc.name}.inp`, filters: FILTERS }));
+      tab.doc.path ?? (await saveDialog({ defaultPath: `${tab.doc.name}.inp`, filters: filters() }));
     if (!path) return;
     const line = tab.caret?.line ?? null;
     if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
@@ -323,19 +344,19 @@
     try {
       add(await load(path), tab, line);
     } catch (e) {
-      notice = String(e);
+      notice = describeError(e);
     }
   }
 
   /** Opens `path` in the encoding chosen for it, if any. */
   async function load(path: string): Promise<Loaded> {
     const encoding = chosenEncodings()[encodingKey(path)] ?? null;
-    const doc = await api.openDocument(path, encoding);
+    const doc = await api.openDocument(path, encoding, settings.fallbackEncoding);
     return { doc, lang: await langOf(doc.id, doc.name), chosenEncoding: encoding !== null };
   }
 
   async function chooseFile() {
-    const path = await openDialog({ multiple: false, directory: false, filters: FILTERS });
+    const path = await openDialog({ multiple: false, directory: false, filters: filters() });
     if (typeof path === "string") await openPath(path);
   }
 
@@ -344,7 +365,7 @@
    * `reveal` expands the explorer down to it (not wanted when picked there).
    */
   async function openPath(path: string, reveal = true) {
-    const open = tabs.find((t) => t.doc.path !== null && samePath(t.doc.path, path));
+    const open = tabs.find((tab) => tab.doc.path !== null && samePath(tab.doc.path, path));
     if (open) {
       activate(open.doc.id);
     } else {
@@ -354,7 +375,7 @@
         const blank = active && active.doc.path === null && !active.state.dirty && active.state.len === 0;
         add(loaded, blank ? active : null);
       } catch (e) {
-        notice = String(e);
+        notice = describeError(e);
         return;
       }
     }
@@ -365,8 +386,13 @@
 
   /** A new, empty document in its own tab: Untitled-1, Untitled-2, … */
   async function newFile() {
-    const doc = await api.newDocument();
-    add({ doc: { ...doc, name: `Untitled-${++untitled}` }, lang: "plain", chosenEncoding: false });
+    const encoding = settings.newFileEncoding;
+    const doc = await api.newDocument(encoding, settings.newFileEol === "os" ? null : settings.newFileEol);
+    add({
+      doc: { ...doc, name: t("doc.untitled", { n: ++untitled }) },
+      lang: "plain",
+      chosenEncoding: encoding !== "utf8",
+    });
   }
 
   /** Reopens a tab's file after it changed on disk; unsaved changes go. */
@@ -375,7 +401,7 @@
     try {
       add(await load(tab.doc.path), tab);
     } catch (e) {
-      notice = String(e);
+      notice = describeError(e);
     }
   }
 
@@ -430,7 +456,7 @@
     const line = Number.parseInt(gotoValue.replaceAll(",", ""), 10);
     if (!status || !Number.isFinite(line) || line < 1) return;
     if (!status.complete && line > status.lines) {
-      notice = `Line index has reached line ${fmt(status.lines)} so far (${indexPercent}%).`;
+      notice = t("goto.notReached", { lines: fmt(status.lines), percent: indexPercent });
       return;
     }
     editor?.gotoLine(Math.min(line, status.lines) - 1);
@@ -451,11 +477,26 @@
     if (gotoOpen && gotoInput) gotoInput.focus();
   });
 
+  function openSettings() {
+    encodingOpen = false;
+    gotoOpen = false;
+    settingsOpen = true;
+  }
+
+  function closeSettings() {
+    settingsOpen = false;
+    editor?.focus();
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (prompt) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
-    if (mod && key === "o") chooseFile();
+    if (mod && key === ",") {
+      if (settingsOpen) closeSettings();
+      else openSettings();
+    } else if (settingsOpen) return;
+    else if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
     else if (mod && key === "w" && active) closeTab(active.doc.id);
@@ -495,7 +536,7 @@
 
   /** Reopens the files of the last session, then the one passed on the command line. */
   async function restore() {
-    const session = JSON.parse(localStorage.getItem("hu.session") ?? "null") as {
+    const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as {
       paths: string[];
       active: string | null;
     } | null;
@@ -544,29 +585,39 @@
     <button
       class="toggle"
       class:on={sidebarOpen}
-      title="Toggle explorer (Ctrl+B)"
-      aria-label="Toggle explorer"
+      title={t("toolbar.toggleExplorer")}
+      aria-label={t("toolbar.toggleExplorer")}
       onclick={() => (sidebarOpen = !sidebarOpen)}
     >
       <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" /></svg>
     </button>
-    <button onclick={newFile} title="New file (Ctrl+N)">New</button>
-    <button onclick={chooseFile} title="Open file (Ctrl+O)">Open…</button>
-    <button onclick={() => active && saveTab(active)} disabled={!active?.state.dirty || !!saving} title="Save (Ctrl+S)"
-      >Save</button
+    <button onclick={newFile} title={t("toolbar.newTitle")}>{t("toolbar.new")}</button>
+    <button onclick={chooseFile} title={t("toolbar.openTitle")}>{t("toolbar.open")}</button>
+    <button
+      onclick={() => active && saveTab(active)}
+      disabled={!active?.state.dirty || !!saving}
+      title={t("toolbar.saveTitle")}>{t("toolbar.save")}</button
     >
-    <button onclick={() => active && saveTabAs(active)} disabled={!active || !!saving} title="Save as (Ctrl+Shift+S)"
-      >Save As…</button
+    <button onclick={() => active && saveTabAs(active)} disabled={!active || !!saving} title={t("toolbar.saveAsTitle")}
+      >{t("toolbar.saveAs")}</button
     >
     {#if active}
-      <span class="path" title={active.doc.path ?? "Not saved yet"}>{active.doc.path ?? active.doc.name}</span>
+      <span class="path" title={active.doc.path ?? t("doc.notSaved")}>{active.doc.path ?? active.doc.name}</span>
     {/if}
+    <span class="spacer"></span>
+    <button class="gear" title={t("toolbar.settings")} aria-label={t("toolbar.settings")} onclick={openSettings}>
+      <svg viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="4.5" />
+        <circle cx="8" cy="8" r="1.8" />
+        <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
+      </svg>
+    </button>
   </header>
 
   {#if active?.changedOnDisk}
     <div class="banner">
-      The file changed on disk{active.state.dirty ? " (you have unsaved changes)" : ""}.
-      <button onclick={() => active && reload(active)}>Reload</button>
+      {t(active.state.dirty ? "banner.changedUnsaved" : "banner.changed")}
+      <button onclick={() => active && reload(active)}>{t("banner.reload")}</button>
     </div>
   {/if}
 
@@ -621,12 +672,12 @@
           {/if}
           {#if gotoOpen}
             <div class="goto">
-              <span>Go to line</span>
+              <span>{t("goto.label")}</span>
               <input
                 bind:this={gotoInput}
                 bind:value={gotoValue}
                 inputmode="numeric"
-                placeholder={active?.status?.complete ? `1 – ${fmt(active.status.lines)}` : "line"}
+                placeholder={active?.status?.complete ? `1 – ${fmt(active.status.lines)}` : t("goto.placeholder")}
                 onkeydown={gotoKeydown}
                 onblur={() => (gotoOpen = false)}
               />
@@ -636,14 +687,14 @@
       {:else}
         <div class="empty">
           <p>
-            Open a deck with <kbd>Ctrl</kbd>+<kbd>O</kbd>, pick one in the explorer, or drop a file here.<br />
-            Start a new one with <kbd>Ctrl</kbd>+<kbd>N</kbd>.
+            {t("empty.open")}<br />
+            {t("empty.new")}
           </p>
           <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
         </div>
       {/if}
       {#if notice}
-        <button class="notice" title="Dismiss" onclick={() => (notice = null)}>{notice}</button>
+        <button class="notice" title={t("notice.dismiss")} onclick={() => (notice = null)}>{notice}</button>
       {/if}
     </section>
   </div>
@@ -653,22 +704,22 @@
       <span>{position}</span>
       <span>{size(active.state.len)}</span>
       {#if saving?.id === active.doc.id}
-        <span>Saving {active.state.len ? Math.floor((saving.written / active.state.len) * 100) : 0}%</span>
+        <span>{t("status.saving", { percent: active.state.len ? Math.floor((saving.written / active.state.len) * 100) : 0 })}</span>
       {:else if active.state.dirty}
-        <span>Modified</span>
+        <span>{t("status.modified")}</span>
       {/if}
       <span class="spacer"></span>
       {#if active.caret?.columnMode}
-        <span class="mode" title="Column mode (Alt+C): Shift+arrows and dragging select boxes">COL</span>
+        <span class="mode" title={t("status.columnMode")}>COL</span>
       {/if}
       <span>{indexText}</span>
       <button
         class="status-button"
-        title="Read or save in another encoding"
+        title={t("status.encoding")}
         onclick={() => (encodingOpen = !encodingOpen)}>{ENCODING_LABEL[active.doc.encoding]}</button
       >
       <span>{active.doc.eol === "crlf" ? "CRLF" : "LF"}</span>
-      <span>{LANG_LABEL[lang]}</span>
+      <span>{lang === "plain" ? t("status.plainText") : LANG_LABEL[lang]}</span>
     {/if}
   </footer>
 
@@ -684,27 +735,31 @@
     />
   {/if}
 
+  {#if settingsOpen && !prompt}
+    <SettingsDialog onclose={closeSettings} />
+  {/if}
+
   {#if prompt}
     <div class="backdrop" role="presentation">
       <div class="dialog" role="alertdialog" aria-labelledby="save-title">
         {#if prompt.names.length === 1}
-          <p id="save-title">Save changes to <b>{prompt.names[0]}</b>?</p>
+          <p id="save-title">{t("prompt.saveOne", { name: prompt.names[0] })}</p>
         {:else}
-          <p id="save-title">Save changes to these {prompt.names.length} files?</p>
+          <p id="save-title">{t("prompt.saveMany", { count: prompt.names.length })}</p>
           <ul>
             {#each prompt.names as name, i (i)}
               <li>{name}</li>
             {/each}
           </ul>
         {/if}
-        <p class="muted">Your changes will be lost if you don't save them.</p>
+        <p class="muted">{t("prompt.lost")}</p>
         <div class="buttons">
           <!-- svelte-ignore a11y_autofocus -->
           <button class="primary" autofocus onclick={() => answer("save")}
-            >{prompt.names.length === 1 ? "Save" : "Save All"}</button
+            >{t(prompt.names.length === 1 ? "prompt.save" : "prompt.saveAll")}</button
           >
-          <button onclick={() => answer("discard")}>Don't Save</button>
-          <button onclick={() => answer("cancel")}>Cancel</button>
+          <button onclick={() => answer("discard")}>{t("prompt.discard")}</button>
+          <button onclick={() => answer("cancel")}>{t("prompt.cancel")}</button>
         </div>
       </div>
     </div>
@@ -725,11 +780,16 @@
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
+  .toolbar button {
+    flex: none;
+    white-space: nowrap;
+  }
   .toolbar button:disabled {
     opacity: 0.5;
     cursor: default;
   }
-  .toggle {
+  .toggle,
+  .gear {
     display: grid;
     place-items: center;
     width: 28px;
@@ -737,10 +797,12 @@
     padding: 0;
     color: var(--muted);
   }
-  .toggle.on {
+  .toggle.on,
+  .gear:hover {
     color: var(--fg);
   }
-  .toggle svg {
+  .toggle svg,
+  .gear svg {
     width: 16px;
     height: 16px;
     fill: none;
@@ -813,13 +875,6 @@
   }
   .muted {
     color: var(--muted);
-  }
-  kbd {
-    padding: 1px 5px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    background: var(--panel);
-    font-family: var(--ui);
   }
   .goto {
     position: absolute;

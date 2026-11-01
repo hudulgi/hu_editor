@@ -6,14 +6,17 @@
 //! is why UTF-16 is not among them.
 //!
 //! Until the user chooses an encoding, each line is shown as UTF-8 when valid
-//! and as CP949 (the Korean Windows code page) otherwise, and typed text is
-//! encoded in the encoding detected for the whole file.
+//! and in a fallback (by default CP949, the Korean Windows code page)
+//! otherwise, and typed text is encoded in the encoding detected for the
+//! whole file.
 
 use std::borrow::Cow;
 use std::io::{self, Write};
 
 use encoding_rs::{DecoderResult, EncoderResult};
 use serde::{Deserialize, Serialize};
+
+use crate::problem::Problem;
 
 const CONVERT_BUFFER: usize = 1 << 20;
 
@@ -41,7 +44,7 @@ impl Encoding {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Encoding::Utf8 => "UTF-8",
             Encoding::Cp949 => "CP949",
@@ -52,11 +55,11 @@ impl Encoding {
         }
     }
 
-    /// UTF-8 unless the sample has bytes that are not valid UTF-8.
-    pub fn detect(sample: &[u8]) -> Self {
+    /// UTF-8, or `fallback` if the sample has bytes that are not valid UTF-8.
+    pub fn detect(sample: &[u8], fallback: Encoding) -> Self {
         match std::str::from_utf8(sample) {
             // A sample can end in the middle of a character.
-            Err(e) if e.error_len().is_some() => Encoding::Cp949,
+            Err(e) if e.error_len().is_some() => fallback,
             _ => Encoding::Utf8,
         }
     }
@@ -70,6 +73,15 @@ impl Encoding {
     }
 }
 
+/// How lines become text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decoding {
+    /// In the encoding the user chose.
+    Chosen(Encoding),
+    /// As UTF-8 when valid, otherwise in this encoding.
+    Auto(Encoding),
+}
+
 /// One line decoded for display.
 pub struct Decoded {
     pub text: String,
@@ -78,17 +90,16 @@ pub struct Decoded {
     pub starts: Option<Vec<u32>>,
 }
 
-/// Decodes a line in the encoding the user `chosen`; without one, as UTF-8
-/// when valid and as CP949 otherwise.
-pub fn decode_line(bytes: &[u8], chosen: Option<Encoding>) -> Decoded {
+pub fn decode_line(bytes: &[u8], decoding: Decoding) -> Decoded {
     if bytes.is_ascii() {
         let text = String::from_utf8(bytes.to_vec()).expect("ASCII is UTF-8");
         return Decoded { text, starts: None };
     }
-    let encoding = chosen.unwrap_or(match std::str::from_utf8(bytes) {
-        Ok(_) => Encoding::Utf8,
-        Err(_) => Encoding::Cp949,
-    });
+    let encoding = match decoding {
+        Decoding::Chosen(encoding) => encoding,
+        Decoding::Auto(_) if std::str::from_utf8(bytes).is_ok() => Encoding::Utf8,
+        Decoding::Auto(fallback) => fallback,
+    };
     let mut text = String::with_capacity(bytes.len());
     let mut starts = Vec::with_capacity(bytes.len() + 1);
     let mut push = |pos: usize, c: char| {
@@ -166,11 +177,11 @@ impl Converter {
             input = &input[read..];
             match result {
                 DecoderResult::Malformed(..) => {
-                    return Err(io::Error::other(format!(
-                        "line {} has bytes that are not valid {}; read the file with the right encoding first",
-                        self.line(self.utf8.len()),
-                        self.from.label()
-                    )));
+                    return Err(Problem::Malformed {
+                        line: self.line(self.utf8.len()),
+                        encoding: self.from,
+                    }
+                    .into());
                 }
                 DecoderResult::OutputFull => self.encode(false, out)?,
                 DecoderResult::InputEmpty => return self.encode(last, out),
@@ -191,12 +202,13 @@ impl Converter {
             done += read;
             out.write_all(&self.output)?;
             match result {
-                EncoderResult::Unmappable(c) => {
-                    return Err(io::Error::other(format!(
-                        "\"{c}\" on line {} cannot be written in {}",
-                        self.line(done),
-                        self.to.label()
-                    )));
+                EncoderResult::Unmappable(character) => {
+                    return Err(Problem::Unmappable {
+                        character,
+                        line: self.line(done),
+                        encoding: self.to,
+                    }
+                    .into());
                 }
                 EncoderResult::OutputFull => {}
                 EncoderResult::InputEmpty => {
@@ -243,14 +255,14 @@ pub fn char_width(c: char) -> u32 {
 /// `[left, right)`, widened to whole characters, as `(start, end, pad)`.
 /// When the line ends before `left`, both are its end and `pad` is the
 /// number of spaces missing up to `left`. With `left == right` it is an
-/// insertion point. `chosen` is as for [`decode_line`].
+/// insertion point.
 pub fn column_range(
     bytes: &[u8],
     left: u32,
     right: u32,
-    chosen: Option<Encoding>,
+    decoding: Decoding,
 ) -> (usize, usize, u32) {
-    let line = decode_line(bytes, chosen);
+    let line = decode_line(bytes, decoding);
     let byte = |unit: usize| line.starts.as_ref().map_or(unit, |s| s[unit] as usize);
     let (mut start, mut end) = (None, None);
     let (mut col, mut unit) = (0, 0);
@@ -283,33 +295,45 @@ pub fn column_range(
 mod tests {
     use super::*;
 
+    const AUTO: Decoding = Decoding::Auto(Encoding::Cp949);
+
     #[test]
     fn a_chosen_encoding_decides() {
         // 日本語 in Shift-JIS, which is not valid UTF-8.
         let sjis = b"a\x93\xFA\x96\x7B\x8C\xEAb";
-        let line = decode_line(sjis, Some(Encoding::ShiftJis));
+        let line = decode_line(sjis, Decoding::Chosen(Encoding::ShiftJis));
         assert_eq!(line.text, "a日本語b");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 3, 5, 7, 8][..]));
         // Without a choice the same bytes fall back to CP949.
-        assert_ne!(decode_line(sjis, None).text, "a日本語b");
+        assert_ne!(decode_line(sjis, AUTO).text, "a日本語b");
+        // Unless that fallback is what the user set.
+        assert_eq!(
+            decode_line(sjis, Decoding::Auto(Encoding::ShiftJis)).text,
+            "a日本語b"
+        );
 
         // One byte, one character, whatever the byte.
-        let line = decode_line(b"caf\xE9", Some(Encoding::Windows1252));
+        let line = decode_line(b"caf\xE9", Decoding::Chosen(Encoding::Windows1252));
         assert_eq!(line.text, "café");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 2, 3, 4][..]));
 
         // Forced UTF-8 keeps its offsets past invalid bytes.
-        let line = decode_line(b"a\xFFb\xEC\x95\x88", Some(Encoding::Utf8));
+        let line = decode_line(b"a\xFFb\xEC\x95\x88", Decoding::Chosen(Encoding::Utf8));
         assert_eq!(line.text, "a\u{FFFD}b안");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 2, 3, 6][..]));
 
         // A surrogate pair: two units at one byte offset.
-        let line = decode_line("😀x".as_bytes(), Some(Encoding::Utf8));
+        let line = decode_line("😀x".as_bytes(), Decoding::Chosen(Encoding::Utf8));
         assert_eq!(line.starts.as_deref(), Some(&[0, 0, 4, 5][..]));
 
         // Columns follow the chosen reading: 日本 takes columns 0..4.
         assert_eq!(
-            column_range(b"\x93\xFA\x96\x7B x", 0, 4, Some(Encoding::ShiftJis)),
+            column_range(
+                b"\x93\xFA\x96\x7B x",
+                0,
+                4,
+                Decoding::Chosen(Encoding::ShiftJis)
+            ),
             (0, 4, 0)
         );
     }
@@ -376,25 +400,25 @@ mod tests {
     #[test]
     fn column_ranges_follow_display_width() {
         let line = "1, 한글, x".as_bytes(); // 한 and 글 take two columns each
-        assert_eq!(column_range(line, 0, 2, None), (0, 2, 0));
+        assert_eq!(column_range(line, 0, 2, AUTO), (0, 2, 0));
         assert_eq!(
-            column_range(line, 3, 7, None),
+            column_range(line, 3, 7, AUTO),
             (3, 9, 0),
             "한글 is columns 3..7"
         );
         assert_eq!(
-            column_range(line, 4, 5, None),
+            column_range(line, 4, 5, AUTO),
             (3, 6, 0),
             "half of 한 widens to all of it"
         );
-        assert_eq!(column_range(line, 7, 7, None), (9, 9, 0), "insertion point");
+        assert_eq!(column_range(line, 7, 7, AUTO), (9, 9, 0), "insertion point");
         assert_eq!(
-            column_range(line, 12, 14, None),
+            column_range(line, 12, 14, AUTO),
             (12, 12, 2),
             "past the end: pad"
         );
         assert_eq!(
-            column_range(b"a\tb", 8, 9, None),
+            column_range(b"a\tb", 8, 9, AUTO),
             (2, 3, 0),
             "tab to column 8"
         );
@@ -402,27 +426,33 @@ mod tests {
 
     #[test]
     fn maps_utf16_units_to_bytes() {
-        let line = decode_line("a한b".as_bytes(), None);
+        let line = decode_line("a한b".as_bytes(), AUTO);
         assert_eq!(line.text, "a한b");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 4, 5][..]));
 
         let (cp949, _, _) = encoding_rs::EUC_KR.encode("a한b");
-        let line = decode_line(&cp949, None);
+        let line = decode_line(&cp949, AUTO);
         assert_eq!(line.text, "a한b");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 3, 4][..]));
     }
 
     #[test]
     fn detects_encoding() {
-        assert_eq!(Encoding::detect(b"*Node\n"), Encoding::Utf8);
-        assert_eq!(Encoding::detect("** 한글".as_bytes()), Encoding::Utf8);
         assert_eq!(
-            Encoding::detect(&"** 한글".as_bytes()[..5]),
+            Encoding::detect(b"*Node\n", Encoding::Cp949),
+            Encoding::Utf8
+        );
+        assert_eq!(
+            Encoding::detect("** 한글".as_bytes(), Encoding::Cp949),
+            Encoding::Utf8
+        );
+        assert_eq!(
+            Encoding::detect(&"** 한글".as_bytes()[..5], Encoding::Cp949),
             Encoding::Utf8,
             "cut mid-character"
         );
         assert_eq!(
-            Encoding::detect(&encoding_rs::EUC_KR.encode("** 한글").0),
+            Encoding::detect(&encoding_rs::EUC_KR.encode("** 한글").0, Encoding::Cp949),
             Encoding::Cp949
         );
     }

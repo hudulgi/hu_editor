@@ -645,7 +645,7 @@ fn replace_all_without_matches_changes_nothing() {
 
 #[test]
 fn a_new_document_is_saved_as_then_saved() {
-    let doc = Document::untitled();
+    let doc = Document::untitled(Encoding::Utf8, Eol::platform());
     assert_eq!(doc.path(), None);
     assert_eq!(doc.encoding(), Encoding::Utf8);
     assert_eq!(doc.wait_for_index().lines, 1);
@@ -739,7 +739,8 @@ fn reading_in_another_encoding_keeps_the_bytes() {
     assert_ne!(first(&doc), "** 日本語");
 
     assert_eq!(
-        doc.set_encoding(Some(Encoding::ShiftJis)).unwrap(),
+        doc.set_encoding(Some(Encoding::ShiftJis), Encoding::Cp949)
+            .unwrap(),
         Encoding::ShiftJis
     );
     assert_eq!(first(&doc), "** 日本語");
@@ -758,22 +759,30 @@ fn reading_in_another_encoding_keeps_the_bytes() {
 
     // With unsaved changes in one encoding, switching to another is refused,
     // but restating the current one is fine.
-    assert!(doc.set_encoding(Some(Encoding::Cp949)).is_err());
+    assert!(
+        doc.set_encoding(Some(Encoding::Cp949), Encoding::Cp949)
+            .is_err()
+    );
     assert_eq!(doc.encoding(), Encoding::ShiftJis);
     assert_eq!(
-        doc.set_encoding(Some(Encoding::ShiftJis)).unwrap(),
+        doc.set_encoding(Some(Encoding::ShiftJis), Encoding::Cp949)
+            .unwrap(),
         Encoding::ShiftJis
     );
 
     // Undone, it is allowed again; no choice goes back to detection.
     doc.undo().unwrap();
-    assert_eq!(doc.set_encoding(None).unwrap(), Encoding::Cp949);
+    assert_eq!(
+        doc.set_encoding(None, Encoding::Cp949).unwrap(),
+        Encoding::Cp949
+    );
     assert_ne!(first(&doc), "** 日本語");
 
     let (_file, reopened) = {
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), bytes).unwrap();
-        let doc = Document::open_as(file.path(), Some(Encoding::ShiftJis)).unwrap();
+        let doc =
+            Document::open_as(file.path(), Some(Encoding::ShiftJis), Encoding::Cp949).unwrap();
         (file, doc)
     };
     assert_eq!(reopened.encoding(), Encoding::ShiftJis);
@@ -822,7 +831,7 @@ fn saving_converted_writes_the_new_bytes_and_keeps_the_file_on_refusal() {
     let wrong = dir.path().join("wrong.inp");
     let cp949 = Encoding::Cp949.encode(text).into_owned();
     fs::write(&wrong, &cp949).unwrap();
-    let doc = Document::open_as(&wrong, Some(Encoding::Utf8)).unwrap();
+    let doc = Document::open_as(&wrong, Some(Encoding::Utf8), Encoding::Cp949).unwrap();
     let err = doc
         .save_converted(&wrong, Encoding::Cp949, &cancel, &mut |_| {})
         .unwrap_err();
@@ -838,6 +847,50 @@ fn saving_converted_writes_the_new_bytes_and_keeps_the_file_on_refusal() {
 fn box_columns_follow_the_chosen_encoding() {
     // 日本 takes columns 2..6 in Shift-JIS.
     let (_file, doc) = open(b"$ \x93\xFA\x96\x7B x\n");
-    doc.set_encoding(Some(Encoding::ShiftJis)).unwrap();
+    doc.set_encoding(Some(Encoding::ShiftJis), Encoding::Cp949)
+        .unwrap();
     assert_eq!(doc.box_text(0, 0, 2, 6).unwrap(), "日本");
+}
+
+#[test]
+fn the_fallback_encoding_decides_what_is_not_utf8() {
+    // 日本語 in Shift-JIS.
+    let bytes: &[u8] = b"** \x93\xFA\x96\x7B\x8C\xEA\n";
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(bytes).unwrap();
+    let doc = Document::open_as(file.path(), None, Encoding::ShiftJis).unwrap();
+    assert_eq!(doc.encoding(), Encoding::ShiftJis);
+    let first = |doc: &Document| {
+        doc.view(ViewTarget::Fraction { fraction: 0.0 }, 5)
+            .unwrap()
+            .lines[0]
+            .text
+            .clone()
+    };
+    assert_eq!(first(&doc), "** 日本語");
+
+    // Back to detection, with another fallback.
+    assert_eq!(
+        doc.set_encoding(None, Encoding::Cp949).unwrap(),
+        Encoding::Cp949
+    );
+    assert_ne!(first(&doc), "** 日本語");
+}
+
+#[test]
+fn a_new_document_takes_the_encoding_and_line_break_asked_for() {
+    let doc = Document::untitled(Encoding::Cp949, Eol::Crlf);
+    assert_eq!((doc.encoding(), doc.eol()), (Encoding::Cp949, Eol::Crlf));
+    doc.edit(0, 0, "** 한글\n", EditKind::Typing, (0, 0));
+    let bytes = doc.text().read_range(0, doc.len()).unwrap();
+    assert_eq!(bytes, b"** \xC7\xD1\xB1\xDB\r\n");
+    let view = doc.view(ViewTarget::Fraction { fraction: 0.0 }, 5).unwrap();
+    assert_eq!(view.lines[0].text, "** 한글");
+}
+
+#[test]
+fn problems_keep_their_codes_through_io_errors() {
+    let doc = Document::untitled(Encoding::Utf8, Eol::Lf);
+    let err = doc.save(&AtomicBool::new(false), &mut |_| {}).unwrap_err();
+    assert_eq!(crate::ipc_message(&err), r#"{"code":"needsFileName"}"#);
 }

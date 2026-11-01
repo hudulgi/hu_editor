@@ -7,6 +7,8 @@
   --gutter: #858585;
   --accent: #007acc;
   --mono: "Cascadia Mono", Consolas, "D2Coding", Menlo, monospace;
+  --font-size: 13px;
+  --line-h: 20px;
   --ui: "Segoe UI", system-ui, -apple-system, "Malgun Gothic", sans-serif;
   color-scheme: dark;
 }

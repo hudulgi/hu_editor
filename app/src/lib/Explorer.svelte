@@ -5,10 +5,12 @@
   // Opening a file reveals it, the way UltraEdit's explorer follows the
   // active file.
 
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import * as api from "./api";
   import { baseName, formatSize, isWindows, samePath } from "./format";
+  import { describeError, t, type MessageKey } from "./i18n";
+  import { settings } from "./settings.svelte";
   import { detectLang } from "./syntax";
 
   interface Props {
@@ -25,10 +27,16 @@
     | { kind: "note"; key: string; text: string; depth: number };
 
   const windows = isWindows;
-  const GROUPS = [
-    ["quick", "Quick Access"],
-    ["drives", windows ? "This PC" : "Locations"],
-  ] as const;
+  const GROUPS: readonly (readonly [api.Root["group"], MessageKey])[] = [
+    ["quick", "explorer.quickAccess"],
+    ["drives", windows ? "explorer.thisPc" : "explorer.locations"],
+  ];
+  const QUICK_NAMES: Partial<Record<api.Root["kind"], MessageKey>> = {
+    home: "explorer.home",
+    desktop: "explorer.desktop",
+    documents: "explorer.documents",
+    downloads: "explorer.downloads",
+  };
   const SAVED_PATH = "hu.explorer.path";
 
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -54,9 +62,9 @@
 
   async function load(path: string) {
     try {
-      listed.set(path, sorted(await api.listDir(path)));
+      listed.set(path, sorted(await api.listDir(path, settings.showHidden)));
     } catch (e) {
-      listed.set(path, String(e));
+      listed.set(path, describeError(e));
     }
   }
 
@@ -65,9 +73,9 @@
     const walk = (base: string, path: string, depth: number) => {
       const list = listed.get(path);
       const note = (text: string) => out.push({ kind: "note", key: `${base}|${path}\n`, text, depth });
-      if (list === undefined) note("Loading…");
+      if (list === undefined) note(t("explorer.loading"));
       else if (typeof list === "string") note(list);
-      else if (list.length === 0) note("Empty");
+      else if (list.length === 0) note(t("explorer.empty"));
       else
         for (const entry of list) {
           const key = `${base}|${entry.path}`;
@@ -75,13 +83,15 @@
           if (entry.isDir && expanded.has(key)) walk(base, entry.path, depth + 1);
         }
     };
-    for (const [group, label] of GROUPS) {
+    for (const [group, labelKey] of GROUPS) {
       const members = roots.filter((r) => r.group === group);
       if (!members.length) continue;
-      out.push({ kind: "group", key: group, label });
+      out.push({ kind: "group", key: group, label: t(labelKey) });
       for (const root of members) {
         const key = rootKey(root);
-        const entry = { name: root.name, path: root.path, isDir: true, size: 0 };
+        const quickName = QUICK_NAMES[root.kind];
+        const name = quickName ? t(quickName) : root.name;
+        const entry = { name, path: root.path, isDir: true, size: 0 };
         out.push({ kind: "entry", key, entry, depth: 0, root });
         if (expanded.has(key)) walk(key, root.path, 1);
       }
@@ -185,7 +195,7 @@
     if (!path) return;
     const kind = await api.pathKind(path);
     if (!kind || !(await reveal(path, kind === "dir"))) {
-      addressError = `Not found: ${path}`;
+      addressError = t("explorer.notFound", { path });
       return;
     }
     address = path;
@@ -220,6 +230,15 @@
     await scrollToSelected("nearest");
   }
 
+  // The setting changes what the open folders list.
+  let listedHidden = settings.showHidden;
+  $effect(() => {
+    if (settings.showHidden !== listedHidden) {
+      listedHidden = settings.showHidden;
+      untrack(refresh);
+    }
+  });
+
   onMount(async () => {
     // Come back to where the user was, unless a file is being revealed already.
     await ready;
@@ -232,20 +251,25 @@
 
 <aside class="explorer">
   <header>
-    <span class="title">Explorer</span>
+    <span class="title">{t("explorer.title")}</span>
     <button
       class="icon"
-      title="Show the open file"
-      aria-label="Show the open file"
+      title={t("explorer.showOpenFile")}
+      aria-label={t("explorer.showOpenFile")}
       disabled={!active}
       onclick={() => active && reveal(active, false)}
     >
       <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5" /><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" /></svg>
     </button>
-    <button class="icon" title="Refresh" aria-label="Refresh" onclick={refresh}>
+    <button class="icon" title={t("explorer.refresh")} aria-label={t("explorer.refresh")} onclick={refresh}>
       <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" /></svg>
     </button>
-    <button class="icon" title="Collapse all" aria-label="Collapse all" onclick={() => expanded.clear()}>
+    <button
+      class="icon"
+      title={t("explorer.collapseAll")}
+      aria-label={t("explorer.collapseAll")}
+      onclick={() => expanded.clear()}
+    >
       <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /><path d="M5.5 8h5" /></svg>
     </button>
   </header>
@@ -256,7 +280,7 @@
       bind:value={address}
       placeholder={windows ? "C:\\path\\to\\deck.inp" : "/path/to/deck.inp"}
       spellcheck="false"
-      title="Type or paste a path, then Enter"
+      title={t("explorer.address")}
       onkeydown={addressKeydown}
       onfocus={(e) => e.currentTarget.select()}
     />
@@ -324,7 +348,7 @@
             </svg>
           {/if}
           <span class="name">{entry.name}</span>
-          {#if !entry.isDir && !entry.hidden}
+          {#if !entry.isDir && (!entry.hidden || entry.size > 0)}
             <span class="size">{formatSize(entry.size)}</span>
           {/if}
         </div>

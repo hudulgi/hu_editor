@@ -1,27 +1,8 @@
-<script lang="ts" module>
-  import type { Encoding } from "./api";
-
-  export const ENCODING_LABEL: Record<Encoding, string> = {
-    utf8: "UTF-8",
-    cp949: "CP949",
-    shiftJis: "Shift-JIS",
-    gbk: "GBK",
-    big5: "Big5",
-    windows1252: "Windows-1252",
-  };
-
-  const ENCODINGS: [Encoding, string][] = [
-    ["utf8", "Unicode"],
-    ["cp949", "Korean"],
-    ["shiftJis", "Japanese"],
-    ["gbk", "Simplified Chinese"],
-    ["big5", "Traditional Chinese"],
-    ["windows1252", "Western"],
-  ];
-</script>
-
 <script lang="ts">
   import { onMount } from "svelte";
+  import type { Encoding } from "./api";
+  import { ENCODING_LABEL, ENCODINGS } from "./encodings";
+  import { t } from "./i18n";
 
   interface Props {
     current: Encoding;
@@ -64,17 +45,15 @@
 <div class="scrim" role="presentation" onmousedown={onclose}></div>
 <div class="menu" bind:this={panel}>
   <div class="modes">
-    <button class:on={mode === "read"} onclick={() => (mode = "read")}>Read as</button>
-    <button class:on={mode === "save"} onclick={() => (mode = "save")}>Save as</button>
+    <button class:on={mode === "read"} onclick={() => (mode = "read")}>{t("encoding.readAs")}</button>
+    <button class:on={mode === "save"} onclick={() => (mode = "save")}>{t("encoding.saveAs")}</button>
   </div>
   {#if mode === "read"}
     <p class:warn={dirty}>
-      {dirty
-        ? "Save or undo your changes first: they are in the current encoding."
-        : "Shows the file's bytes in another encoding. The file does not change."}
+      {t(dirty ? "encoding.readBlocked" : "encoding.readHint")}
     </p>
     <button class="item" class:current={!chosen} disabled={dirty} onclick={() => onread(null)}>
-      <span class="check">{chosen ? "" : "✓"}</span>Auto-detect<span class="hint"
+      <span class="check">{chosen ? "" : "✓"}</span>{t("encoding.auto")}<span class="hint"
         >{chosen ? "" : ENCODING_LABEL[current]}</span
       >
     </button>
@@ -86,16 +65,14 @@
         disabled={dirty && encoding !== current}
         onclick={() => onread(encoding)}
       >
-        <span class="check">{selected ? "✓" : ""}</span>{ENCODING_LABEL[encoding]}<span class="hint">{hint}</span>
+        <span class="check">{selected ? "✓" : ""}</span>{ENCODING_LABEL[encoding]}<span class="hint">{t(hint)}</span>
       </button>
     {/each}
   {:else}
-    <p>Converts the text and saves the file. A character the encoding lacks stops it, and undo history is cleared.</p>
+    <p>{t("encoding.saveHint")}</p>
     {#each ENCODINGS as [encoding, hint] (encoding)}
       <button class="item" class:current={encoding === current} onclick={() => onsave(encoding)}>
-        <span class="check">{encoding === current ? "✓" : ""}</span>{ENCODING_LABEL[encoding]}<span class="hint"
-          >{hint}</span
-        >
+        <span class="check">{encoding === current ? "✓" : ""}</span>{ENCODING_LABEL[encoding]}<span class="hint">{t(hint)}</span>
       </button>
     {/each}
   {/if}

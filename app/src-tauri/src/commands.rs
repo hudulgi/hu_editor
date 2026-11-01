@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 
 use hu_core::{
     BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions,
-    FindResult, IndexStatus, View, ViewTarget, dir,
+    FindResult, IndexStatus, View, ViewTarget, dir, ipc_message, settings,
 };
 use serde::Serialize;
 use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[derive(Default)]
@@ -86,6 +86,16 @@ pub enum FindOutcome {
     Cancelled,
 }
 
+/// An error for the frontend, with the path if the OS is the one complaining.
+fn at_path(path: &Path, error: &std::io::Error) -> String {
+    let message = ipc_message(error);
+    if message.starts_with('{') {
+        message
+    } else {
+        format!("{}: {message}", path.display())
+    }
+}
+
 /// Runs blocking work (disk reads) off the async runtime.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -105,8 +115,8 @@ pub async fn roots() -> Vec<dir::Root> {
 }
 
 #[tauri::command]
-pub async fn list_dir(path: PathBuf) -> Result<Vec<dir::Entry>, String> {
-    blocking(move || dir::list(&path).map_err(|e| format!("{}: {e}", path.display()))).await
+pub async fn list_dir(path: PathBuf, show_hidden: bool) -> Result<Vec<dir::Entry>, String> {
+    blocking(move || dir::list(&path, show_hidden).map_err(|e| at_path(&path, &e))).await
 }
 
 #[tauri::command]
@@ -134,10 +144,11 @@ pub async fn path_kind(path: PathBuf) -> Option<PathKind> {
 pub async fn open_document(
     path: PathBuf,
     encoding: Option<Encoding>,
+    fallback: Encoding,
     docs: State<'_, Docs>,
 ) -> Result<DocInfo, String> {
     let doc = blocking(move || {
-        Document::open_as(&path, encoding).map_err(|e| format!("{}: {e}", path.display()))
+        Document::open_as(&path, encoding, fallback).map_err(|e| at_path(&path, &e))
     })
     .await?;
     Ok(docs.add(doc))
@@ -149,10 +160,16 @@ pub async fn open_document(
 pub async fn set_encoding(
     id: u32,
     encoding: Option<Encoding>,
+    fallback: Encoding,
     docs: State<'_, Docs>,
 ) -> Result<Encoding, String> {
     let open = docs.get(id)?;
-    blocking(move || open.doc.set_encoding(encoding).map_err(|e| e.to_string())).await
+    blocking(move || {
+        open.doc
+            .set_encoding(encoding, fallback)
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
 }
 
 /// Writes the text to `path` converted to `encoding`, streaming the bytes
@@ -178,15 +195,35 @@ pub async fn save_converted(
         open.doc
             .save_converted(&path, encoding, &AtomicBool::new(false), &mut progress)
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| ipc_message(&e))
     })
     .await
 }
 
-/// A new, empty document without a file; the frontend names it.
+/// A new, empty document without a file; the frontend names it. Without an
+/// `eol` it takes the platform's.
 #[tauri::command]
-pub fn new_document(docs: State<'_, Docs>) -> DocInfo {
-    docs.add(Document::untitled())
+pub fn new_document(encoding: Encoding, eol: Option<Eol>, docs: State<'_, Docs>) -> DocInfo {
+    docs.add(Document::untitled(
+        encoding,
+        eol.unwrap_or_else(Eol::platform),
+    ))
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("settings.json"))
+}
+
+/// The settings file's text; none before the first change.
+#[tauri::command]
+pub fn load_settings(app: AppHandle) -> Result<Option<String>, String> {
+    settings::load(&settings_path(&app)?).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_settings(text: String, app: AppHandle) -> Result<(), String> {
+    settings::save(&settings_path(&app)?, &text).map_err(|e| e.to_string())
 }
 
 fn file_name(path: &Path) -> String {
@@ -214,7 +251,7 @@ pub async fn index_status(id: u32, docs: State<'_, Docs>) -> Result<IndexStatus,
 #[tauri::command]
 pub async fn detect_dialect(id: u32, docs: State<'_, Docs>) -> Result<Option<Dialect>, String> {
     let open = docs.get(id)?;
-    blocking(move || open.doc.dialect().map_err(|e| e.to_string())).await
+    blocking(move || open.doc.dialect().map_err(|e| ipc_message(&e))).await
 }
 
 #[tauri::command]
@@ -230,7 +267,7 @@ pub async fn view(
     docs: State<'_, Docs>,
 ) -> Result<View, String> {
     let open = docs.get(id)?;
-    blocking(move || open.doc.view(target, rows).map_err(|e| e.to_string())).await
+    blocking(move || open.doc.view(target, rows).map_err(|e| ipc_message(&e))).await
 }
 
 /// Replaces `[start, end)` with `text`. `anchor` and `caret` are the
@@ -273,7 +310,8 @@ pub async fn copy(
     docs: State<'_, Docs>,
 ) -> Result<(), String> {
     let open = docs.get(id)?;
-    let text = blocking(move || open.doc.copy_text(start, end).map_err(|e| e.to_string())).await?;
+    let text =
+        blocking(move || open.doc.copy_text(start, end).map_err(|e| ipc_message(&e))).await?;
     app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
@@ -307,7 +345,7 @@ pub async fn edit_box(
             .doc
             .edit_box(top, rows, left, right, &texts, kind, (anchor, caret));
         Ok(edited
-            .map_err(|e| e.to_string())?
+            .map_err(|e| ipc_message(&e))?
             .map(|(result, last_line)| BoxEdit { result, last_line }))
     })
     .await
@@ -329,7 +367,7 @@ pub async fn copy_box(
     let text = blocking(move || {
         open.doc
             .box_text(top, bottom, left, right)
-            .map_err(|e| e.to_string())
+            .map_err(|e| ipc_message(&e))
     })
     .await?;
     app.clipboard().write_text(text).map_err(|e| e.to_string())
@@ -381,7 +419,7 @@ pub async fn replace_all(
                 &cancel,
                 &mut progress,
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ipc_message(&e))?;
         Ok(match done {
             Some((count, result)) => ReplaceOutcome::Replaced { count, result },
             None => ReplaceOutcome::Cancelled,
@@ -406,14 +444,9 @@ pub async fn save(
                 let _ = on_progress.send(written);
             }
         };
-        let path = open
-            .doc
-            .path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
         open.doc
             .save(&AtomicBool::new(false), &mut progress)
-            .map_err(|e| format!("{path}: {e}"))?;
+            .map_err(|e| at_path(&open.doc.path().unwrap_or_default(), &e))?;
         Ok(open.doc.state())
     })
     .await
@@ -446,7 +479,7 @@ pub async fn save_as(
         };
         open.doc
             .save_as(&path, &AtomicBool::new(false), &mut progress)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+            .map_err(|e| at_path(&path, &e))?;
         Ok(SavedAs {
             name: file_name(&path),
             path: path.display().to_string(),
@@ -491,7 +524,7 @@ pub async fn find(
         open.doc
             .text()
             .find(&needle, from, &options, &cancel, &mut progress)
-            .map_err(|e| e.to_string())
+            .map_err(|e| ipc_message(&e))
     })
     .await?;
 

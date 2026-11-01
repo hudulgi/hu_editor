@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import * as api from "./api";
   import { formatNumber } from "./format";
+  import { describeError, t } from "./i18n";
 
   interface Target {
     /** Selects `[from, to)` and scrolls it into view. */
@@ -62,7 +63,7 @@
     try {
       await work(mine);
     } catch (e) {
-      if (mine === seq) message = String(e);
+      if (mine === seq) message = describeError(e);
     } finally {
       if (mine === seq) searching = false;
     }
@@ -83,11 +84,11 @@
       if (result.kind === "found") {
         last = { offset: result.offset, len: result.len, needle, caseSensitive };
         const wrapped = backward ? result.offset >= from : result.offset < from;
-        message = wrapped ? "Wrapped around" : "";
+        message = wrapped ? t("find.wrapped") : "";
         viewer.select(result.offset, result.offset + result.len);
       } else if (result.kind === "notFound") {
         last = null;
-        message = "No results";
+        message = t("find.noResults");
       }
     });
   }
@@ -116,11 +117,11 @@
       const outcome = await api.replaceAll(doc.id, needle, replacement, caseSensitive, anchor, caret, progress(mine));
       if (mine !== seq) return;
       if (outcome.kind === "cancelled") {
-        message = "Cancelled";
+        message = t("find.cancelled");
         return;
       }
       last = null;
-      message = outcome.count ? `Replaced ${formatNumber(outcome.count)}` : "No results";
+      message = outcome.count ? t("find.replaced", { count: formatNumber(outcome.count) }) : t("find.noResults");
       if (outcome.result) await viewer.applyResult(outcome.result);
     });
   }
@@ -128,7 +129,7 @@
   function cancel() {
     seq++;
     searching = false;
-    message = "Cancelled";
+    message = t("find.cancelled");
     api.cancelFind(doc.id);
   }
 
@@ -168,8 +169,8 @@
 <div class="findbar" role="search" bind:this={bar}>
   <button
     class="toggle"
-    title="Toggle replace (Ctrl+H)"
-    aria-label="Toggle replace"
+    title={t("find.toggleReplace")}
+    aria-label={t("find.toggleReplace")}
     aria-expanded={replacing}
     onclick={() => (replacing = !replacing)}
   >
@@ -177,27 +178,27 @@
   </button>
   <div class="rows">
     <div class="row">
-      <input bind:this={input} bind:value={needle} placeholder="Find" spellcheck="false" onkeydown={findKeydown} />
-      <button class:on={caseSensitive} title="Match case" onclick={() => (caseSensitive = !caseSensitive)}
+      <input bind:this={input} bind:value={needle} placeholder={t("find.find")} spellcheck="false" onkeydown={findKeydown} />
+      <button class:on={caseSensitive} title={t("find.matchCase")} onclick={() => (caseSensitive = !caseSensitive)}
         >Aa</button
       >
-      <button title="Previous match (Shift+Enter, Shift+F3)" onclick={() => run(true)}>↑</button>
-      <button title="Next match (Enter, F3)" onclick={() => run(false)}>↓</button>
+      <button title={t("find.previous")} onclick={() => run(true)}>↑</button>
+      <button title={t("find.next")} onclick={() => run(false)}>↓</button>
       <span class="status">
         {#if searching}
-          Searching… {percent}%
-          <button onclick={cancel}>Cancel</button>
+          {t("find.searching", { percent })}
+          <button onclick={cancel}>{t("find.cancel")}</button>
         {:else}
           {message}
         {/if}
       </span>
-      <button title="Close (Esc)" onclick={close}>✕</button>
+      <button title={t("find.close")} onclick={close}>✕</button>
     </div>
     {#if replacing}
       <div class="row">
-        <input bind:value={replacement} placeholder="Replace" spellcheck="false" onkeydown={replaceKeydown} />
-        <button title="Replace and find next (Enter)" onclick={replaceOne}>Replace</button>
-        <button title="Replace all (Ctrl+Alt+Enter)" onclick={replaceAll}>Replace All</button>
+        <input bind:value={replacement} placeholder={t("find.replace")} spellcheck="false" onkeydown={replaceKeydown} />
+        <button title={t("find.replaceOneTitle")} onclick={replaceOne}>{t("find.replaceOne")}</button>
+        <button title={t("find.replaceAllTitle")} onclick={replaceAll}>{t("find.replaceAll")}</button>
       </div>
     {/if}
   </div>

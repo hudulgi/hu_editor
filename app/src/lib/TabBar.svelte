@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import { tick } from "svelte";
+  import { t } from "./i18n";
 
   interface Props {
     tabs: TabItem[];
@@ -59,7 +60,7 @@
       role="tab"
       tabindex="-1"
       aria-selected={tab.id === active}
-      title={tab.path ?? `${tab.name} (not saved yet)`}
+      title={tab.path ?? t("tabs.notSaved", { name: tab.name })}
       onmousedown={(e) => onmousedown(e, tab.id)}
     >
       {#if tab.lang !== "plain"}
@@ -71,8 +72,8 @@
       {/if}
       <button
         class="close"
-        title="Close (Ctrl+W)"
-        aria-label="Close {tab.name}"
+        title={t("tabs.close")}
+        aria-label={t("tabs.closeNamed", { name: tab.name })}
         onmousedown={(e) => e.stopPropagation()}
         onclick={() => onclose(tab.id)}
       >

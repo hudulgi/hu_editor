@@ -16,6 +16,8 @@ fn main() {
             commands::path_kind,
             commands::open_document,
             commands::new_document,
+            commands::load_settings,
+            commands::save_settings,
             commands::close_document,
             commands::index_status,
             commands::disk_changed,
