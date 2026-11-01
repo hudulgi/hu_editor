@@ -1262,7 +1262,6 @@
   }
   .lines :global(.keyword) {
     color: #569cd6;
-    font-weight: 600;
   }
   .lines :global(.param) {
     color: #9cdcfe;
@@ -1272,7 +1271,6 @@
   }
   .lines :global(.card) {
     color: #4ec9b0;
-    font-weight: 600;
   }
   .lines :global(.cont),
   .lines :global(.punct),
