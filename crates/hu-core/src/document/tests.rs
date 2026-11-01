@@ -722,3 +722,122 @@ fn dialect_follows_the_text() {
     let (_file, nastran) = open(b"$ comment\nGRID    1\n");
     assert_eq!(nastran.dialect().unwrap(), Some(Dialect::Nastran));
 }
+
+#[test]
+fn reading_in_another_encoding_keeps_the_bytes() {
+    // 日本語 in Shift-JIS: not valid UTF-8, so CP949 is detected.
+    let bytes: &[u8] = b"** \x93\xFA\x96\x7B\x8C\xEA\n*Node\n";
+    let (file, doc) = open(bytes);
+    let first = |doc: &Document| {
+        doc.view(ViewTarget::Fraction { fraction: 0.0 }, 5)
+            .unwrap()
+            .lines[0]
+            .text
+            .clone()
+    };
+    assert_eq!(doc.encoding(), Encoding::Cp949);
+    assert_ne!(first(&doc), "** 日本語");
+
+    assert_eq!(
+        doc.set_encoding(Some(Encoding::ShiftJis)).unwrap(),
+        Encoding::ShiftJis
+    );
+    assert_eq!(first(&doc), "** 日本語");
+    assert_eq!(
+        fs::read(file.path()).unwrap(),
+        bytes,
+        "the file does not change"
+    );
+    assert!(!doc.state().dirty);
+
+    // Everything after follows it: typing, copying, searching.
+    assert_eq!(doc.copy_text(3, 9).unwrap(), "日本語");
+    doc.edit(9, 9, "語", EditKind::Other, (9, 9));
+    let all = doc.text().read_range(0, doc.len()).unwrap();
+    assert_eq!(&all[..11], b"** \x93\xFA\x96\x7B\x8C\xEA\x8C\xEA");
+
+    // With unsaved changes in one encoding, switching to another is refused,
+    // but restating the current one is fine.
+    assert!(doc.set_encoding(Some(Encoding::Cp949)).is_err());
+    assert_eq!(doc.encoding(), Encoding::ShiftJis);
+    assert_eq!(
+        doc.set_encoding(Some(Encoding::ShiftJis)).unwrap(),
+        Encoding::ShiftJis
+    );
+
+    // Undone, it is allowed again; no choice goes back to detection.
+    doc.undo().unwrap();
+    assert_eq!(doc.set_encoding(None).unwrap(), Encoding::Cp949);
+    assert_ne!(first(&doc), "** 日本語");
+
+    let (_file, reopened) = {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), bytes).unwrap();
+        let doc = Document::open_as(file.path(), Some(Encoding::ShiftJis)).unwrap();
+        (file, doc)
+    };
+    assert_eq!(reopened.encoding(), Encoding::ShiftJis);
+    assert_eq!(first(&reopened), "** 日本語");
+}
+
+#[test]
+fn saving_converted_writes_the_new_bytes_and_keeps_the_file_on_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deck.inp");
+    let text = "** 한글 주석\n*Node\n1, 0., 0., 0.\n";
+    fs::write(&path, Encoding::Cp949.encode(text)).unwrap();
+    let doc = Document::open(&path).unwrap();
+    doc.wait_for_index();
+    assert_eq!(doc.encoding(), Encoding::Cp949);
+
+    // Unsaved edits are converted along.
+    let end = doc.len();
+    doc.edit(end, end, "** 끝\n", EditKind::Other, (end, end));
+    let cancel = AtomicBool::new(false);
+
+    // No Hangul in Windows-1252: refused, nothing written, no temporary file.
+    let before = fs::read(&path).unwrap();
+    let err = doc
+        .save_converted(&path, Encoding::Windows1252, &cancel, &mut |_| {})
+        .unwrap_err();
+    assert!(err.to_string().contains("\"한\" on line 1"), "{err}");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+    assert!(
+        doc.save_converted(&path, Encoding::Utf8, &cancel, &mut |_| {})
+            .unwrap()
+    );
+    let expected = format!("{text}** 끝\n");
+    assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+    // Opened again it reads back the same, in the new encoding.
+    let again = Document::open(&path).unwrap();
+    again.wait_for_index();
+    assert_eq!(again.encoding(), Encoding::Utf8);
+    assert_matches(&again, expected.as_bytes());
+
+    // Wrongly read bytes are refused instead of being turned into U+FFFD.
+    let wrong = dir.path().join("wrong.inp");
+    let cp949 = Encoding::Cp949.encode(text).into_owned();
+    fs::write(&wrong, &cp949).unwrap();
+    let doc = Document::open_as(&wrong, Some(Encoding::Utf8)).unwrap();
+    let err = doc
+        .save_converted(&wrong, Encoding::Cp949, &cancel, &mut |_| {})
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("line 1 has bytes that are not valid UTF-8"),
+        "{err}"
+    );
+    assert_eq!(fs::read(&wrong).unwrap(), cp949);
+}
+
+#[test]
+fn box_columns_follow_the_chosen_encoding() {
+    // 日本 takes columns 2..6 in Shift-JIS.
+    let (_file, doc) = open(b"$ \x93\xFA\x96\x7B x\n");
+    doc.set_encoding(Some(Encoding::ShiftJis)).unwrap();
+    assert_eq!(doc.box_text(0, 0, 2, 6).unwrap(), "日本");
+}

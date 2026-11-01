@@ -3,6 +3,8 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 
+export type Encoding = "utf8" | "cp949" | "shiftJis" | "gbk" | "big5" | "windows1252";
+
 export interface DocState {
   len: number;
   dirty: boolean;
@@ -15,7 +17,7 @@ export interface DocInfo {
   /** Null for a new document that has no file yet. */
   path: string | null;
   name: string;
-  encoding: "utf8" | "cp949";
+  encoding: Encoding;
   eol: "lf" | "crlf";
   state: DocState;
 }
@@ -114,7 +116,12 @@ export const listDir = (path: string) => invoke<DirEntry[]>("list_dir", { path }
 /** Folders from the root down to `path`, ending with `path`; empty for a relative path. */
 export const pathChain = (path: string) => invoke<string[]>("path_chain", { path });
 export const pathKind = (path: string) => invoke<"file" | "dir" | null>("path_kind", { path });
-export const openDocument = (path: string) => invoke<DocInfo>("open_document", { path });
+/** Opens `path` to read in `encoding`, or in the one detected. */
+export const openDocument = (path: string, encoding: Encoding | null = null) =>
+  invoke<DocInfo>("open_document", { path, encoding });
+/** Reads the same bytes in `encoding`, or back in the one detected; returns the encoding in use. */
+export const setEncoding = (id: number, encoding: Encoding | null) =>
+  invoke<Encoding>("set_encoding", { id, encoding });
 /** A new, empty document without a file (its name is up to the caller). */
 export const newDocument = () => invoke<DocInfo>("new_document");
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
@@ -191,6 +198,13 @@ export function saveAs(id: number, path: string, onProgress: (written: number) =
   const channel = new Channel<number>();
   channel.onmessage = onProgress;
   return invoke<SavedAs>("save_as", { id, path, onProgress: channel });
+}
+
+/** Writes the text to `path` converted to `encoding`; open it again to go on. */
+export function saveConverted(id: number, path: string, encoding: Encoding, onProgress: (read: number) => void) {
+  const channel = new Channel<number>();
+  channel.onmessage = onProgress;
+  return invoke<void>("save_converted", { id, path, encoding, onProgress: channel });
 }
 
 export function save(id: number, onProgress: (written: number) => void) {

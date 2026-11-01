@@ -1,22 +1,57 @@
-//! Text encodings. Solver decks are ASCII, but comments may carry Korean in
-//! UTF-8 or CP949 (the Korean Windows code page). For display each line is
-//! decoded as UTF-8 when valid and as CP949 otherwise; typed text is encoded
-//! in the encoding detected for the whole file.
+//! Text encodings. Solver decks are ASCII, but comments may carry Korean or
+//! other text in UTF-8 or a legacy code page.
+//!
+//! Every encoding here is ASCII compatible: a line feed byte is always a line
+//! feed, which the line index and the whole byte-offset model rely on. That
+//! is why UTF-16 is not among them.
+//!
+//! Until the user chooses an encoding, each line is shown as UTF-8 when valid
+//! and as CP949 (the Korean Windows code page) otherwise, and typed text is
+//! encoded in the encoding detected for the whole file.
 
 use std::borrow::Cow;
+use std::io::{self, Write};
 
-// encoding_rs implements the WHATWG EUC-KR, which is CP949.
-use encoding_rs::EUC_KR;
-use serde::Serialize;
+use encoding_rs::{DecoderResult, EncoderResult};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+const CONVERT_BUFFER: usize = 1 << 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Encoding {
     Utf8,
     Cp949,
+    ShiftJis,
+    Gbk,
+    Big5,
+    Windows1252,
 }
 
 impl Encoding {
+    fn codec(self) -> &'static encoding_rs::Encoding {
+        match self {
+            Encoding::Utf8 => encoding_rs::UTF_8,
+            // The WHATWG EUC-KR is CP949, and its Shift_JIS is CP932.
+            Encoding::Cp949 => encoding_rs::EUC_KR,
+            Encoding::ShiftJis => encoding_rs::SHIFT_JIS,
+            Encoding::Gbk => encoding_rs::GBK,
+            Encoding::Big5 => encoding_rs::BIG5,
+            Encoding::Windows1252 => encoding_rs::WINDOWS_1252,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Encoding::Utf8 => "UTF-8",
+            Encoding::Cp949 => "CP949",
+            Encoding::ShiftJis => "Shift-JIS",
+            Encoding::Gbk => "GBK",
+            Encoding::Big5 => "Big5",
+            Encoding::Windows1252 => "Windows-1252",
+        }
+    }
+
     /// UTF-8 unless the sample has bytes that are not valid UTF-8.
     pub fn detect(sample: &[u8]) -> Self {
         match std::str::from_utf8(sample) {
@@ -27,17 +62,11 @@ impl Encoding {
     }
 
     pub fn encode<'a>(self, text: &'a str) -> Cow<'a, [u8]> {
-        match self {
-            Encoding::Utf8 => Cow::Borrowed(text.as_bytes()),
-            Encoding::Cp949 => EUC_KR.encode(text).0,
-        }
+        self.codec().encode(text).0
     }
 
     pub fn decode(self, bytes: &[u8]) -> Cow<'_, str> {
-        match self {
-            Encoding::Utf8 => String::from_utf8_lossy(bytes),
-            Encoding::Cp949 => EUC_KR.decode_without_bom_handling(bytes).0,
-        }
+        self.codec().decode_without_bom_handling(bytes).0
     }
 }
 
@@ -49,39 +78,47 @@ pub struct Decoded {
     pub starts: Option<Vec<u32>>,
 }
 
-pub fn decode_line(bytes: &[u8]) -> Decoded {
+/// Decodes a line in the encoding the user `chosen`; without one, as UTF-8
+/// when valid and as CP949 otherwise.
+pub fn decode_line(bytes: &[u8], chosen: Option<Encoding>) -> Decoded {
     if bytes.is_ascii() {
         let text = String::from_utf8(bytes.to_vec()).expect("ASCII is UTF-8");
         return Decoded { text, starts: None };
     }
+    let encoding = chosen.unwrap_or(match std::str::from_utf8(bytes) {
+        Ok(_) => Encoding::Utf8,
+        Err(_) => Encoding::Cp949,
+    });
     let mut text = String::with_capacity(bytes.len());
     let mut starts = Vec::with_capacity(bytes.len() + 1);
-    let mut push = |pos: usize, s: &str| {
-        for c in s.chars() {
-            starts.extend(std::iter::repeat_n(pos as u32, c.len_utf16()));
-            text.push(c);
-        }
+    let mut push = |pos: usize, c: char| {
+        starts.extend(std::iter::repeat_n(pos as u32, c.len_utf16()));
+        text.push(c);
     };
-    match std::str::from_utf8(bytes) {
-        Ok(s) => {
-            for (pos, c) in s.char_indices() {
-                push(pos, c.encode_utf8(&mut [0; 4]));
+    if encoding == Encoding::Utf8 {
+        let mut pos = 0;
+        for chunk in bytes.utf8_chunks() {
+            for (i, c) in chunk.valid().char_indices() {
+                push(pos + i, c);
+            }
+            pos += chunk.valid().len();
+            if !chunk.invalid().is_empty() {
+                push(pos, char::REPLACEMENT_CHARACTER);
+                pos += chunk.invalid().len();
             }
         }
-        // CP949: one byte for ASCII, two for anything else.
-        Err(_) => {
-            let mut pos = 0;
-            while pos < bytes.len() {
-                let n = if bytes[pos] < 0x80 || pos + 1 == bytes.len() {
-                    1
-                } else {
-                    2
-                };
-                push(
-                    pos,
-                    &EUC_KR.decode_without_bom_handling(&bytes[pos..pos + n]).0,
-                );
-                pos += n;
+    } else {
+        // Byte by byte: a character comes out when its last byte goes in.
+        let mut decoder = encoding.codec().new_decoder_without_bom_handling();
+        let mut out = String::with_capacity(32);
+        let mut start = 0;
+        for (i, byte) in bytes.iter().enumerate() {
+            out.clear();
+            let last = i + 1 == bytes.len();
+            let _ = decoder.decode_to_string(std::slice::from_ref(byte), &mut out, last);
+            if !out.is_empty() {
+                out.chars().for_each(|c| push(start, c));
+                start = i + 1;
             }
         }
     }
@@ -89,6 +126,92 @@ pub fn decode_line(bytes: &[u8]) -> Decoded {
     Decoded {
         text,
         starts: Some(starts),
+    }
+}
+
+/// Converts text between encodings in a stream, chunk by chunk, so a
+/// character may straddle two chunks. It refuses rather than damages: a
+/// malformed byte or a character the target lacks is an error.
+pub struct Converter {
+    from: Encoding,
+    to: Encoding,
+    decoder: encoding_rs::Decoder,
+    encoder: encoding_rs::Encoder,
+    utf8: String,
+    output: Vec<u8>,
+    /// Line feeds converted so far, to say where a problem is.
+    newlines: u64,
+}
+
+impl Converter {
+    pub fn new(from: Encoding, to: Encoding) -> Self {
+        Self {
+            from,
+            to,
+            decoder: from.codec().new_decoder_without_bom_handling(),
+            encoder: to.codec().new_encoder(),
+            utf8: String::with_capacity(CONVERT_BUFFER),
+            output: Vec::with_capacity(CONVERT_BUFFER),
+            newlines: 0,
+        }
+    }
+
+    /// Converts the next chunk to `out`; `last` marks the end of the text.
+    pub fn write(&mut self, mut input: &[u8], last: bool, out: &mut impl Write) -> io::Result<()> {
+        loop {
+            self.utf8.clear();
+            let (result, read) =
+                self.decoder
+                    .decode_to_string_without_replacement(input, &mut self.utf8, last);
+            input = &input[read..];
+            match result {
+                DecoderResult::Malformed(..) => {
+                    return Err(io::Error::other(format!(
+                        "line {} has bytes that are not valid {}; read the file with the right encoding first",
+                        self.line(self.utf8.len()),
+                        self.from.label()
+                    )));
+                }
+                DecoderResult::OutputFull => self.encode(false, out)?,
+                DecoderResult::InputEmpty => return self.encode(last, out),
+            }
+        }
+    }
+
+    /// Writes `utf8` to `out` in the target encoding.
+    fn encode(&mut self, last: bool, out: &mut impl Write) -> io::Result<()> {
+        let mut done = 0;
+        loop {
+            self.output.clear();
+            let (result, read) = self.encoder.encode_from_utf8_to_vec_without_replacement(
+                &self.utf8[done..],
+                &mut self.output,
+                last,
+            );
+            done += read;
+            out.write_all(&self.output)?;
+            match result {
+                EncoderResult::Unmappable(c) => {
+                    return Err(io::Error::other(format!(
+                        "\"{c}\" on line {} cannot be written in {}",
+                        self.line(done),
+                        self.to.label()
+                    )));
+                }
+                EncoderResult::OutputFull => {}
+                EncoderResult::InputEmpty => {
+                    self.newlines +=
+                        memchr::memchr_iter(b'\n', self.utf8.as_bytes()).count() as u64;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// 1-based line number of position `pos` in `utf8`.
+    fn line(&self, pos: usize) -> u64 {
+        let before = &self.utf8.as_bytes()[..pos];
+        self.newlines + memchr::memchr_iter(b'\n', before).count() as u64 + 1
     }
 }
 
@@ -120,9 +243,14 @@ pub fn char_width(c: char) -> u32 {
 /// `[left, right)`, widened to whole characters, as `(start, end, pad)`.
 /// When the line ends before `left`, both are its end and `pad` is the
 /// number of spaces missing up to `left`. With `left == right` it is an
-/// insertion point.
-pub fn column_range(bytes: &[u8], left: u32, right: u32) -> (usize, usize, u32) {
-    let line = decode_line(bytes);
+/// insertion point. `chosen` is as for [`decode_line`].
+pub fn column_range(
+    bytes: &[u8],
+    left: u32,
+    right: u32,
+    chosen: Option<Encoding>,
+) -> (usize, usize, u32) {
+    let line = decode_line(bytes, chosen);
     let byte = |unit: usize| line.starts.as_ref().map_or(unit, |s| s[unit] as usize);
     let (mut start, mut end) = (None, None);
     let (mut col, mut unit) = (0, 0);
@@ -156,28 +284,130 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_chosen_encoding_decides() {
+        // 日本語 in Shift-JIS, which is not valid UTF-8.
+        let sjis = b"a\x93\xFA\x96\x7B\x8C\xEAb";
+        let line = decode_line(sjis, Some(Encoding::ShiftJis));
+        assert_eq!(line.text, "a日本語b");
+        assert_eq!(line.starts.as_deref(), Some(&[0, 1, 3, 5, 7, 8][..]));
+        // Without a choice the same bytes fall back to CP949.
+        assert_ne!(decode_line(sjis, None).text, "a日本語b");
+
+        // One byte, one character, whatever the byte.
+        let line = decode_line(b"caf\xE9", Some(Encoding::Windows1252));
+        assert_eq!(line.text, "café");
+        assert_eq!(line.starts.as_deref(), Some(&[0, 1, 2, 3, 4][..]));
+
+        // Forced UTF-8 keeps its offsets past invalid bytes.
+        let line = decode_line(b"a\xFFb\xEC\x95\x88", Some(Encoding::Utf8));
+        assert_eq!(line.text, "a\u{FFFD}b안");
+        assert_eq!(line.starts.as_deref(), Some(&[0, 1, 2, 3, 6][..]));
+
+        // A surrogate pair: two units at one byte offset.
+        let line = decode_line("😀x".as_bytes(), Some(Encoding::Utf8));
+        assert_eq!(line.starts.as_deref(), Some(&[0, 0, 4, 5][..]));
+
+        // Columns follow the chosen reading: 日本 takes columns 0..4.
+        assert_eq!(
+            column_range(b"\x93\xFA\x96\x7B x", 0, 4, Some(Encoding::ShiftJis)),
+            (0, 4, 0)
+        );
+    }
+
+    fn convert(input: &[u8], from: Encoding, to: Encoding, chunk: usize) -> io::Result<Vec<u8>> {
+        let mut converter = Converter::new(from, to);
+        let mut out = Vec::new();
+        let chunks: Vec<_> = input.chunks(chunk.max(1)).collect();
+        for (i, part) in chunks.iter().enumerate() {
+            converter.write(part, i + 1 == chunks.len(), &mut out)?;
+        }
+        if chunks.is_empty() {
+            converter.write(b"", true, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn converts_across_chunk_boundaries() {
+        let text = "** 한글 주석\n*Node\n1, 0., 0., 0.\n** 끝\n";
+        let cp949 = Encoding::Cp949.encode(text).into_owned();
+        for chunk in [1, 2, 3, 7, 1000] {
+            let utf8 = convert(&cp949, Encoding::Cp949, Encoding::Utf8, chunk).unwrap();
+            assert_eq!(utf8, text.as_bytes(), "chunk {chunk}");
+            let back = convert(text.as_bytes(), Encoding::Utf8, Encoding::Cp949, chunk).unwrap();
+            assert_eq!(back, cp949, "chunk {chunk}");
+        }
+        assert_eq!(
+            convert(b"", Encoding::Utf8, Encoding::Cp949, 8).unwrap(),
+            b""
+        );
+    }
+
+    #[test]
+    fn longer_than_its_buffers() {
+        let text = "한글 comment\n".repeat(400_000);
+        assert!(text.len() > 2 * CONVERT_BUFFER);
+        let cp949 = Encoding::Cp949.encode(&text).into_owned();
+        let utf8 = convert(&cp949, Encoding::Cp949, Encoding::Utf8, cp949.len()).unwrap();
+        assert!(utf8 == text.as_bytes());
+    }
+
+    #[test]
+    fn refuses_rather_than_damages() {
+        let err = convert(
+            "*Node\n** 한글\n".as_bytes(),
+            Encoding::Utf8,
+            Encoding::Windows1252,
+            4,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "\"한\" on line 2 cannot be written in Windows-1252"
+        );
+
+        let err = convert(b"*Node\n\n\xFF\n", Encoding::Utf8, Encoding::Cp949, 3).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "line 3 has bytes that are not valid UTF-8; read the file with the right encoding first"
+        );
+    }
+
+    #[test]
     fn column_ranges_follow_display_width() {
         let line = "1, 한글, x".as_bytes(); // 한 and 글 take two columns each
-        assert_eq!(column_range(line, 0, 2), (0, 2, 0));
-        assert_eq!(column_range(line, 3, 7), (3, 9, 0), "한글 is columns 3..7");
+        assert_eq!(column_range(line, 0, 2, None), (0, 2, 0));
         assert_eq!(
-            column_range(line, 4, 5),
+            column_range(line, 3, 7, None),
+            (3, 9, 0),
+            "한글 is columns 3..7"
+        );
+        assert_eq!(
+            column_range(line, 4, 5, None),
             (3, 6, 0),
             "half of 한 widens to all of it"
         );
-        assert_eq!(column_range(line, 7, 7), (9, 9, 0), "insertion point");
-        assert_eq!(column_range(line, 12, 14), (12, 12, 2), "past the end: pad");
-        assert_eq!(column_range(b"a\tb", 8, 9), (2, 3, 0), "tab to column 8");
+        assert_eq!(column_range(line, 7, 7, None), (9, 9, 0), "insertion point");
+        assert_eq!(
+            column_range(line, 12, 14, None),
+            (12, 12, 2),
+            "past the end: pad"
+        );
+        assert_eq!(
+            column_range(b"a\tb", 8, 9, None),
+            (2, 3, 0),
+            "tab to column 8"
+        );
     }
 
     #[test]
     fn maps_utf16_units_to_bytes() {
-        let line = decode_line("a한b".as_bytes());
+        let line = decode_line("a한b".as_bytes(), None);
         assert_eq!(line.text, "a한b");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 4, 5][..]));
 
-        let (cp949, _, _) = EUC_KR.encode("a한b");
-        let line = decode_line(&cp949);
+        let (cp949, _, _) = encoding_rs::EUC_KR.encode("a한b");
+        let line = decode_line(&cp949, None);
         assert_eq!(line.text, "a한b");
         assert_eq!(line.starts.as_deref(), Some(&[0, 1, 3, 4][..]));
     }
@@ -192,7 +422,7 @@ mod tests {
             "cut mid-character"
         );
         assert_eq!(
-            Encoding::detect(&EUC_KR.encode("** 한글").0),
+            Encoding::detect(&encoding_rs::EUC_KR.encode("** 한글").0),
             Encoding::Cp949
         );
     }

@@ -45,5 +45,6 @@ cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어
 | Alt+C | 컬럼 모드 켜기 / 끄기 (켜면 Shift+방향키와 드래그가 박스 선택, 상태바에 COL) |
 | Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전 |
 | Ctrl+H, Enter, Ctrl+Alt+Enter | 바꾸기, 바꾸고 다음 찾기, 모두 바꾸기 (한 번에 실행 취소, 최대 200만 건) |
+| 상태바의 인코딩 표시 클릭 | Read as: 다른 인코딩으로 다시 읽기 (파일은 그대로, 선택은 파일별로 기억) / Save as: 변환해서 저장 (없는 글자나 깨진 바이트가 있으면 중단) |
 | Ctrl+G | 줄 번호로 이동 |
 | Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |

@@ -131,13 +131,56 @@ pub async fn path_kind(path: PathBuf) -> Option<PathKind> {
 }
 
 #[tauri::command]
-pub async fn open_document(path: PathBuf, docs: State<'_, Docs>) -> Result<DocInfo, String> {
-    let doc = {
-        let path = path.clone();
-        blocking(move || Document::open(&path).map_err(|e| format!("{}: {e}", path.display())))
-            .await?
-    };
+pub async fn open_document(
+    path: PathBuf,
+    encoding: Option<Encoding>,
+    docs: State<'_, Docs>,
+) -> Result<DocInfo, String> {
+    let doc = blocking(move || {
+        Document::open_as(&path, encoding).map_err(|e| format!("{}: {e}", path.display()))
+    })
+    .await?;
     Ok(docs.add(doc))
+}
+
+/// Reads the same bytes in `encoding`, or back in the one detected; the file
+/// does not change. Returns the encoding now in use.
+#[tauri::command]
+pub async fn set_encoding(
+    id: u32,
+    encoding: Option<Encoding>,
+    docs: State<'_, Docs>,
+) -> Result<Encoding, String> {
+    let open = docs.get(id)?;
+    blocking(move || open.doc.set_encoding(encoding).map_err(|e| e.to_string())).await
+}
+
+/// Writes the text to `path` converted to `encoding`, streaming the bytes
+/// read to `on_progress`. The document no longer matches the file: open it
+/// again to go on.
+#[tauri::command]
+pub async fn save_converted(
+    id: u32,
+    path: PathBuf,
+    encoding: Encoding,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+) -> Result<(), String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        let mut last = Instant::now();
+        let mut progress = |read| {
+            if last.elapsed() >= Duration::from_millis(100) {
+                last = Instant::now();
+                let _ = on_progress.send(read);
+            }
+        };
+        open.doc
+            .save_converted(&path, encoding, &AtomicBool::new(false), &mut progress)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// A new, empty document without a file; the frontend names it.

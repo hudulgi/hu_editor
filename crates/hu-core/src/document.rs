@@ -94,6 +94,14 @@ impl State {
     }
 }
 
+/// How the text is read.
+#[derive(Debug, Clone, Copy)]
+struct Reading {
+    encoding: Encoding,
+    /// The user chose it, rather than it being detected.
+    chosen: bool,
+}
+
 /// Size and modification time of the file as last opened or saved here.
 type Stamp = (u64, Option<SystemTime>);
 
@@ -101,7 +109,7 @@ pub struct Document {
     original: Original,
     added: Arc<Added>,
     state: RwLock<State>,
-    encoding: Encoding,
+    reading: RwLock<Reading>,
     eol: Eol,
     /// Where it saves: the file it was opened from or last saved as; `None`
     /// for a new document.
@@ -114,17 +122,27 @@ impl Document {
     /// Opens `path` without reading it; the line index is built on a
     /// background thread.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_as(path, None)
+    }
+
+    /// Opens `path` to read in `chosen`, or in the encoding detected.
+    pub fn open_as(path: impl AsRef<Path>, chosen: Option<Encoding>) -> io::Result<Self> {
         let path = path.as_ref();
-        Self::from_source(FileSource::open(path)?, Some(path.to_path_buf()))
+        Self::from_source(FileSource::open(path)?, Some(path.to_path_buf()), chosen)
     }
 
     /// A new, empty document with no file yet: UTF-8, with the platform's
     /// line breaks.
     pub fn untitled() -> Self {
-        Self::from_source(FileSource::empty(), None).expect("an empty source has nothing to read")
+        Self::from_source(FileSource::empty(), None, None)
+            .expect("an empty source has nothing to read")
     }
 
-    fn from_source(source: FileSource, path: Option<PathBuf>) -> io::Result<Self> {
+    fn from_source(
+        source: FileSource,
+        path: Option<PathBuf>,
+        chosen: Option<Encoding>,
+    ) -> io::Result<Self> {
         let source = Arc::new(source);
         let index = Arc::new(RwLock::new(LineIndex::default()));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -152,7 +170,10 @@ impl Document {
                 history: History::default(),
                 version: 0,
             }),
-            encoding: Encoding::detect(&sample),
+            reading: RwLock::new(Reading {
+                encoding: chosen.unwrap_or_else(|| Encoding::detect(&sample)),
+                chosen: chosen.is_some(),
+            }),
             eol: Eol::detect(&sample),
             path: RwLock::new(path),
             cancel,
@@ -173,7 +194,31 @@ impl Document {
     }
 
     pub fn encoding(&self) -> Encoding {
-        self.encoding
+        self.reading.read().unwrap().encoding
+    }
+
+    /// Reads the same bytes in `chosen`, or back in the encoding detected.
+    /// The file does not change. Refused with unsaved changes when the
+    /// encoding would change: they are in the current one, and saving would
+    /// mix the two.
+    pub fn set_encoding(&self, chosen: Option<Encoding>) -> io::Result<Encoding> {
+        let encoding = match chosen {
+            Some(encoding) => encoding,
+            None => {
+                let text = self.text();
+                Encoding::detect(&text.read_range(0, text.len().min(SNIFF_LEN as u64))?)
+            }
+        };
+        if encoding != self.encoding() && self.state().dirty {
+            return Err(io::Error::other(
+                "save or undo your changes before reading the file in another encoding",
+            ));
+        }
+        *self.reading.write().unwrap() = Reading {
+            encoding,
+            chosen: chosen.is_some(),
+        };
+        Ok(encoding)
     }
 
     pub fn eol(&self) -> Eol {
@@ -199,11 +244,13 @@ impl Document {
                 .pieces
                 .settle(&|p| self.newlines(p));
         }
+        let reading = *self.reading.read().unwrap();
         let state = self.state.read().unwrap();
         let text = Text {
             pieces: state.pieces.clone(),
             original: self.original.clone(),
             added: self.added.clone(),
+            chosen: reading.chosen.then_some(reading.encoding),
         };
         (text, state.history.current(), state.version)
     }
@@ -382,7 +429,7 @@ impl Document {
             .iter()
             .map(|l| {
                 Ok(self
-                    .encoding
+                    .encoding()
                     .decode(&text.read_range(l.start, l.end)?)
                     .into_owned())
             })
@@ -406,7 +453,7 @@ impl Document {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(u64),
     ) -> io::Result<Option<(usize, Option<EditResult>)>> {
-        let needle = self.encoding.encode(needle).into_owned();
+        let needle = self.encoding().encode(needle).into_owned();
         let piece = self.added_piece(&self.encode(replacement));
         for _ in 0..3 {
             let (text, _, version) = self.snapshot();
@@ -498,7 +545,7 @@ impl Document {
             )));
         }
         let bytes = self.text().read_range(start, end)?;
-        Ok(self.encoding.decode(&bytes).into_owned())
+        Ok(self.encoding().decode(&bytes).into_owned())
     }
 
     /// Saves to the file it was opened from or last saved as. A new
@@ -522,30 +569,32 @@ impl Document {
         progress: &mut dyn FnMut(u64),
     ) -> io::Result<bool> {
         let (text, id, _) = self.snapshot();
-        let temp = temp_path(path);
-        let written = (|| {
-            let mut out = BufWriter::with_capacity(8 << 20, File::create(&temp)?);
-            if !text.write_to(&mut out, cancel, progress)? {
-                return Ok(false);
-            }
-            out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-            if let Ok(meta) = fs::metadata(path) {
-                fs::set_permissions(&temp, meta.permissions())?;
-            }
-            // A replaced original stays readable through the open handle, so
-            // unchanged pieces and undo keep working.
-            fs::rename(&temp, path)?;
-            Ok(true)
-        })();
-        if !matches!(written, Ok(true)) {
-            let _ = fs::remove_file(&temp);
-            return written;
+        if !write_file(path, |out| text.write_to(out, cancel, progress))? {
+            return Ok(false);
         }
         self.state.write().unwrap().history.mark_saved(id);
         let meta = fs::metadata(path)?;
         *self.disk.lock().unwrap() = (meta.len(), meta.modified().ok());
         *self.path.write().unwrap() = Some(path.to_path_buf());
         Ok(true)
+    }
+
+    /// Writes the text to `path` converted to the encoding `to`, leaving any
+    /// file there intact if a byte is malformed or a character does not
+    /// exist in `to`. The file's bytes then no longer match this document's
+    /// offsets: open it again to go on. Returns `false` if cancelled.
+    pub fn save_converted(
+        &self,
+        path: &Path,
+        to: Encoding,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<bool> {
+        let (text, ..) = self.snapshot();
+        let from = self.encoding();
+        write_file(path, |out| {
+            text.write_converted(from, to, out, cancel, progress)
+        })
     }
 
     /// Whether the file on disk changed since it was opened or saved here.
@@ -576,7 +625,7 @@ impl Document {
             Eol::Lf => text,
             Eol::Crlf => text.replace('\n', "\r\n"),
         };
-        self.encoding.encode(&text).into_owned()
+        self.encoding().encode(&text).into_owned()
     }
 
     fn newlines(&self, piece: &Piece) -> Option<u64> {
@@ -595,6 +644,33 @@ impl Drop for Document {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+}
+
+/// Writes through `write` to a temporary file next to `path`, which then
+/// replaces any file there. Returns `write`'s answer; `false` writes nothing.
+fn write_file(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> io::Result<bool>,
+) -> io::Result<bool> {
+    let temp = temp_path(path);
+    let written = (|| {
+        let mut out = BufWriter::with_capacity(8 << 20, File::create(&temp)?);
+        if !write(&mut out)? {
+            return Ok(false);
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        if let Ok(meta) = fs::metadata(path) {
+            fs::set_permissions(&temp, meta.permissions())?;
+        }
+        // A replaced original stays readable through the open handle, so
+        // unchanged pieces and undo keep working.
+        fs::rename(&temp, path)?;
+        Ok(true)
+    })();
+    if !matches!(written, Ok(true)) {
+        let _ = fs::remove_file(&temp);
+    }
+    written
 }
 
 /// `.name.hu-save` next to `path`.

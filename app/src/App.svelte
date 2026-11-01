@@ -4,9 +4,10 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
-  import { formatNumber as fmt, formatSize as size, parentName, samePath } from "./lib/format";
+  import { formatNumber as fmt, formatSize as size, isWindows, parentName, samePath } from "./lib/format";
   import { dependsOnContent, detectLang, LANG_LABEL, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
+  import EncodingMenu, { ENCODING_LABEL } from "./lib/EncodingMenu.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
@@ -24,6 +25,17 @@
     rate: number;
     caret: CaretInfo | null;
     changedOnDisk: boolean;
+    /** The user chose the encoding, rather than it being detected. */
+    chosenEncoding: boolean;
+    /** Line to go to once the line index has reached it. */
+    goto: number | null;
+  }
+
+  /** A document just opened, ready for a tab. */
+  interface Loaded {
+    doc: api.DocInfo;
+    lang: Lang;
+    chosenEncoding: boolean;
   }
 
   let tabs = $state<Tab[]>([]);
@@ -37,6 +49,7 @@
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
   let replacing = $state(false);
+  let encodingOpen = $state(false);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
   let gotoInput = $state<HTMLInputElement>();
@@ -109,6 +122,7 @@
   function activate(id: number) {
     activeId = id;
     gotoOpen = false;
+    encodingOpen = false;
     tick().then(() => editors[id]?.focus());
   }
 
@@ -119,8 +133,18 @@
   }
 
   /** Adds a tab next to the active one, or in place of `replacing`. */
-  function add(doc: api.DocInfo, lang: Lang, replacing: Tab | null = null) {
-    const tab: Tab = { doc, lang, state: doc.state, status: null, rate: 0, caret: null, changedOnDisk: false };
+  function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null) {
+    const tab: Tab = {
+      doc,
+      lang,
+      state: doc.state,
+      status: null,
+      rate: 0,
+      caret: null,
+      changedOnDisk: false,
+      chosenEncoding,
+      goto,
+    };
     const at = replacing ? tabs.indexOf(replacing) : active ? tabs.indexOf(active) + 1 : tabs.length;
     if (replacing) {
       drop(replacing.doc.id);
@@ -226,6 +250,7 @@
       tab.doc.path = done.path;
       tab.doc.name = done.name;
       tab.lang = await langOf(tab.doc.id, done.name);
+      if (tab.chosenEncoding) rememberEncoding(done.path, tab.doc.encoding);
       if (tab.doc.id === activeId) explorer?.reveal(done.path, false);
     });
   }
@@ -245,6 +270,70 @@
     }
   }
 
+  // An encoding the user chose stays with the file, across reopening and restarts.
+  const encodingKey = (path: string) => (isWindows ? path.toLowerCase() : path);
+  const chosenEncodings = (): Record<string, api.Encoding> => JSON.parse(localStorage.getItem("hu.encodings") ?? "{}");
+
+  function rememberEncoding(path: string, encoding: api.Encoding | null) {
+    const chosen = chosenEncodings();
+    if (encoding) chosen[encodingKey(path)] = encoding;
+    else delete chosen[encodingKey(path)];
+    localStorage.setItem("hu.encodings", JSON.stringify(chosen));
+  }
+
+  function closeEncodingMenu() {
+    encodingOpen = false;
+    editor?.focus();
+  }
+
+  /** Reads the tab's file in `encoding`, or the one detected; the file does not change. */
+  async function readAs(tab: Tab, encoding: api.Encoding | null) {
+    closeEncodingMenu();
+    const id = tab.doc.id;
+    await editors[id]?.flush();
+    try {
+      tab.doc.encoding = await api.setEncoding(id, encoding);
+    } catch (e) {
+      notice = String(e);
+      return;
+    }
+    tab.chosenEncoding = encoding !== null;
+    if (tab.doc.path !== null) rememberEncoding(tab.doc.path, encoding);
+    editors[id]?.reread();
+  }
+
+  /** Saves the tab converted to `encoding`. Its bytes change, so it opens anew at the same line. */
+  async function saveConverted(tab: Tab, encoding: api.Encoding) {
+    closeEncodingMenu();
+    const id = tab.doc.id;
+    await editors[id]?.flush();
+    if (saving) return;
+    if (encoding === tab.doc.encoding) {
+      // Nothing to convert: a plain save, and undo stays.
+      await readAs(tab, encoding);
+      await saveTab(tab);
+      return;
+    }
+    const path =
+      tab.doc.path ?? (await saveDialog({ defaultPath: `${tab.doc.name}.inp`, filters: FILTERS }));
+    if (!path) return;
+    const line = tab.caret?.line ?? null;
+    if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
+    rememberEncoding(path, encoding);
+    try {
+      add(await load(path), tab, line);
+    } catch (e) {
+      notice = String(e);
+    }
+  }
+
+  /** Opens `path` in the encoding chosen for it, if any. */
+  async function load(path: string): Promise<Loaded> {
+    const encoding = chosenEncodings()[encodingKey(path)] ?? null;
+    const doc = await api.openDocument(path, encoding);
+    return { doc, lang: await langOf(doc.id, doc.name), chosenEncoding: encoding !== null };
+  }
+
   async function chooseFile() {
     const path = await openDialog({ multiple: false, directory: false, filters: FILTERS });
     if (typeof path === "string") await openPath(path);
@@ -260,11 +349,10 @@
       activate(open.doc.id);
     } else {
       try {
-        const doc = await api.openDocument(path);
-        const lang = await langOf(doc.id, doc.name);
+        const loaded = await load(path);
         // A blank, untouched new document gives way to the file.
         const blank = active && active.doc.path === null && !active.state.dirty && active.state.len === 0;
-        add(doc, lang, blank ? active : null);
+        add(loaded, blank ? active : null);
       } catch (e) {
         notice = String(e);
         return;
@@ -278,15 +366,14 @@
   /** A new, empty document in its own tab: Untitled-1, Untitled-2, … */
   async function newFile() {
     const doc = await api.newDocument();
-    add({ ...doc, name: `Untitled-${++untitled}` }, "plain");
+    add({ doc: { ...doc, name: `Untitled-${++untitled}` }, lang: "plain", chosenEncoding: false });
   }
 
   /** Reopens a tab's file after it changed on disk; unsaved changes go. */
   async function reload(tab: Tab) {
     if (!tab.doc.path) return;
     try {
-      const doc = await api.openDocument(tab.doc.path);
-      add(doc, await langOf(doc.id, doc.name), tab);
+      add(await load(tab.doc.path), tab);
     } catch (e) {
       notice = String(e);
     }
@@ -303,6 +390,10 @@
       if (at > last.at) tab.rate = ((next.scanned - last.scanned) / (at - last.at)) * 1000;
       last = { at, scanned: next.scanned };
       tab.status = next;
+      if (tab.goto !== null && (next.complete || next.lines > tab.goto)) {
+        editors[id]?.gotoLine(Math.min(tab.goto, next.lines - 1));
+        tab.goto = null;
+      }
       if (next.complete || next.error) clearInterval(polls.get(id));
     };
     poll();
@@ -571,11 +662,27 @@
         <span class="mode" title="Column mode (Alt+C): Shift+arrows and dragging select boxes">COL</span>
       {/if}
       <span>{indexText}</span>
-      <span>{active.doc.encoding === "cp949" ? "CP949" : "UTF-8"}</span>
+      <button
+        class="status-button"
+        title="Read or save in another encoding"
+        onclick={() => (encodingOpen = !encodingOpen)}>{ENCODING_LABEL[active.doc.encoding]}</button
+      >
       <span>{active.doc.eol === "crlf" ? "CRLF" : "LF"}</span>
       <span>{LANG_LABEL[lang]}</span>
     {/if}
   </footer>
+
+  {#if encodingOpen && active}
+    {@const tab = active}
+    <EncodingMenu
+      current={tab.doc.encoding}
+      chosen={tab.chosenEncoding}
+      dirty={tab.state.dirty}
+      onread={(encoding) => readAs(tab, encoding)}
+      onsave={(encoding) => saveConverted(tab, encoding)}
+      onclose={closeEncodingMenu}
+    />
+  {/if}
 
   {#if prompt}
     <div class="backdrop" role="presentation">
@@ -755,6 +862,17 @@
   }
   .spacer {
     flex: 1;
+  }
+  .status-button {
+    padding: 0 4px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font-size: inherit;
+  }
+  .status-button:hover {
+    background: rgba(255, 255, 255, 0.2);
   }
   .mode {
     padding: 0 6px;

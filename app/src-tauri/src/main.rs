@@ -30,6 +30,8 @@ fn main() {
             commands::replace_all,
             commands::save,
             commands::save_as,
+            commands::set_encoding,
+            commands::save_converted,
             commands::find,
             commands::cancel_find,
         ])

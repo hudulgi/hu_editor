@@ -828,6 +828,19 @@
     });
   }
 
+  /** The same bytes are now read in another encoding: shows them, with the
+   * caret at a line start, a character boundary in any encoding. */
+  export function reread() {
+    enqueue(async () => {
+      box = null;
+      refresh();
+      await settled();
+      const row = rowOf(caret);
+      anchor = caret = row >= 0 && view ? view.lines[row].offset : (view?.top ?? 0);
+      preferredCol = null;
+    });
+  }
+
   export function gotoLine(line: number) {
     enqueue(async () => {
       jump({ kind: "line", line });

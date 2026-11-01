@@ -99,7 +99,8 @@
 
   function select(key: string, path: string) {
     selected = key;
-    address = path;
+    // Not while the user is typing there: a reveal can finish at any moment.
+    if (document.activeElement !== addressInput) address = path;
     addressError = null;
     localStorage.setItem(SAVED_PATH, path);
     // Long paths: show the end, where the file name is.
@@ -187,6 +188,7 @@
       addressError = `Not found: ${path}`;
       return;
     }
+    address = path;
     if (kind === "file") onopen(path);
   }
 

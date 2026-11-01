@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::decode::{column_range, decode_line};
+use crate::decode::{Converter, Encoding, column_range, decode_line};
 use crate::original::Original;
 use crate::pieces::{Added, Pieces, Source};
 use crate::search::{self, FindOptions, FindResult, Reader};
@@ -124,6 +124,8 @@ pub struct Text {
     pub(crate) pieces: Pieces,
     pub(crate) original: Original,
     pub(crate) added: Arc<Added>,
+    /// The encoding the user chose to read it in, if any.
+    pub(crate) chosen: Option<Encoding>,
 }
 
 impl Text {
@@ -189,7 +191,7 @@ impl Text {
             bytes.pop();
             len -= 1;
         }
-        let decoded = decode_line(&bytes);
+        let decoded = decode_line(&bytes, self.chosen);
         Ok(ViewLine {
             offset: start,
             len,
@@ -340,7 +342,7 @@ impl Text {
             if bytes.last() == Some(&b'\r') {
                 bytes.pop();
             }
-            let (start, end, pad) = column_range(&bytes, left, right);
+            let (start, end, pad) = column_range(&bytes, left, right, self.chosen);
             out.push(BoxLine {
                 line,
                 start: line + start as u64,
@@ -415,6 +417,35 @@ impl Text {
             }
         }
         Ok(true)
+    }
+
+    /// Writes the whole text to `out` converted between encodings, reporting
+    /// bytes read. Returns `false` if cancelled.
+    pub fn write_converted(
+        &self,
+        from: Encoding,
+        to: Encoding,
+        out: &mut impl Write,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<bool> {
+        let mut converter = Converter::new(from, to);
+        let mut buf = vec![0; COPY_CHUNK];
+        let len = self.len();
+        let mut pos = 0;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(false);
+            }
+            let n = (len - pos).min(COPY_CHUNK as u64) as usize;
+            self.read_at(pos, &mut buf[..n])?;
+            pos += n as u64;
+            converter.write(&buf[..n], pos == len, out)?;
+            progress(pos);
+            if pos == len {
+                return Ok(true);
+            }
+        }
     }
 
     /// Feeds consecutive slices covering `[from, to)` to `f`, with the offset
