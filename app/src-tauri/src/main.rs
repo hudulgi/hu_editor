@@ -19,6 +19,7 @@ fn main() {
             commands::close_document,
             commands::index_status,
             commands::disk_changed,
+            commands::detect_dialect,
             commands::view,
             commands::edit,
             commands::undo,

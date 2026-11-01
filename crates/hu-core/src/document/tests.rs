@@ -708,3 +708,17 @@ fn save_as_leaves_the_original_alone() {
         "no temporary files left"
     );
 }
+
+#[test]
+fn dialect_follows_the_text() {
+    let (_file, doc) = open(b"");
+    assert_eq!(doc.dialect().unwrap(), None);
+    doc.edit(0, 0, "*Node\n", EditKind::Typing, (0, 0));
+    assert_eq!(doc.dialect().unwrap(), Some(Dialect::Abaqus));
+    doc.undo().unwrap();
+    doc.edit(0, 0, "GRID    1\n", EditKind::Other, (0, 0));
+    assert_eq!(doc.dialect().unwrap(), Some(Dialect::Nastran));
+
+    let (_file, nastran) = open(b"$ comment\nGRID    1\n");
+    assert_eq!(nastran.dialect().unwrap(), Some(Dialect::Nastran));
+}

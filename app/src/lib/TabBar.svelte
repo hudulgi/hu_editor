@@ -1,7 +1,10 @@
 <script lang="ts" module>
+  import type { Lang } from "./syntax";
+
   export interface TabItem {
     id: number;
     name: string;
+    lang: Lang;
     /** Null for a new document. */
     path: string | null;
     dirty: boolean;
@@ -12,7 +15,6 @@
 
 <script lang="ts">
   import { tick } from "svelte";
-  import { detectLang } from "./syntax";
 
   interface Props {
     tabs: TabItem[];
@@ -50,7 +52,6 @@
 
 <div class="strip" role="tablist" bind:this={strip} {onwheel}>
   {#each tabs as tab (tab.id)}
-    {@const lang = detectLang(tab.name)}
     <div
       class="tab"
       class:active={tab.id === active}
@@ -61,8 +62,8 @@
       title={tab.path ?? `${tab.name} (not saved yet)`}
       onmousedown={(e) => onmousedown(e, tab.id)}
     >
-      {#if lang !== "plain"}
-        <span class="badge {lang}">{lang === "abaqus" ? "A" : "N"}</span>
+      {#if tab.lang !== "plain"}
+        <span class="badge {tab.lang}">{tab.lang === "abaqus" ? "A" : "N"}</span>
       {/if}
       <span class="name" class:untitled={tab.path === null}>{tab.name}</span>
       {#if tab.hint}

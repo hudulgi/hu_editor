@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 
 use crate::decode::Encoding;
+use crate::dialect::{self, Dialect};
 use crate::history::{EditKind, History};
 use crate::line_index::{self, IndexStatus, LineIndex};
 use crate::original::Original;
@@ -477,6 +478,13 @@ impl Document {
             len: bytes.len() as u64,
             newlines: Some(memchr::memchr_iter(b'\n', bytes).count() as u64),
         })
+    }
+
+    /// Which solver the start of the current text looks written for.
+    pub fn dialect(&self) -> io::Result<Option<Dialect>> {
+        let text = self.text();
+        let sample = text.read_range(0, text.len().min(SNIFF_LEN as u64))?;
+        Ok(dialect::detect(&sample))
     }
 
     /// `[start, end)` decoded, for the clipboard.

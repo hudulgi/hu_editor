@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hu_core::{
-    BoxRows, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions, FindResult,
-    IndexStatus, View, ViewTarget, dir,
+    BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions,
+    FindResult, IndexStatus, View, ViewTarget, dir,
 };
 use serde::Serialize;
 use tauri::async_runtime::spawn_blocking;
@@ -165,6 +165,13 @@ pub fn close_document(id: u32, docs: State<'_, Docs>) {
 pub async fn index_status(id: u32, docs: State<'_, Docs>) -> Result<IndexStatus, String> {
     let open = docs.get(id)?;
     blocking(move || Ok(open.doc.index_status())).await
+}
+
+/// Which solver the document's content looks written for, if it says.
+#[tauri::command]
+pub async fn detect_dialect(id: u32, docs: State<'_, Docs>) -> Result<Option<Dialect>, String> {
+    let open = docs.get(id)?;
+    blocking(move || open.doc.dialect().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]

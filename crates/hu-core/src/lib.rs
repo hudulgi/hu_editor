@@ -9,6 +9,7 @@
 //! offset, so the viewport never waits for the index.
 
 mod decode;
+pub mod dialect;
 pub mod dir;
 pub mod document;
 mod history;
@@ -20,6 +21,7 @@ pub mod source;
 pub mod text;
 
 pub use decode::Encoding;
+pub use dialect::Dialect;
 pub use document::{Change, DocState, Document, EditResult, Eol, MAX_COPY, MAX_REPLACE};
 pub use history::EditKind;
 pub use line_index::IndexStatus;

@@ -120,6 +120,8 @@ export const newDocument = () => invoke<DocInfo>("new_document");
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });
+/** Which solver the document's content looks written for, if it says. */
+export const detectDialect = (id: number) => invoke<"abaqus" | "nastran" | null>("detect_dialect", { id });
 export const cancelFind = (id: number) => invoke<void>("cancel_find", { id });
 
 export const view = (id: number, target: ViewTarget, rows: number) =>

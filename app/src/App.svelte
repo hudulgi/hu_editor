@@ -5,7 +5,7 @@
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size, parentName, samePath } from "./lib/format";
-  import { detectLang, LANG_LABEL } from "./lib/syntax";
+  import { dependsOnContent, detectLang, LANG_LABEL, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
@@ -17,6 +17,7 @@
    * own editor (caret, selection, scroll position) mounted while hidden. */
   interface Tab {
     doc: api.DocInfo;
+    lang: Lang;
     state: api.DocState;
     status: api.IndexStatus | null;
     /** Indexing speed, bytes per second. */
@@ -30,7 +31,7 @@
   let active = $derived(tabs.find((t) => t.doc.id === activeId) ?? null);
   const editors: Record<number, ReturnType<typeof Editor> | undefined> = $state({});
   let editor = $derived(activeId === null ? undefined : editors[activeId]);
-  let lang = $derived(active ? detectLang(active.doc.name) : "plain");
+  let lang = $derived(active?.lang ?? "plain");
 
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
@@ -69,9 +70,10 @@
   let tabItems = $derived.by((): TabItem[] => {
     const count = new Map<string, number>();
     for (const tab of tabs) count.set(tab.doc.name, (count.get(tab.doc.name) ?? 0) + 1);
-    return tabs.map(({ doc, state }) => ({
+    return tabs.map(({ doc, lang, state }) => ({
       id: doc.id,
       name: doc.name,
+      lang,
       path: doc.path,
       dirty: state.dirty,
       // Same name in two folders: show the folder.
@@ -110,9 +112,15 @@
     tick().then(() => editors[id]?.focus());
   }
 
+  /** The highlighting for a document: from its name or, if that could mean either solver, its content. */
+  async function langOf(id: number, name: string): Promise<Lang> {
+    if (!dependsOnContent(name)) return detectLang(name);
+    return (await api.detectDialect(id).catch(() => null)) ?? "nastran";
+  }
+
   /** Adds a tab next to the active one, or in place of `replacing`. */
-  function add(doc: api.DocInfo, replacing: Tab | null = null) {
-    const tab: Tab = { doc, state: doc.state, status: null, rate: 0, caret: null, changedOnDisk: false };
+  function add(doc: api.DocInfo, lang: Lang, replacing: Tab | null = null) {
+    const tab: Tab = { doc, lang, state: doc.state, status: null, rate: 0, caret: null, changedOnDisk: false };
     const at = replacing ? tabs.indexOf(replacing) : active ? tabs.indexOf(active) + 1 : tabs.length;
     if (replacing) {
       drop(replacing.doc.id);
@@ -217,6 +225,7 @@
       tab.state = done.state;
       tab.doc.path = done.path;
       tab.doc.name = done.name;
+      tab.lang = await langOf(tab.doc.id, done.name);
       if (tab.doc.id === activeId) explorer?.reveal(done.path, false);
     });
   }
@@ -252,9 +261,10 @@
     } else {
       try {
         const doc = await api.openDocument(path);
+        const lang = await langOf(doc.id, doc.name);
         // A blank, untouched new document gives way to the file.
         const blank = active && active.doc.path === null && !active.state.dirty && active.state.len === 0;
-        add(doc, blank ? active : null);
+        add(doc, lang, blank ? active : null);
       } catch (e) {
         notice = String(e);
         return;
@@ -268,14 +278,15 @@
   /** A new, empty document in its own tab: Untitled-1, Untitled-2, … */
   async function newFile() {
     const doc = await api.newDocument();
-    add({ ...doc, name: `Untitled-${++untitled}` });
+    add({ ...doc, name: `Untitled-${++untitled}` }, "plain");
   }
 
   /** Reopens a tab's file after it changed on disk; unsaved changes go. */
   async function reload(tab: Tab) {
     if (!tab.doc.path) return;
     try {
-      add(await api.openDocument(tab.doc.path), tab);
+      const doc = await api.openDocument(tab.doc.path);
+      add(doc, await langOf(doc.id, doc.name), tab);
     } catch (e) {
       notice = String(e);
     }
@@ -298,7 +309,7 @@
     polls.set(id, setInterval(poll, 250));
   }
 
-  /** Edits change the line count; refresh it once typing pauses. */
+  /** Edits change the line count and can settle the language; refresh them once typing pauses. */
   function edited(id: number, state: api.DocState) {
     const tab = tabOf(id);
     if (!tab) return;
@@ -309,7 +320,9 @@
       setTimeout(async () => {
         const next = await api.indexStatus(id).catch(() => null);
         const tab = tabOf(id);
-        if (next && tab) tab.status = next;
+        if (!next || !tab) return;
+        tab.status = next;
+        if (dependsOnContent(tab.doc.name)) tab.lang = await langOf(id, tab.doc.name);
       }, 150),
     );
   }
@@ -493,7 +506,7 @@
               <Editor
                 bind:this={editors[tab.doc.id]}
                 doc={tab.doc}
-                lang={detectLang(tab.doc.name)}
+                lang={tab.lang}
                 indexed={tab.status?.scanned ?? 0}
                 lines={tab.status?.lines ?? 0}
                 oncaret={(c) => (tab.caret = c)}
