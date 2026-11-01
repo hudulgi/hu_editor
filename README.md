@@ -7,7 +7,7 @@ Abaqus / Nastran 해석 입력 파일용 대용량 텍스트 에디터. Rust 코
 ```
 crates/hu-core/   디스크 기반 문서: 블록 캐시, 백그라운드 줄 인덱스, 뷰포트, 검색 (UI 의존성 없음)
 crates/hu-gen/    합성 테스트 덱 생성기 (Abaqus .inp / Nastran .bdf)
-app/              Tauri 2 앱 (src-tauri: IPC 커맨드, src: Svelte 프론트엔드)
+app/              Tauri 2 앱 (src-tauri: IPC 커맨드, src: Svelte 프론트엔드, e2e: 화면 시나리오)
 ```
 
 ## 실행
@@ -25,6 +25,21 @@ cargo test --workspace
 cargo run --release -p hu-gen -- nastran 30G /path/to/plates.bdf      # abaqus | nastran, 크기 500M / 2G / 30G ...
 cargo run --release -p hu-core --example bench -- /path/to/plates.bdf [검색어]
 ```
+
+### 화면 시나리오
+
+실제 화면 코드를 브라우저에서 실제 코어와 연결해 돌리고, 사용자가 보는 결과를 확인합니다. 설치된 Chrome(Windows에서는 Edge)을 씁니다.
+
+```sh
+cd app
+npm run e2e                # 전체
+npm run e2e -- box tabs    # 이름을 지정한 시나리오만 (e2e/scenarios/)
+npm run e2e -- --verbose   # 통과한 항목도 표시
+npm run e2e -- --keep      # 테스트 파일과 스크린샷을 지우지 않고 위치를 알려 줌
+npm run e2e -- --big       # 1GB 덱 시나리오도 함께 (느리고 디스크가 필요함)
+```
+
+Tauri 명령 층은 `e2e/bridge`가 대신합니다. 앱에 명령을 추가하면 브리지에도 추가해야 하고, 빠져 있으면 시나리오를 시작하기 전에 알려 줍니다. 실제 창과 네이티브 대화 상자는 이 시나리오로 확인되지 않습니다.
 
 ## 단축키
 

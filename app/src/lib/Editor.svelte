@@ -1149,7 +1149,14 @@
       }}
     ></textarea>
   </div>
-  <div class="vscroll" role="presentation" bind:clientHeight={trackH} onpointerdown={trackDown}>
+  <!-- Using the scrollbar must leave the keyboard in the editor. -->
+  <div
+    class="vscroll"
+    role="presentation"
+    bind:clientHeight={trackH}
+    onpointerdown={trackDown}
+    onmousedown={(e) => e.preventDefault()}
+  >
     <div
       class="thumb"
       class:dragging={dragTop !== null}

@@ -47,6 +47,7 @@
   /** Expanded nodes: tree key → folder path. A folder can appear under two roots. */
   const expanded = new SvelteMap<string, string>();
   let selected = $state<string | null>(null);
+  let selectedPath: string | null = null;
   let address = $state("");
   let addressError = $state<string | null>(null);
   let tree = $state<HTMLDivElement>();
@@ -60,9 +61,22 @@
     return entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || collator.compare(a.name, b.name));
   }
 
+  /** A hidden entry the listing leaves out stays while the tree is open through it or it is selected. */
+  function stillNeeded(entry: api.DirEntry) {
+    return (
+      entry.hidden &&
+      [selectedPath, ...expanded.values()].some((path) => path !== null && samePath(path, entry.path))
+    );
+  }
+
   async function load(path: string) {
     try {
-      listed.set(path, sorted(await api.listDir(path, settings.showHidden)));
+      const entries = await api.listDir(path, settings.showHidden);
+      const before = listed.get(path);
+      const kept = Array.isArray(before)
+        ? before.filter((old) => stillNeeded(old) && !entries.some((entry) => samePath(entry.path, old.path)))
+        : [];
+      listed.set(path, sorted([...entries, ...kept]));
     } catch (e) {
       listed.set(path, describeError(e));
     }
@@ -109,6 +123,7 @@
 
   function select(key: string, path: string) {
     selected = key;
+    selectedPath = path;
     // Not while the user is typing there: a reveal can finish at any moment.
     if (document.activeElement !== addressInput) address = path;
     addressError = null;

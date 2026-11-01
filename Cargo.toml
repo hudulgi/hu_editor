@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hu-core", "crates/hu-gen", "app/src-tauri"]
+members = ["crates/hu-core", "crates/hu-gen", "app/src-tauri", "app/e2e/bridge"]
 
 [workspace.package]
 version = "0.1.0"

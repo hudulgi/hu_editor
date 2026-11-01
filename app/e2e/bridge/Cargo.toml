@@ -1,0 +1,10 @@
+[package]
+name = "hu-e2e-bridge"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hu-core = { path = "../../../crates/hu-core" }
+serde = "1"
+serde_json = "1"
