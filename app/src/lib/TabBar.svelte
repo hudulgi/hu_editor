@@ -20,11 +20,17 @@
   interface Props {
     tabs: TabItem[];
     active: number | null;
+    /** The keyboard is in this pane. */
+    focused: boolean;
     onselect: (id: number) => void;
     onclose: (id: number) => void;
+    /** A tab is being dragged, over this point. */
+    ondrag: (x: number, y: number) => void;
+    /** A dragged tab was let go at this point; no point if it did not get anywhere. */
+    ondrop: (id: number, point: { x: number; y: number } | null) => void;
   }
 
-  let { tabs, active, onselect, onclose }: Props = $props();
+  let { tabs, active, focused, onselect, onclose, ondrag, ondrop }: Props = $props();
 
   let strip: HTMLDivElement;
 
@@ -42,6 +48,27 @@
     e.preventDefault();
   }
 
+  // Pointer events, not HTML drag and drop: Tauri takes those for files on Windows.
+  const DRAG_START = 6;
+
+  function onpointerdown(down: PointerEvent, id: number) {
+    if (down.button !== 0) return;
+    let dragging = false;
+    const move = (e: PointerEvent) => {
+      if (Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) >= DRAG_START) dragging = true;
+      if (dragging) ondrag(e.clientX, e.clientY);
+    };
+    const end = (e: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      if (dragging) ondrop(id, e.type === "pointerup" ? { x: e.clientX, y: e.clientY } : null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
+
   function onmousedown(e: MouseEvent, id: number) {
     // Keep the focus in the editor, which the app moves to the selected tab.
     e.preventDefault();
@@ -51,7 +78,7 @@
   }
 </script>
 
-<div class="strip" role="tablist" bind:this={strip} {onwheel}>
+<div class="strip" class:focused role="tablist" bind:this={strip} {onwheel}>
   {#each tabs as tab (tab.id)}
     <div
       class="tab"
@@ -62,6 +89,7 @@
       aria-selected={tab.id === active}
       title={tab.path ?? t("tabs.notSaved", { name: tab.name })}
       onmousedown={(e) => onmousedown(e, tab.id)}
+      onpointerdown={(e) => onpointerdown(e, tab.id)}
     >
       {#if tab.lang !== "plain"}
         <span class="badge {tab.lang}">{tab.lang === "abaqus" ? "A" : "N"}</span>
@@ -75,6 +103,7 @@
         title={t("tabs.close")}
         aria-label={t("tabs.closeNamed", { name: tab.name })}
         onmousedown={(e) => e.stopPropagation()}
+        onpointerdown={(e) => e.stopPropagation()}
         onclick={() => onclose(tab.id)}
       >
         <svg class="x" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
@@ -116,8 +145,10 @@
   }
   .tab.active {
     background: var(--bg);
-    border-top-color: var(--accent);
     color: var(--fg);
+  }
+  .strip.focused .tab.active {
+    border-top-color: var(--accent);
   }
   .name {
     overflow: hidden;

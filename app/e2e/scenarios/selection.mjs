@@ -62,7 +62,7 @@ async function exercise(t, size, scale) {
   const label = (text) => `size ${size} at ${scale * 100}%: ${text}`;
   const { x, y, lineH, cell } = await app.metrics();
   const down = x + cell / 2; // Through the blanks at the start of every line.
-  const top = (row) => y + row * lineH;
+  const top = (row, from = y) => from + row * lineH;
 
   // Over several lines, a blank one among them: nothing shows between them.
   const before = await layout(page, 4);
@@ -112,8 +112,10 @@ async function exercise(t, size, scale) {
   await page.keyboard.type("  GRID");
   await page.keyboard.press("Enter");
   await until(label("found"), app.position, "Ln 1, Col 7 (6 selected)");
-  check(label("the current match fills its line"), await colorsDown(page, down, top(0) + 1, top(1) - 1), [await background(page, ".found")]);
-  check(label("another match fills its line"), await colorsDown(page, down, top(1) + 1, top(2) - 1), [await background(page, ".match")]);
+  // The find bar has pushed the text down.
+  const below = (await app.metrics()).y;
+  check(label("the current match fills its line"), await colorsDown(page, down, top(0, below) + 1, top(1, below) - 1), [await background(page, ".found")]);
+  check(label("another match fills its line"), await colorsDown(page, down, top(1, below) + 1, top(2, below) - 1), [await background(page, ".match")]);
   await t.close(app);
 }
 

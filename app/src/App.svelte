@@ -20,8 +20,7 @@
 
   type Choice = "save" | "discard" | "cancel";
 
-  /** An open document and what the app shows about it. Each tab keeps its
-   * own editor (caret, selection, scroll position) mounted while hidden. */
+  /** An open document and what the app shows about it; both panes can show it. */
   interface Tab {
     doc: api.DocInfo;
     lang: Lang;
@@ -29,7 +28,6 @@
     status: api.IndexStatus | null;
     /** Indexing speed, bytes per second. */
     rate: number;
-    caret: CaretInfo | null;
     changedOnDisk: boolean;
     /** The user chose the encoding, rather than it being detected. */
     chosenEncoding: boolean;
@@ -44,11 +42,29 @@
     chosenEncoding: boolean;
   }
 
+  /** One side of a split, with its tabs in order. Each tab keeps its own editor
+   * (caret, selection, scroll position) mounted while hidden. */
+  interface Pane {
+    /** Stays with the pane, so that its editors stay when the other pane goes. */
+    key: number;
+    ids: number[];
+    activeId: number | null;
+    carets: Record<number, CaretInfo | null>;
+    editors: Record<number, ReturnType<typeof Editor> | undefined>;
+  }
+
+  let paneKeys = 0;
+  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, carets: {}, editors: {} });
+
   let tabs = $state<Tab[]>([]);
-  let activeId = $state<number | null>(null);
+  let panes = $state<Pane[]>([newPane()]);
+  /** The pane with the keyboard. */
+  let focused = $state(0);
+  let splitDirection = $state<"columns" | "rows">("columns");
+  let activeId = $derived(panes[focused].activeId);
   let active = $derived(tabs.find((t) => t.doc.id === activeId) ?? null);
-  const editors: Record<number, ReturnType<typeof Editor> | undefined> = $state({});
-  let editor = $derived(activeId === null ? undefined : editors[activeId]);
+  let editor = $derived(activeId === null ? undefined : panes[focused].editors[activeId]);
+  let activeCaret = $derived(activeId === null ? null : (panes[focused].carets[activeId] ?? null));
   let lang = $derived(active?.lang ?? "plain");
 
   let menuBar = $state<ReturnType<typeof MenuBar>>();
@@ -78,16 +94,35 @@
   const saved = (key: string) => localStorage.getItem(`hu.${key}`);
   let sidebarOpen = $state(saved("sidebarOpen") !== "false");
   let sidebarWidth = $state(Number(saved("sidebarWidth")) || 280);
+  /** The first pane's share of the split. */
+  let paneShare = $state(Number(saved("paneShare")) || 0.5);
 
   $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
   $effect(() => localStorage.setItem("hu.sidebarWidth", String(sidebarWidth)));
+  $effect(() => localStorage.setItem("hu.paneShare", String(paneShare)));
 
-  // The open files come back next time (new documents without a file do not).
+  // The open files and how they were laid out come back next time (new documents
+  // without a file do not). Older sessions have only `paths` and `active`.
+  interface Session {
+    paths: string[];
+    active: string | null;
+    second?: { paths: string[]; active: string | null } | null;
+    direction?: "columns" | "rows";
+    focused?: number;
+  }
+
   let restored = false;
   $effect(() => {
-    const paths = tabs.flatMap((t) => (t.doc.path === null ? [] : [t.doc.path]));
-    const current = active?.doc.path ?? null;
-    if (restored) localStorage.setItem("hu.session", JSON.stringify({ paths, active: current }));
+    const paths = (pane: Pane) => pane.ids.flatMap((id) => tabOf(id)?.doc.path ?? []);
+    const activePath = (pane: Pane) => (pane.activeId === null ? null : (tabOf(pane.activeId)?.doc.path ?? null));
+    const session: Session = {
+      paths: paths(panes[0]),
+      active: activePath(panes[0]),
+      second: panes[1] ? { paths: paths(panes[1]), active: activePath(panes[1]) } : null,
+      direction: splitDirection,
+      focused,
+    };
+    if (restored) localStorage.setItem("hu.session", JSON.stringify(session));
   });
 
   $effect(() => {
@@ -95,19 +130,28 @@
     getCurrentWindow().setTitle(title);
   });
 
-  let tabItems = $derived.by((): TabItem[] => {
+  let nameCounts = $derived.by(() => {
     const count = new Map<string, number>();
     for (const tab of tabs) count.set(tab.doc.name, (count.get(tab.doc.name) ?? 0) + 1);
-    return tabs.map(({ doc, lang, state }) => ({
-      id: doc.id,
-      name: doc.name,
-      lang,
-      path: doc.path,
-      dirty: state.dirty,
-      // Same name in two folders: show the folder.
-      hint: doc.path && count.get(doc.name)! > 1 ? parentName(doc.path) : null,
-    }));
+    return count;
   });
+
+  function tabItems(pane: Pane): TabItem[] {
+    return pane.ids.flatMap((id) => {
+      const tab = tabOf(id);
+      if (!tab) return [];
+      const { doc, lang, state } = tab;
+      return {
+        id,
+        name: doc.name,
+        lang,
+        path: doc.path,
+        dirty: state.dirty,
+        // Same name in two folders: show the folder.
+        hint: doc.path && nameCounts.get(doc.name)! > 1 ? parentName(doc.path) : null,
+      };
+    });
+  }
 
   let indexPercent = $derived(
     active?.status && active.status.len ? Math.floor((active.status.scanned / active.status.len) * 100) : 0,
@@ -122,7 +166,7 @@
   });
 
   let position = $derived.by(() => {
-    const caret = active?.caret;
+    const caret = activeCaret;
     if (!caret) return "";
     const line = caret.line === null ? "…" : fmt(caret.line + 1);
     if (caret.box) {
@@ -133,16 +177,52 @@
   });
 
   const tabOf = (id: number) => tabs.find((t) => t.doc.id === id);
+  /** Every editor showing a document. */
+  const viewsOf = (id: number) => panes.flatMap((pane) => pane.editors[id] ?? []);
+  const flush = (id: number) => Promise.all(viewsOf(id).map((view) => view.flush()));
 
   // ---- Tabs ---------------------------------------------------------------
 
-  function activate(id: number) {
-    activeId = id;
+  /** Shows a document and gives it the keyboard: in pane `at`, or else the one showing it. */
+  function activate(id: number, at = focused) {
+    if (!panes[at]?.ids.includes(id)) at = panes.findIndex((pane) => pane.ids.includes(id));
+    const pane = panes[at];
+    if (!pane) return;
+    pane.activeId = id;
+    focused = at;
     gotoOpen = false;
     encodingOpen = false;
     tick().then(() => {
-      if (!prompt) editors[id]?.focus();
+      if (!prompt) pane.editors[id]?.focus();
     });
+  }
+
+  /** Adds a tab for an open document to pane `at`, next to its active tab. */
+  function addView(id: number, at: number) {
+    const pane = panes[at];
+    if (!pane.ids.includes(id)) {
+      const next = pane.activeId === null ? pane.ids.length : pane.ids.indexOf(pane.activeId) + 1;
+      pane.ids.splice(next, 0, id);
+    }
+    activate(id, at);
+  }
+
+  /** Takes a tab out of pane `at`; a pane left empty closes. The document stays open. */
+  function removeView(id: number, at: number) {
+    const pane = panes[at];
+    const index = pane.ids.indexOf(id);
+    pane.ids.splice(index, 1);
+    delete pane.editors[id];
+    delete pane.carets[id];
+    if (pane.activeId === id) pane.activeId = pane.ids[Math.min(index, pane.ids.length - 1)] ?? null;
+    if (!pane.ids.length && panes.length > 1) {
+      panes.splice(at, 1);
+      focused = 0;
+    }
+    if (at === focused || panes.length === 1) {
+      const next = panes[focused].activeId;
+      if (next !== null) activate(next, focused);
+    }
   }
 
   /** The highlighting for a document: from its name or, if that could mean either solver, its content. */
@@ -165,7 +245,7 @@
     });
   });
 
-  /** Adds a tab next to the active one, or in place of `replacing`. */
+  /** Adds a tab next to the active one, or in place of `replacing` wherever that shows. */
   function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null) {
     const tab: Tab = {
       doc,
@@ -173,19 +253,26 @@
       state: doc.state,
       status: null,
       rate: 0,
-      caret: null,
       changedOnDisk: false,
       chosenEncoding,
       goto,
     };
-    const at = replacing ? tabs.indexOf(replacing) : active ? tabs.indexOf(active) + 1 : tabs.length;
     if (replacing) {
-      drop(replacing.doc.id);
-      tabs[at] = tab;
+      const old = replacing.doc.id;
+      drop(old);
+      tabs[tabs.indexOf(replacing)] = tab;
+      for (const pane of panes) {
+        const at = pane.ids.indexOf(old);
+        if (at < 0) continue;
+        pane.ids[at] = doc.id;
+        delete pane.carets[old];
+        if (pane.activeId === old) pane.activeId = doc.id;
+      }
+      activate(doc.id);
     } else {
-      tabs.splice(at, 0, tab);
+      tabs.push(tab);
+      addView(doc.id, focused);
     }
-    activate(doc.id);
     watchIndex(doc.id);
   }
 
@@ -196,34 +283,118 @@
     clearTimeout(statusRefresh.get(id));
     polls.delete(id);
     statusRefresh.delete(id);
-    delete editors[id];
+    for (const pane of panes) delete pane.editors[id];
   }
 
-  /** Closes a tab, asking first if it has unsaved changes. */
-  async function closeTab(id: number) {
+  /**
+   * Closes a tab of pane `at`. If the other pane shows the document too, that
+   * is all; otherwise the document goes, asking first if it has unsaved changes.
+   */
+  async function closeTab(id: number, at = focused) {
     const tab = tabOf(id);
-    if (!tab) return false;
-    await editors[id]?.flush();
-    if (tab.state.dirty) {
-      activate(id);
-      const choice = await ask([tab.doc.name]);
-      if (choice === "cancel" || (choice === "save" && !(await saveTab(tab)))) return false;
+    const pane = panes[at];
+    if (!tab || !pane) return false;
+    const last = !panes.some((other) => other !== pane && other.ids.includes(id));
+    if (last) {
+      await flush(id);
+      if (tab.state.dirty) {
+        activate(id, at);
+        const choice = await ask([tab.doc.name]);
+        if (choice === "cancel" || (choice === "save" && !(await saveTab(tab)))) return false;
+      }
     }
-    const at = tabs.findIndex((t) => t.doc.id === id);
-    drop(id);
-    tabs.splice(at, 1);
-    if (activeId === id) {
-      const next = tabs[Math.min(at, tabs.length - 1)];
-      if (next) activate(next.doc.id);
-      else activeId = null;
+    removeView(id, panes.indexOf(pane));
+    if (last) {
+      drop(id);
+      tabs.splice(tabs.indexOf(tab), 1);
     }
     return true;
   }
 
   function cycle(step: number) {
-    if (!active || tabs.length < 2) return;
-    const at = tabs.indexOf(active);
-    activate(tabs[(at + step + tabs.length) % tabs.length].doc.id);
+    const { ids, activeId } = panes[focused];
+    if (activeId === null || ids.length < 2) return;
+    activate(ids[(ids.indexOf(activeId) + step + ids.length) % ids.length], focused);
+  }
+
+  // ---- Split ----------------------------------------------------------------
+
+  /** Shows two panes; the first time, the active tab opens in the new one at the same place. */
+  async function split(direction: "columns" | "rows") {
+    splitDirection = direction;
+    if (panes.length > 1 || !active) return;
+    const id = active.doc.id;
+    const place = editor?.place();
+    panes.push(newPane());
+    addView(id, 1);
+    await tick();
+    if (place) panes[1].editors[id]?.goToPlace(place);
+  }
+
+  /** Back to one pane, which takes the other's tabs. No document closes. */
+  async function unsplit() {
+    if (panes.length < 2) return;
+    const keep = panes[focused];
+    const other = panes[1 - focused];
+    const places = other.ids.filter((id) => !keep.ids.includes(id)).map((id) => [id, other.editors[id]?.place()] as const);
+    keep.ids = [...new Set([...panes[0].ids, ...panes[1].ids])];
+    panes.splice(1 - focused, 1);
+    focused = 0;
+    if (keep.activeId !== null) activate(keep.activeId, 0);
+    await tick();
+    for (const [id, place] of places) if (place) keep.editors[id]?.goToPlace(place);
+  }
+
+  /** Moves a tab to the other pane, keeping its place; with one pane, makes the other. */
+  async function moveTab(id: number, from: number) {
+    const source = panes[from];
+    if (panes.length === 1) {
+      if (source.ids.length < 2) return;
+      panes.push(newPane());
+    }
+    const target = panes[1 - from];
+    const place = source.editors[id]?.place();
+    const shown = target.ids.includes(id);
+    if (!shown) {
+      const next = target.activeId === null ? target.ids.length : target.ids.indexOf(target.activeId) + 1;
+      target.ids.splice(next, 0, id);
+    }
+    removeView(id, from);
+    activate(id, panes.indexOf(target));
+    if (shown || !place) return;
+    await tick();
+    target.editors[id]?.goToPlace(place);
+  }
+
+  /** The pane under a point, if any. */
+  function paneAt(x: number, y: number) {
+    const index = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+    return index === undefined ? null : Number(index);
+  }
+
+  /** The pane a tab being dragged would go to. */
+  let dropTarget = $state<number | null>(null);
+
+  function dragTab(from: number, x: number, y: number) {
+    const over = paneAt(x, y);
+    dropTarget = over === from ? null : over;
+  }
+
+  function dropTab(id: number, from: number) {
+    const target = dropTarget;
+    dropTarget = null;
+    if (target !== null) moveTab(id, from);
+  }
+
+  // Resizing the split.
+  let panesBox = $state<HTMLElement>();
+  let paneResizing = false;
+
+  function paneSashMove(e: PointerEvent) {
+    if (!paneResizing || !panesBox) return;
+    const box = panesBox.getBoundingClientRect();
+    const share = splitDirection === "columns" ? (e.clientX - box.left) / box.width : (e.clientY - box.top) / box.height;
+    paneShare = Math.min(0.85, Math.max(0.15, share));
   }
 
   // ---- Unsaved changes ------------------------------------------------------
@@ -246,7 +417,7 @@
 
   /** Whether the window may close: unsaved files are saved or given up. */
   async function mayCloseAll() {
-    await Promise.all(tabs.map((t) => editors[t.doc.id]?.flush()));
+    await Promise.all(tabs.map((t) => flush(t.doc.id)));
     const dirty = tabs.filter((t) => t.state.dirty);
     if (!dirty.length) return true;
     if (dirty.length === 1) activate(dirty[0].doc.id);
@@ -269,7 +440,7 @@
   /** Saves; a new document asks for a file name first. */
   async function saveTab(tab: Tab) {
     // Keys typed just before Ctrl+S must make it into the file.
-    await editors[tab.doc.id]?.flush();
+    await flush(tab.doc.id);
     if (tab.doc.path === null) return saveTabAs(tab);
     if (saving) return false;
     return writing(tab, async (progress) => {
@@ -278,7 +449,7 @@
   }
 
   async function saveTabAs(tab: Tab) {
-    await editors[tab.doc.id]?.flush();
+    await flush(tab.doc.id);
     if (saving) return false;
     const path = await saveDialog({ defaultPath: tab.doc.path ?? `${tab.doc.name}.inp`, filters: filters() });
     if (!path) return false;
@@ -328,7 +499,7 @@
   async function readAs(tab: Tab, encoding: api.Encoding | null) {
     closeEncodingMenu();
     const id = tab.doc.id;
-    await editors[id]?.flush();
+    await flush(id);
     try {
       tab.doc.encoding = await api.setEncoding(id, encoding, settings.fallbackEncoding);
     } catch (e) {
@@ -337,14 +508,14 @@
     }
     tab.chosenEncoding = encoding !== null;
     if (tab.doc.path !== null) rememberEncoding(tab.doc.path, encoding);
-    editors[id]?.reread();
+    for (const view of viewsOf(id)) view.reread();
   }
 
   /** Saves the tab converted to `encoding`. Its bytes change, so it opens anew at the same line. */
   async function saveConverted(tab: Tab, encoding: api.Encoding) {
     closeEncodingMenu();
     const id = tab.doc.id;
-    await editors[id]?.flush();
+    await flush(id);
     if (saving) return;
     if (encoding === tab.doc.encoding) {
       // Nothing to convert: a plain save, and undo stays.
@@ -355,7 +526,7 @@
     const path =
       tab.doc.path ?? (await saveDialog({ defaultPath: `${tab.doc.name}.inp`, filters: filters() }));
     if (!path) return;
-    const line = tab.caret?.line ?? null;
+    const line = activeCaret?.line ?? null;
     if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
     rememberEncoding(path, encoding);
     try {
@@ -372,17 +543,20 @@
     return { doc, lang: await langOf(doc.id, doc.name), chosenEncoding: encoding !== null };
   }
 
+  const tabOfPath = (path: string) => tabs.find((tab) => tab.doc.path !== null && samePath(tab.doc.path, path));
+
   async function chooseFile() {
     const path = await openDialog({ multiple: false, directory: false, filters: filters() });
     if (typeof path === "string") await openPath(path);
   }
 
   /**
-   * Shows `path` in a tab: the one it is already open in, or a new one.
-   * `reveal` expands the explorer down to it (not wanted when picked there).
+   * Shows `path` in a tab: the one it is already open in, in either pane, or a
+   * new one in this pane. `reveal` expands the explorer down to it (not wanted
+   * when picked there).
    */
   async function openPath(path: string, reveal = true) {
-    const open = tabs.find((tab) => tab.doc.path !== null && samePath(tab.doc.path, path));
+    const open = tabOfPath(path);
     if (open) {
       activate(open.doc.id);
     } else {
@@ -434,7 +608,7 @@
       last = { at, scanned: next.scanned };
       tab.status = next;
       if (tab.goto !== null && (next.complete || next.lines > tab.goto)) {
-        editors[id]?.gotoLine(Math.min(tab.goto, next.lines - 1));
+        for (const view of viewsOf(id)) view.gotoLine(Math.min(tab.goto, next.lines - 1));
         tab.goto = null;
       }
       if (next.complete || next.error) clearInterval(polls.get(id));
@@ -443,8 +617,14 @@
     polls.set(id, setInterval(poll, 250));
   }
 
+  /** An edit in pane `at`: the other pane follows if it shows the document. */
+  function edited(id: number, at: number, result: api.EditResult) {
+    if (panes.length > 1) panes[1 - at]?.editors[id]?.followEdit(result.change);
+    refreshAfterEdit(id, result.state);
+  }
+
   /** Edits change the line count and can settle the language; refresh them once typing pauses. */
-  function edited(id: number, state: api.DocState) {
+  function refreshAfterEdit(id: number, state: api.DocState) {
     const tab = tabOf(id);
     if (!tab) return;
     tab.state = state;
@@ -539,6 +719,11 @@
     about = { version: await getVersion() };
   }
 
+  function focusPane(at: number) {
+    const id = panes[at]?.activeId;
+    if (id !== null && id !== undefined) activate(id, at);
+  }
+
   function closeAbout() {
     about = null;
     editor?.focus();
@@ -555,6 +740,7 @@
   let menus = $derived.by<Menu[]>(() => {
     const tab = active;
     const open = tab !== null;
+    const splitted = panes.length > 1;
     return [
       {
         label: t("menu.file"),
@@ -624,7 +810,7 @@
             key: "L",
             shortcut: "Alt+C",
             enabled: open,
-            checked: !!tab?.caret?.columnMode,
+            checked: !!activeCaret?.columnMode,
             run: () => inEditor((target) => target.toggleColumnMode()),
           },
         ],
@@ -653,6 +839,18 @@
           { label: t("menu.highlightLine"), key: "H", checked: settings.highlightLine, run: () => (settings.highlightLine = !settings.highlightLine) },
           { label: t("menu.syntax"), key: "S", checked: settings.syntaxHighlight, run: () => (settings.syntaxHighlight = !settings.syntaxHighlight) },
           { label: t("menu.fieldShading"), key: "F", checked: settings.fieldShading, run: () => (settings.fieldShading = !settings.fieldShading) },
+          "separator",
+          { label: t("menu.singlePane"), key: "P", checked: !splitted, run: unsplit },
+          { label: t("menu.twoColumns"), key: "C", shortcut: "Ctrl+\\", enabled: open, checked: splitted && splitDirection === "columns", run: () => split("columns") },
+          { label: t("menu.twoRows"), key: "R", enabled: open, checked: splitted && splitDirection === "rows", run: () => split("rows") },
+          {
+            label: t("menu.moveTab"),
+            key: "M",
+            shortcut: "Ctrl+Alt+←/→",
+            enabled: open && (splitted || panes[0].ids.length > 1),
+            run: () => tab && moveTab(tab.doc.id, focused),
+          },
+          { label: t("menu.switchPane"), key: "W", shortcut: "Ctrl+1/2", enabled: splitted, run: () => focusPane(1 - focused) },
         ],
       },
       {
@@ -701,7 +899,12 @@
     else if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
-    else if (mod && key === "w" && active) closeTab(active.doc.id);
+    else if (mod && key === "w" && active) closeTab(active.doc.id, focused);
+    else if (mod && e.code === "Backslash" && active) panes.length > 1 ? unsplit() : split(splitDirection);
+    else if (mod && e.code === "Digit1") focusPane(0);
+    else if (mod && e.code === "Digit2") focusPane(1);
+    else if (mod && e.altKey && e.key === "ArrowRight" && active && focused === 0) moveTab(active.doc.id, 0);
+    else if (mod && e.altKey && e.key === "ArrowLeft" && active && focused === 1) moveTab(active.doc.id, 1);
     else if (e.ctrlKey && e.key === "Tab") cycle(e.shiftKey ? -1 : 1);
     else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) cycle(e.key === "PageDown" ? 1 : -1);
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
@@ -736,15 +939,36 @@
 
   /** Reopens the files of the last session, then the one passed on the command line. */
   async function restore() {
-    const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as {
-      paths: string[];
-      active: string | null;
-    } | null;
+    const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as Session | null;
     for (const path of session?.paths ?? []) {
       if ((await api.pathKind(path)) === "file") await openPath(path, false);
     }
+    const firstActive = session?.active ? tabOfPath(session.active) : undefined;
+    if (firstActive) panes[0].activeId = firstActive.doc.id;
+
+    if (session?.direction) splitDirection = session.direction;
+    if (session?.second?.paths.length) {
+      panes.push(newPane());
+      focused = 1;
+      for (const path of session.second.paths) {
+        if ((await api.pathKind(path)) !== "file") continue;
+        // Open in the first pane as well: a second tab on the same document.
+        const open = tabOfPath(path);
+        if (open) addView(open.doc.id, 1);
+        else await openPath(path, false);
+      }
+      const secondActive = session.second.active ? tabOfPath(session.second.active) : undefined;
+      if (secondActive && panes[1].ids.includes(secondActive.doc.id)) panes[1].activeId = secondActive.doc.id;
+      if (!panes[1].ids.length) panes.pop();
+      if (!panes[0].ids.length && panes[1]) panes.shift();
+      focused = 0;
+    }
+    if (panes[session?.focused ?? 0]) focused = session?.focused ?? 0;
+
     const launched = await api.launchPath();
-    const current = launched ?? session?.active;
+    const shownId = panes[focused].activeId;
+    const activePath = shownId === null ? null : tabOf(shownId)?.doc.path;
+    const current = launched ?? activePath;
     if (current) await openPath(current, true);
     restored = true;
   }
@@ -814,74 +1038,118 @@
       class="sash"
       class:hidden={!sidebarOpen}
       role="presentation"
+      onmousedown={(e) => e.preventDefault()}
       onpointerdown={sashDown}
       onpointermove={sashMove}
       onpointerup={() => (resizing = null)}
       onpointercancel={() => (resizing = null)}
     ></div>
 
-    <section class="pane">
-      {#if tabs.length}
-        <TabBar tabs={tabItems} active={activeId} onselect={activate} onclose={closeTab} />
-        <div class="editors">
-          {#each tabs as tab (tab.doc.id)}
-            <div class="slot" class:hidden={tab.doc.id !== activeId}>
-              <Editor
-                bind:this={editors[tab.doc.id]}
-                doc={tab.doc}
-                lang={tab.lang}
-                indexed={tab.status?.scanned ?? 0}
-                lines={tab.status?.lines ?? 0}
-                {highlight}
-                oncaret={(c) => (tab.caret = c)}
-                onstate={(state) => edited(tab.doc.id, state)}
-                onerror={(message) => (notice = message)}
-              />
-            </div>
-          {/each}
-          {#if findOpen && active && editor}
-            <FindBar
-              bind:this={findBar}
-              bind:replacing
-              bind:needle
-              bind:replacement
-              bind:caseSensitive
-              doc={active.doc}
-              len={active.state.len}
-              viewer={editor}
-              onclose={() => {
-                findOpen = false;
-                editor?.focus();
+    <div class="panes" class:rows={splitDirection === "rows"} bind:this={panesBox}>
+      {#each panes as pane, i (pane.key)}
+        {#if i > 0}
+          <div
+            class="pane-sash"
+            role="presentation"
+            onmousedown={(e) => e.preventDefault()}
+            onpointerdown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              paneResizing = true;
+            }}
+            onpointermove={paneSashMove}
+            onpointerup={() => (paneResizing = false)}
+            onpointercancel={() => (paneResizing = false)}
+          ></div>
+        {/if}
+        <section
+          class="pane"
+          class:focused={i === focused}
+          class:drop-target={i === dropTarget}
+          data-pane={i}
+          style:flex={panes.length > 1 ? `${i === 0 ? paneShare : 1 - paneShare} 1 0` : null}
+          onfocusin={() => (focused = i)}
+          onmousedowncapture={() => (focused = i)}
+        >
+          {#if pane.ids.length}
+            <TabBar
+              tabs={tabItems(pane)}
+              active={pane.activeId}
+              focused={i === focused}
+              onselect={(id) => activate(id, i)}
+              onclose={(id) => closeTab(id, i)}
+              ondrag={(x, y) => dragTab(i, x, y)}
+              ondrop={(id, point) => {
+                if (point) dragTab(i, point.x, point.y);
+                else dropTarget = null;
+                dropTab(id, i);
               }}
             />
-          {/if}
-          {#if gotoOpen}
-            <div class="goto">
-              <span>{t("goto.label")}</span>
-              <input
-                bind:this={gotoInput}
-                bind:value={gotoValue}
-                inputmode="numeric"
-                placeholder={active?.status?.complete ? `1 – ${fmt(active.status.lines)}` : t("goto.placeholder")}
-                onkeydown={gotoKeydown}
-                onblur={() => (gotoOpen = false)}
+            {#if i === focused && findOpen && active && editor}
+              <FindBar
+                bind:this={findBar}
+                bind:replacing
+                bind:needle
+                bind:replacement
+                bind:caseSensitive
+                doc={active.doc}
+                len={active.state.len}
+                viewer={editor}
+                onclose={() => {
+                  findOpen = false;
+                  editor?.focus();
+                }}
               />
+            {/if}
+            <div class="editors">
+              {#each pane.ids as id (id)}
+                {@const tab = tabOf(id)}
+                {#if tab}
+                  <div class="slot" class:hidden={id !== pane.activeId}>
+                    <Editor
+                      bind:this={pane.editors[id]}
+                      doc={tab.doc}
+                      lang={tab.lang}
+                      indexed={tab.status?.scanned ?? 0}
+                      lines={tab.status?.lines ?? 0}
+                      {highlight}
+                      oncaret={(c) => (pane.carets[id] = c)}
+                      onedit={(result) => edited(id, panes.indexOf(pane), result)}
+                      onerror={(message) => (notice = message)}
+                    />
+                  </div>
+                {/if}
+              {/each}
+              {#if i === focused}
+                {#if gotoOpen}
+                  <div class="goto">
+                    <span>{t("goto.label")}</span>
+                    <input
+                      bind:this={gotoInput}
+                      bind:value={gotoValue}
+                      inputmode="numeric"
+                      placeholder={active?.status?.complete ? `1 – ${fmt(active.status.lines)}` : t("goto.placeholder")}
+                      onkeydown={gotoKeydown}
+                      onblur={() => (gotoOpen = false)}
+                    />
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          {:else}
+            <div class="empty">
+              <p>
+                {t("empty.open")}<br />
+                {t("empty.new")}
+              </p>
+              <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
             </div>
           {/if}
-        </div>
-      {:else}
-        <div class="empty">
-          <p>
-            {t("empty.open")}<br />
-            {t("empty.new")}
-          </p>
-          <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
-        </div>
-      {/if}
+        </section>
+      {/each}
       {#if notice}
         <button class="notice" title={t("notice.dismiss")} onclick={() => (notice = null)}>{notice}</button>
       {/if}
-    </section>
+    </div>
   </div>
 
   <footer class="statusbar">
@@ -894,7 +1162,7 @@
         <span>{t("status.modified")}</span>
       {/if}
       <span class="spacer"></span>
-      {#if active.caret?.columnMode}
+      {#if activeCaret?.columnMode}
         <span class="mode" title={t("status.columnMode")}>COL</span>
       {/if}
       <span>{indexText}</span>
@@ -1018,12 +1286,50 @@
   .hidden {
     display: none;
   }
+  .panes {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+  .panes.rows {
+    flex-direction: column;
+  }
   .pane {
     position: relative;
     display: flex;
     flex: 1;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+  }
+  /* Where a dragged tab would go. */
+  .pane.drop-target::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 122, 204, 0.25);
+    pointer-events: none;
+  }
+  .pane-sash {
+    flex: none;
+    width: 4px;
+    margin: 0 -2px;
+    z-index: 5;
+    cursor: col-resize;
+    background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
+  }
+  .rows > .pane-sash {
+    width: auto;
+    height: 4px;
+    margin: -2px 0;
+    cursor: row-resize;
+    background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
+  }
+  .pane-sash:hover {
+    background: var(--accent);
   }
   .editors {
     position: relative;

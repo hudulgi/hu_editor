@@ -39,11 +39,12 @@
     highlight?: { needle: string; caseSensitive: boolean } | null;
     onview?: (view: api.View) => void;
     oncaret?: (caret: CaretInfo) => void;
-    onstate?: (state: api.DocState) => void;
+    /** A change made here. */
+    onedit?: (result: api.EditResult) => void;
     onerror?: (message: string) => void;
   }
 
-  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, onstate, onerror }: Props = $props();
+  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, onedit, onerror }: Props = $props();
 
   const MIN_THUMB = 24;
   const WORD = /[\p{L}\p{N}_.]/u;
@@ -315,7 +316,7 @@
   }
 
   async function applied(result: api.EditResult) {
-    onstate?.(result.state);
+    onedit?.(result);
     if (view) jump({ kind: "scroll", anchor: shift(view.top, result.change), delta: 0 });
     anchor = result.anchor;
     caret = result.caret;
@@ -457,7 +458,7 @@
     const topIsAnchor = box.anchorLine <= box.caretLine;
     const edited = await api.editBox(doc.id, top, rowsOf, left, right, texts, kind, anchor, caret);
     if (!edited) return;
-    onstate?.(edited.result.state);
+    onedit?.(edited.result);
     if (view) jump({ kind: "scroll", anchor: shift(view.top, edited.result.change), delta: 0 });
     const [anchorLine, caretLine] = topIsAnchor ? [top, edited.lastLine] : [edited.lastLine, top];
     box = { anchorLine, caretLine, anchorCol: col, caretCol: col };
@@ -550,6 +551,8 @@
     // While composing, the IME owns the keys.
     if (e.isComposing || e.keyCode === 229) return;
     const mod = e.ctrlKey || e.metaKey;
+    // Ctrl+Alt belongs to the app, or is AltGr typing a character.
+    if (mod && e.altKey) return;
     // Alt+C toggles column mode; `code`, since Option+C types ç on a Mac.
     if (e.altKey && !mod && e.code === "KeyC") {
       columnMode = !columnMode;
@@ -873,12 +876,17 @@
 
   /** Shows the result of a change made elsewhere (Replace All), keeping the place. */
   export function applyResult(result: api.EditResult) {
+    onedit?.(result);
+    return keepLine(result.change);
+  }
+
+  /** After a change around the view: the text on top is gone, its line number stays. */
+  function keepLine(change: api.Change) {
     return new Promise<void>((resolve) =>
       enqueue(async () => {
-        onstate?.(result.state);
         box = null;
         const first = view?.firstLine;
-        const at = view ? shift(view.top, result.change) : 0;
+        const at = view ? shift(view.top, change) : 0;
         jump(first != null ? { kind: "line", line: first } : { kind: "scroll", anchor: at, delta: 0 });
         await settled();
         anchor = caret = view?.lines[0]?.offset ?? 0;
@@ -886,6 +894,37 @@
         resolve();
       }),
     );
+  }
+
+  /** The document was edited in the other pane: everything here stays on its text. */
+  export function followEdit(change: api.Change) {
+    if (view && view.top > change.start && view.top < change.start + change.oldLen) {
+      keepLine(change);
+      return;
+    }
+    enqueue(async () => {
+      box = null;
+      anchor = shift(anchor, change);
+      caret = shift(caret, change);
+      if (view) jump({ kind: "scroll", anchor: shift(view.top, change), delta: 0 });
+      await settled();
+    });
+  }
+
+  /** Where this editor is, for another one to take over. */
+  export function place() {
+    return { anchor, caret, top: view?.top ?? 0 };
+  }
+
+  export function goToPlace(place: { anchor: number; caret: number; top: number }) {
+    enqueue(async () => {
+      box = null;
+      anchor = place.anchor;
+      caret = place.caret;
+      preferredCol = null;
+      jump({ kind: "scroll", anchor: place.top, delta: 0 });
+      await settled();
+    });
   }
 
   /** Selects `[from, to)` and scrolls it into view, a third down the page. */

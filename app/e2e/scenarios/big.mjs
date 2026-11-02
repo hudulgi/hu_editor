@@ -111,4 +111,20 @@ export default async function (t) {
   });
   await until("still at line 5,000,000", async () => (await app.position()).startsWith("Ln 5,000,000,"), true, MINUTE);
   check("the same size (it is ASCII)", statSync(deck).size, size);
+
+  // Split: the same huge document in two panes, far apart, and typing in one
+  // redraws the other.
+  await timed("split", async () => {
+    await page.keyboard.press("Control+\\");
+    await until("two panes", () => page.locator(".pane").count(), 2);
+  });
+  await until("the new pane starts at the same line", async () => (await app.position()).startsWith("Ln 5,000,000,"), true, MINUTE);
+  await page.keyboard.press("Control+Home");
+  await until("this pane at the top", app.position, "Ln 1, Col 1", MINUTE);
+  await timed("typed 15 characters with the other pane following", async () => {
+    await page.keyboard.type("$ split typing ");
+    await until("typed in this pane", async () => (await app.lines())[0].startsWith("$ split typing "), true, MINUTE);
+  });
+  await page.keyboard.press("Control+1");
+  await until("the other pane is still at its line", async () => (await app.position()).startsWith("Ln 5,000,000,"), true, MINUTE);
 }

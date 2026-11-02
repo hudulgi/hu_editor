@@ -64,6 +64,11 @@ export default async function (t) {
     "✓Highlight Current Line|",
     "✓Syntax Highlighting|",
     "✓Field Shading|",
+    "✓Single Pane|",
+    "-Two Columns|Ctrl+\\",
+    "-Two Rows|",
+    "-Move Tab to Other Pane|Ctrl+Alt+←/→",
+    "-Switch Pane|Ctrl+1/2",
   ]);
   await page.click(title("View"));
   await closed();

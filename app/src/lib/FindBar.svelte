@@ -213,33 +213,36 @@
 </div>
 
 <style>
+  /* Above the text, not over it: it must never hide the match it found. */
   .findbar {
-    position: absolute;
-    top: 0;
-    right: 28px;
-    z-index: 10;
     display: flex;
+    flex: none;
     align-items: flex-start;
     gap: 4px;
     padding: 6px 8px 6px 4px;
+    overflow: hidden;
     background: var(--panel);
-    border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 6px 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    border-bottom: 1px solid var(--border);
   }
   .rows {
     display: flex;
+    flex: 1;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
   }
   .row {
     display: flex;
     align-items: center;
     gap: 4px;
+    min-width: 0;
+  }
+  .row button {
+    flex: none;
   }
   input {
-    width: 260px;
+    flex: 0 1 260px;
+    min-width: 60px;
   }
   .toggle {
     display: grid;
@@ -263,7 +266,9 @@
     transform: rotate(90deg);
   }
   .status {
-    min-width: 120px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
     color: var(--muted);
     font-size: 12px;
     white-space: nowrap;

@@ -55,7 +55,7 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
   };
 }
 
-const SLOT = ".slot:not(.hidden)";
+const SLOT = ".pane.focused .slot:not(.hidden)";
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** The installed browser the scenarios run in, headless. */

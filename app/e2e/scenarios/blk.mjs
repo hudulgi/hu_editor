@@ -89,7 +89,8 @@ export default async function (t) {
 
   // A changed file is detected again on reload... and after a restart.
   await page.reload();
-  await page.waitForSelector(".strip .tab");
+  // The session is back when the tab that was active is active again.
+  await page.waitForSelector(".strip .tab.active:has-text('saved.bdf')");
   await page.click(".strip .tab:has-text('abaqus.blk')");
   await until("restored tabs detect again", shown, ABAQUS);
 }
