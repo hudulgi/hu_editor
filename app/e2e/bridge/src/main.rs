@@ -284,6 +284,7 @@ impl Bridge {
                 }
             }
             "cancel_find" => Value::Null,
+            "read_clipboard" => json!(*self.clipboard.lock().unwrap()),
             // Only for the scenarios: what `copy` and `copy_box` put on the clipboard.
             "test_clipboard" => json!(*self.clipboard.lock().unwrap()),
             _ => return Err(format!("unknown command {cmd}")),

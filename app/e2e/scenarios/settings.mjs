@@ -19,13 +19,13 @@ export default async function (t) {
   const { until, check } = t;
   const SLOT = ".slot:not(.hidden)";
   const open = (name) => app.open(t.path(name));
-  const newButton = async () => (await page.textContent(".toolbar button:nth-of-type(2)")).trim();
+  const firstMenu = (app) => app.page.textContent(".menubar .title");
   const fontSize = () => page.$eval(`${SLOT} .lines`, (e) => getComputedStyle(e).fontSize);
   const rowHeight = () => page.$eval(`${SLOT} .lines .line`, (e) => e.getBoundingClientRect().height);
-  check("starts in the OS language", await newButton(), "New");
+  check("starts in the OS language", await firstMenu(app), "File");
 
-  // Opens from the gear and from Ctrl+,; Ctrl+, and Esc close it.
-  await page.click(".toolbar .gear");
+  // Opens from the menu and from Ctrl+,; Ctrl+, and Esc close it.
+  await app.menu("File", "Settings…");
   await page.waitForSelector(".settings");
   await page.keyboard.press("Escape");
   await until("esc closes", () => page.locator(".settings").count(), 0);
@@ -35,10 +35,10 @@ export default async function (t) {
   await until("ctrl+, closes", () => page.locator(".settings").count(), 0);
 
   // Language: everything switches at once, without a restart.
-  await page.click(".toolbar .gear");
+  await app.menu("File", "Settings…");
   await page.selectOption(".settings select", "ko");
   await until("the dialog switches", () => page.textContent(".settings h1"), "설정");
-  await until("the toolbar switches", newButton, "새 파일");
+  await until("the menu switches", () => firstMenu(app), "파일(F)");
   await until("the explorer switches", () => page.textContent(".explorer .title"), "탐색기");
   await until("the file has it", () => app.savedSettings()?.language, "ko");
   await app.shot("settings-general-ko");
@@ -65,7 +65,7 @@ export default async function (t) {
   await page.keyboard.press("Control+,");
   await page.selectOption(".settings select", "en");
   await app.closeSettings();
-  await until("English again", newButton, "New");
+  await until("English again", () => firstMenu(app), "File");
   check("the encoding's name is the same", await app.encoding(), "UTF-8");
 
   // Font size: half-typed values wait; out of range is clamped when done.
@@ -255,13 +255,13 @@ export default async function (t) {
   writeFileSync(app.settingsPath, "{not json");
   app.expectedErrors.push(/settings not loaded/);
   await page.reload();
-  await page.waitForSelector(".toolbar");
+  await page.waitForSelector(".menubar");
   check("a damaged file: starts on defaults", await page.$eval(":root", (e) => e.style.getPropertyValue("--font-size")), "13px");
 
   // Odd values are kept in range or dropped.
   writeFileSync(app.settingsPath, JSON.stringify({ fontSize: 500, language: "fr", tabSize: "x", newFileEncoding: "ebcdic", fallbackEncoding: "utf8" }));
   await page.reload();
-  await page.waitForSelector(".toolbar");
+  await page.waitForSelector(".menubar");
   await app.openSettings("Editor");
   check("odd values", [await app.numberSetting("Font size").inputValue(), await app.numberSetting("Spaces per tab stop").inputValue()], ["32", "8"]);
   check("an unknown language falls back", await page.getAttribute("html", "lang"), "en");
@@ -269,5 +269,5 @@ export default async function (t) {
 
   // With no settings file, the OS language decides.
   const korean = await t.launch({ locale: "ko-KR" });
-  check("a Korean OS starts in Korean", (await korean.page.textContent(".toolbar button:nth-of-type(2)")).trim(), "새 파일");
+  check("a Korean OS starts in Korean", await firstMenu(korean), "파일(F)");
 }

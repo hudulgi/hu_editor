@@ -1,17 +1,19 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { ENCODING_LABEL, ENCODINGS } from "./encodings";
   import { t, type MessageKey } from "./i18n";
   import { clampFontSize, clampTabSize, resetSettings, settings } from "./settings.svelte";
   import { LANG_LABEL } from "./syntax";
 
+  type Category = "general" | "editor" | "files" | "shortcuts";
+
   interface Props {
+    /** The page to open on. */
+    initial?: Category;
     onclose: () => void;
   }
 
-  let { onclose }: Props = $props();
-
-  type Category = "general" | "editor" | "files" | "shortcuts";
+  let { initial = "general", onclose }: Props = $props();
 
   const CATEGORIES: [Category, MessageKey][] = [
     ["general", "settings.general"],
@@ -21,10 +23,11 @@
   ];
   const FONTS = ["Cascadia Mono", "Consolas", "D2Coding", "Courier New", "Lucida Console", "JetBrains Mono"];
 
-  let category = $state<Category>("general");
+  let category = $state<Category>(untrack(() => initial));
   let panel: HTMLElement;
 
   let shortcuts = $derived<[string, string][]>([
+    ["Alt+F, E, S, V, H / F10", t("shortcut.menu")],
     ["Ctrl+N", t("shortcut.new")],
     ["Ctrl+O", t("shortcut.open")],
     ["Ctrl+S", t("shortcut.save")],

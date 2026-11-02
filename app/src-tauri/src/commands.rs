@@ -351,6 +351,12 @@ pub async fn edit_box(
     .await
 }
 
+/// The text on the clipboard, empty if there is none.
+#[tauri::command]
+pub fn read_clipboard(app: AppHandle) -> String {
+    app.clipboard().read_text().unwrap_or_default()
+}
+
 /// Puts a box selection on the clipboard, one line per row.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]

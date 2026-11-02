@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -12,6 +13,7 @@
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import { describeError, t } from "./lib/i18n";
+  import MenuBar, { type Menu } from "./lib/MenuBar.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import { settings, settingsFile } from "./lib/settings.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
@@ -49,6 +51,7 @@
   let editor = $derived(activeId === null ? undefined : editors[activeId]);
   let lang = $derived(active?.lang ?? "plain");
 
+  let menuBar = $state<ReturnType<typeof MenuBar>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
@@ -60,6 +63,8 @@
   let highlight = $derived(findOpen && needle ? { needle, caseSensitive } : null);
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
+  let settingsPage = $state<"general" | "shortcuts">("general");
+  let about = $state<{ version: string } | null>(null);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
   let gotoInput = $state<HTMLInputElement>();
@@ -135,7 +140,9 @@
     activeId = id;
     gotoOpen = false;
     encodingOpen = false;
-    tick().then(() => editors[id]?.focus());
+    tick().then(() => {
+      if (!prompt) editors[id]?.focus();
+    });
   }
 
   /** The highlighting for a document: from its name or, if that could mean either solver, its content. */
@@ -230,6 +237,11 @@
     prompt?.answer(choice);
     prompt = null;
     tick().then(() => editor?.focus());
+  }
+
+  /** A dialog takes the keyboard from the editor behind it. */
+  function takeFocus(button: HTMLElement) {
+    button.focus();
   }
 
   /** Whether the window may close: unsaved files are saved or given up. */
@@ -482,9 +494,10 @@
     if (gotoOpen && gotoInput) gotoInput.focus();
   });
 
-  function openSettings() {
+  function openSettings(page: "general" | "shortcuts" = "general") {
     encodingOpen = false;
     gotoOpen = false;
+    settingsPage = page;
     settingsOpen = true;
   }
 
@@ -522,10 +535,165 @@
     findBar?.run(backward);
   }
 
+  async function showAbout() {
+    about = { version: await getVersion() };
+  }
+
+  function closeAbout() {
+    about = null;
+    editor?.focus();
+  }
+
+  /** The Edit menu works on the editor, wherever the keyboard was. */
+  function inEditor(command: (target: NonNullable<typeof editor>) => unknown) {
+    if (!editor) return;
+    editor.focus();
+    command(editor);
+  }
+
+  // Everything here also has its key: below, or in the editor for the Edit menu.
+  let menus = $derived.by<Menu[]>(() => {
+    const tab = active;
+    const open = tab !== null;
+    return [
+      {
+        label: t("menu.file"),
+        key: "F",
+        items: [
+          { label: t("menu.new"), key: "N", shortcut: "Ctrl+N", run: newFile },
+          { label: t("menu.open"), key: "O", shortcut: "Ctrl+O", run: chooseFile },
+          "separator",
+          {
+            label: t("menu.save"),
+            key: "S",
+            shortcut: "Ctrl+S",
+            enabled: !!tab?.state.dirty && !saving,
+            run: () => tab && saveTab(tab),
+          },
+          {
+            label: t("menu.saveAs"),
+            key: "A",
+            shortcut: "Ctrl+Shift+S",
+            enabled: open && !saving,
+            run: () => tab && saveTabAs(tab),
+          },
+          { label: t("menu.encoding"), key: "E", enabled: open, run: () => (encodingOpen = true) },
+          "separator",
+          { label: t("menu.closeTab"), key: "C", shortcut: "Ctrl+W", enabled: open, run: () => tab && closeTab(tab.doc.id) },
+          { label: t("menu.settings"), key: "T", shortcut: "Ctrl+,", run: () => openSettings() },
+          "separator",
+          { label: t("menu.exit"), key: "X", shortcut: "Alt+F4", run: () => getCurrentWindow().close() },
+        ],
+      },
+      {
+        label: t("menu.edit"),
+        key: "E",
+        items: [
+          {
+            label: t("menu.undo"),
+            key: "U",
+            shortcut: "Ctrl+Z",
+            enabled: !!tab?.state.canUndo,
+            run: () => inEditor((target) => target.undo()),
+          },
+          {
+            label: t("menu.redo"),
+            key: "R",
+            shortcut: "Ctrl+Y",
+            enabled: !!tab?.state.canRedo,
+            run: () => inEditor((target) => target.undo(true)),
+          },
+          "separator",
+          { label: t("menu.cut"), key: "T", shortcut: "Ctrl+X", enabled: open, run: () => inEditor((target) => target.copySelection(true)) },
+          { label: t("menu.copy"), key: "C", shortcut: "Ctrl+C", enabled: open, run: () => inEditor((target) => target.copySelection(false)) },
+          {
+            label: t("menu.paste"),
+            key: "P",
+            shortcut: "Ctrl+V",
+            enabled: open,
+            run: () =>
+              inEditor(async (target) => {
+                const text = await api.readClipboard();
+                if (text) target.paste(text);
+              }),
+          },
+          "separator",
+          { label: t("menu.selectAll"), key: "A", shortcut: "Ctrl+A", enabled: open, run: () => inEditor((target) => target.selectAll()) },
+          {
+            label: t("menu.columnMode"),
+            key: "L",
+            shortcut: "Alt+C",
+            enabled: open,
+            checked: !!tab?.caret?.columnMode,
+            run: () => inEditor((target) => target.toggleColumnMode()),
+          },
+        ],
+      },
+      {
+        label: t("menu.search"),
+        key: "S",
+        items: [
+          { label: t("menu.find"), key: "F", shortcut: "Ctrl+F", enabled: open, run: () => startFind(false) },
+          { label: t("menu.findNext"), key: "N", shortcut: "F3", enabled: open, run: () => findAgain(false, false) },
+          { label: t("menu.findPrevious"), key: "P", shortcut: "Shift+F3", enabled: open, run: () => findAgain(true, false) },
+          { label: t("menu.findSelection"), key: "S", shortcut: "Ctrl+F3", enabled: open, run: () => findAgain(false, true) },
+          "separator",
+          { label: t("menu.replace"), key: "R", shortcut: "Ctrl+H", enabled: open, run: () => startFind(true) },
+          "separator",
+          { label: t("menu.goto"), key: "G", shortcut: "Ctrl+G", enabled: open, run: openGoto },
+        ],
+      },
+      {
+        label: t("menu.view"),
+        key: "V",
+        items: [
+          { label: t("menu.explorer"), key: "E", shortcut: "Ctrl+B", checked: sidebarOpen, run: () => (sidebarOpen = !sidebarOpen) },
+          "separator",
+          { label: t("menu.lineNumbers"), key: "N", checked: settings.lineNumbers, run: () => (settings.lineNumbers = !settings.lineNumbers) },
+          { label: t("menu.highlightLine"), key: "H", checked: settings.highlightLine, run: () => (settings.highlightLine = !settings.highlightLine) },
+          { label: t("menu.syntax"), key: "S", checked: settings.syntaxHighlight, run: () => (settings.syntaxHighlight = !settings.syntaxHighlight) },
+          { label: t("menu.fieldShading"), key: "F", checked: settings.fieldShading, run: () => (settings.fieldShading = !settings.fieldShading) },
+        ],
+      },
+      {
+        label: t("menu.help"),
+        key: "H",
+        items: [
+          { label: t("menu.shortcuts"), key: "K", run: () => openSettings("shortcuts") },
+          { label: t("menu.about"), key: "A", run: showAbout },
+        ],
+      },
+    ];
+  });
+
+  // Alt pressed and released by itself goes to the menu bar, as on Windows. The
+  // right Alt is left out: on Korean keyboards it can be the Hangul key.
+  let altAlone = false;
+
+  function onkeyup(e: KeyboardEvent) {
+    if (e.code !== "AltLeft" || !altAlone) return;
+    altAlone = false;
+    if (prompt || about || settingsOpen || encodingOpen) return;
+    e.preventDefault();
+    menuBar?.toggleKeyboard();
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if (prompt) return;
+    if (prompt) {
+      if (e.key === "Escape") answer("cancel");
+      return;
+    }
+    if (about) {
+      if (e.key === "Escape") closeAbout();
+      else if (e.key === "Tab") e.preventDefault();
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    if (e.altKey && !mod && !e.shiftKey && !settingsOpen && !encodingOpen && menuBar?.openByKey(e.code)) {
+      e.preventDefault();
+      return;
+    }
     if (mod && key === ",") {
       if (settingsOpen) closeSettings();
       else openSettings();
@@ -540,6 +708,7 @@
     else if (mod && (key === "f" || key === "h") && active) startFind(key === "h");
     else if (mod && key === "g" && active) openGoto();
     else if (e.key === "F3" && active) findAgain(e.shiftKey, mod);
+    else if (e.key === "F10" && !encodingOpen) menuBar?.toggleKeyboard();
     else if (e.key === "Escape" && findOpen && !encodingOpen && !e.defaultPrevented) findBar?.close();
     else return;
     e.preventDefault();
@@ -609,40 +778,21 @@
   });
 </script>
 
-<svelte:window {onkeydown} {onfocus} />
+<svelte:window
+  {onkeydown}
+  {onkeyup}
+  {onfocus}
+  onkeydowncapture={(e) => (altAlone = e.code === "AltLeft")}
+  onmousedowncapture={() => (altAlone = false)}
+  onblur={() => (altAlone = false)}
+/>
 
 <main>
-  <header class="toolbar">
-    <button
-      class="toggle"
-      class:on={sidebarOpen}
-      title={t("toolbar.toggleExplorer")}
-      aria-label={t("toolbar.toggleExplorer")}
-      onclick={() => (sidebarOpen = !sidebarOpen)}
-    >
-      <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" /></svg>
-    </button>
-    <button onclick={newFile} title={t("toolbar.newTitle")}>{t("toolbar.new")}</button>
-    <button onclick={chooseFile} title={t("toolbar.openTitle")}>{t("toolbar.open")}</button>
-    <button
-      onclick={() => active && saveTab(active)}
-      disabled={!active?.state.dirty || !!saving}
-      title={t("toolbar.saveTitle")}>{t("toolbar.save")}</button
-    >
-    <button onclick={() => active && saveTabAs(active)} disabled={!active || !!saving} title={t("toolbar.saveAsTitle")}
-      >{t("toolbar.saveAs")}</button
-    >
+  <header class="topbar">
+    <MenuBar bind:this={menuBar} {menus} />
     {#if active}
       <span class="path" title={active.doc.path ?? t("doc.notSaved")}>{active.doc.path ?? active.doc.name}</span>
     {/if}
-    <span class="spacer"></span>
-    <button class="gear" title={t("toolbar.settings")} aria-label={t("toolbar.settings")} onclick={openSettings}>
-      <svg viewBox="0 0 16 16">
-        <circle cx="8" cy="8" r="4.5" />
-        <circle cx="8" cy="8" r="1.8" />
-        <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
-      </svg>
-    </button>
   </header>
 
   {#if active?.changedOnDisk}
@@ -771,7 +921,20 @@
   {/if}
 
   {#if settingsOpen && !prompt}
-    <SettingsDialog onclose={closeSettings} />
+    <SettingsDialog initial={settingsPage} onclose={closeSettings} />
+  {/if}
+
+  {#if about}
+    <div class="backdrop" role="presentation">
+      <div class="dialog" role="dialog" aria-labelledby="about-title">
+        <p id="about-title" class="product">HU Editor</p>
+        <p class="muted">{t("about.version", { version: about.version })}</p>
+        <p>{t("about.description")}</p>
+        <div class="buttons">
+          <button class="primary" use:takeFocus onclick={closeAbout}>{t("about.close")}</button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if prompt}
@@ -789,8 +952,7 @@
         {/if}
         <p class="muted">{t("prompt.lost")}</p>
         <div class="buttons">
-          <!-- svelte-ignore a11y_autofocus -->
-          <button class="primary" autofocus onclick={() => answer("save")}
+          <button class="primary" use:takeFocus onclick={() => answer("save")}
             >{t(prompt.names.length === 1 ? "prompt.save" : "prompt.saveAll")}</button
           >
           <button onclick={() => answer("discard")}>{t("prompt.discard")}</button>
@@ -807,45 +969,17 @@
     flex-direction: column;
     height: 100vh;
   }
-  .toolbar {
+  .topbar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
+    gap: 16px;
+    min-height: 30px;
+    padding: 0 10px 0 4px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
-  .toolbar button {
-    flex: none;
-    white-space: nowrap;
-  }
-  .toolbar button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .toggle,
-  .gear {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 24px;
-    padding: 0;
-    color: var(--muted);
-  }
-  .toggle.on,
-  .gear:hover {
-    color: var(--fg);
-  }
-  .toggle svg,
-  .gear svg {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.2;
-  }
   .path {
-    margin-left: 4px;
+    margin-left: auto;
     overflow: hidden;
     color: var(--muted);
     text-overflow: ellipsis;
@@ -988,6 +1122,10 @@
   }
   .dialog p {
     margin: 0 0 8px;
+  }
+  .dialog .product {
+    font-size: 16px;
+    font-weight: 600;
   }
   .dialog ul {
     max-height: 200px;

@@ -36,6 +36,11 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
       }
       if (cmd === "plugin:window|set_title") e2e.title = args.value;
       if (cmd === "plugin:window|destroy") e2e.destroyed++;
+      if (cmd === "plugin:app|version") return "9.9.9";
+      if (cmd === "plugin:window|close") {
+        window[`_${e2e.listeners["tauri://close-requested"]}`]({ event: "tauri://close-requested", id: 1, payload: null });
+        return null;
+      }
       if (cmd.startsWith("plugin:")) return null;
       if (cmd === "load_settings" || cmd === "save_settings") args = { ...args, path: settingsPath };
       const response = await fetch(bridge, {
@@ -144,7 +149,7 @@ export class Session {
     if (scale) app.ownBrowser = browser;
     this.apps.push(app);
     await page.goto(this.url);
-    await page.waitForSelector(".toolbar");
+    await page.waitForSelector(".menubar");
     return app;
   }
 
@@ -190,7 +195,7 @@ export class App {
   status = () => this.page.textContent(".statusbar");
   encoding = () => this.page.textContent(".statusbar .status-button");
   language = () => this.page.textContent(".statusbar span:last-child");
-  path = () => this.page.textContent(".toolbar .path");
+  path = () => this.page.textContent(".topbar .path");
   title = () => this.page.evaluate(() => window.__e2e.title);
   /** The number of the first line on screen. */
   firstLine = () => this.page.$eval(`${SLOT} .gutter .ln`, (e) => Number(e.textContent));
@@ -234,12 +239,12 @@ export class App {
 
   // ---- What it is told ------------------------------------------------------
 
-  /** Opens a file through the explorer's address box; the toolbar then shows it. */
+  /** Opens a file through the explorer's address box; the top bar then shows it. */
   async open(path) {
     await this.page.fill(".address input", path);
     await this.page.press(".address input", "Enter");
     await this.page.waitForFunction(
-      (path) => document.querySelector(".toolbar .path")?.textContent === path,
+      (path) => document.querySelector(".topbar .path")?.textContent === path,
       path,
     );
     await this.page.waitForSelector(`${SLOT} .lines .line`);
@@ -278,6 +283,12 @@ export class App {
     await this.page.mouse.move(...to, { steps: 6 });
     await this.page.mouse.up();
     await this.page.keyboard.up("Alt");
+  }
+
+  /** Picks an item in a menu with the mouse. */
+  async menu(title, item) {
+    await this.page.click(`.menubar .title:text-matches('^${title}$')`);
+    await this.page.click(`.menubar .panel .label:text-matches('^${item}$')`);
   }
 
   /** The window's close button. */

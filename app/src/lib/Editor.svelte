@@ -528,7 +528,7 @@
     // Modifiers alone, typed characters (input event), paste (paste event)
     // and the app's own shortcuts keep the box.
     else if (["Shift", "Alt", "Control", "Meta"].includes(e.key)) return true;
-    else if (!mod && !e.altKey && e.key.length === 1) return false;
+    else if (!mod && e.key.length === 1) return false;
     else if (mod && !["z", "y", "a"].includes(key)) return false;
     else {
       endBox();
@@ -610,12 +610,8 @@
       default: {
         if (!mod || e.altKey) return;
         const key = e.key.toLowerCase();
-        if (key === "a") {
-          task = () => {
-            anchor = 0;
-            caret = view?.len ?? 0;
-          };
-        } else if (key === "c" || key === "x") task = () => copy(key === "x");
+        if (key === "a") task = selectEverything;
+        else if (key === "c" || key === "x") task = () => copy(key === "x");
         else if (key === "z") task = () => history(e.shiftKey);
         else if (key === "y") task = () => history(true);
         // Ctrl+V arrives as a paste event; other shortcuts belong to the app.
@@ -644,7 +640,7 @@
   function onpaste(e: ClipboardEvent) {
     e.preventDefault();
     const text = e.clipboardData?.getData("text/plain");
-    if (text) enqueue(() => (box ? boxInsert(text, "other") : insert(text, "other")));
+    if (text) paste(text);
   }
 
   // ---- Mouse ------------------------------------------------------------
@@ -784,6 +780,35 @@
 
   export function focus() {
     input?.focus();
+  }
+
+  function selectEverything() {
+    anchor = 0;
+    caret = view?.len ?? 0;
+  }
+
+  // The Edit menu: what the keys do, reached without them.
+
+  export function undo(redo = false) {
+    endBox();
+    enqueue(() => history(redo));
+  }
+
+  export function copySelection(cut: boolean) {
+    enqueue(() => (box ? boxCopy(cut) : copy(cut)));
+  }
+
+  export function paste(text: string) {
+    enqueue(() => (box ? boxInsert(text, "other") : insert(text, "other")));
+  }
+
+  export function selectAll() {
+    endBox();
+    enqueue(selectEverything);
+  }
+
+  export function toggleColumnMode() {
+    columnMode = !columnMode;
   }
 
   /** Resolves once every key and edit queued so far has been applied. */

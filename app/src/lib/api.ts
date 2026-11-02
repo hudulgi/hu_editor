@@ -152,6 +152,8 @@ export const undo = (id: number) => invoke<EditResult | null>("undo", { id });
 export const redo = (id: number) => invoke<EditResult | null>("redo", { id });
 /** Puts `[start, end)` on the clipboard. */
 export const copy = (id: number, start: number, end: number) => invoke<void>("copy", { id, start, end });
+/** The text on the clipboard, for the Paste menu item; Ctrl+V brings its own. */
+export const readClipboard = () => invoke<string>("read_clipboard");
 
 /** Replaces display columns `[left, right)` of the box's lines with `texts` (one for all, or one per line). */
 export const editBox = (

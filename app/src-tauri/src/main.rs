@@ -10,6 +10,7 @@ fn main() {
         .manage(commands::Docs::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
+            commands::read_clipboard,
             commands::roots,
             commands::list_dir,
             commands::path_chain,
