@@ -26,7 +26,9 @@
   import { displayCol, indexAt, TAB, textWidth } from "./columns";
   import { describeError, t } from "./i18n";
   import { fontStack, lineHeight, settings } from "./settings.svelte";
-  import { applyMarks, findMatches, tokenize, type Lang, type Mark } from "./syntax";
+  import { dependsOnLinesAbove, isCodeLang } from "./languages";
+  import { LineStates } from "./lineStates";
+  import { applyMarks, findMatches, tokenizeLines, type Lang, type Mark } from "./syntax";
 
   interface Props {
     doc: api.DocInfo;
@@ -125,11 +127,13 @@
     pendingRefresh = false;
     inflight = true;
     const id = doc.id;
+    const asked = lineStates?.generation;
     api
       .view(id, target, rows)
       .then(
         (next) => {
           if (id !== doc.id) return;
+          viewIsCurrent = asked === lineStates?.generation;
           view = next;
           viewError = null;
           onview?.(next);
@@ -317,6 +321,7 @@
 
   async function applied(result: api.EditResult) {
     onedit?.(result);
+    lineStates?.invalidate(result.change.start);
     if (view) jump({ kind: "scroll", anchor: shift(view.top, result.change), delta: 0 });
     anchor = result.anchor;
     caret = result.caret;
@@ -459,6 +464,7 @@
     const edited = await api.editBox(doc.id, top, rowsOf, left, right, texts, kind, anchor, caret);
     if (!edited) return;
     onedit?.(edited.result);
+    lineStates?.invalidate(edited.result.change.start);
     if (view) jump({ kind: "scroll", anchor: shift(view.top, edited.result.change), delta: 0 });
     const [anchorLine, caretLine] = topIsAnchor ? [top, edited.lastLine] : [edited.lastLine, top];
     box = { anchorLine, caretLine, anchorCol: col, caretCol: col };
@@ -882,6 +888,7 @@
 
   /** After a change around the view: the text on top is gone, its line number stays. */
   function keepLine(change: api.Change) {
+    lineStates?.invalidate(change.start);
     return new Promise<void>((resolve) =>
       enqueue(async () => {
         box = null;
@@ -902,6 +909,7 @@
       keepLine(change);
       return;
     }
+    lineStates?.invalidate(change.start);
     enqueue(async () => {
       box = null;
       anchor = shift(anchor, change);
@@ -945,6 +953,7 @@
   /** The same bytes are now read in another encoding: shows them, with the
    * caret at a line start, a character boundary in any encoding. */
   export function reread() {
+    lineStates?.invalidate(0);
     enqueue(async () => {
       box = null;
       refresh();
@@ -1114,6 +1123,42 @@
 
   // ---- Rendering helpers -------------------------------------------------
 
+  let shownLang = $derived(settings.syntaxHighlight ? lang : "plain");
+  // For languages whose lines depend on the ones above.
+  let lineStates = $derived(isCodeLang(shownLang) && dependsOnLinesAbove(shownLang) ? new LineStates(doc.id, shownLang) : null);
+  let viewIsCurrent = true;
+  /** Bumped when a state turned out different from the guess the lines were drawn with. */
+  let statesFound = $state(0);
+
+  let highlighted = $derived.by(() => {
+    void statesFound;
+    if (!view) return { tokens: [], states: [] };
+    const lines = view.lines.map((line) => line.text);
+    return tokenizeLines(lines, shownLang, lineStates?.peek(view.top) ?? null);
+  });
+
+  // Whatever is on screen, once it is sure, helps with where the view goes next.
+  $effect(() => {
+    const shown = view;
+    const { states } = highlighted;
+    const known = lineStates;
+    if (!known || !shown) return;
+    untrack(() => {
+      if (known.knows(shown.top)) {
+        // Lines read before an edit say nothing about the text now.
+        if (viewIsCurrent) {
+          shown.lines.forEach((line, i) => {
+            if (states[i] !== undefined) known.note(line.offset, states[i]);
+          });
+        }
+        return;
+      }
+      known.find(shown.top).then((found) => {
+        if (found && known === lineStates) statesFound++;
+      });
+    });
+  });
+
   function marksOf(line: Line): Mark[] {
     const marks: Mark[] = [];
     if (highlight?.needle) {
@@ -1229,7 +1274,7 @@
     <div class="lines" bind:this={lineBox}>
       {#if view}
         {#each view.lines as line, i (line.offset)}
-          <div class="line" class:current={settings.highlightLine && !box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, settings.syntaxHighlight ? lang : "plain"), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel eol"></span>{/if}</div>
+          <div class="line" class:current={settings.highlightLine && !box && i === caretRow && selStart === selEnd}>{#each applyMarks(highlighted.tokens[i] ?? [{ text: line.text, cls: null }], marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel eol"></span>{/if}</div>
         {/each}
       {/if}
     </div>
@@ -1440,6 +1485,12 @@
   }
   .lines :global(.card) {
     color: #4ec9b0;
+  }
+  .lines :global(.number) {
+    color: #b5cea8;
+  }
+  .lines :global(.fn) {
+    color: #dcdcaa;
   }
   .lines :global(.cont),
   .lines :global(.punct),

@@ -11,7 +11,7 @@
   import { baseName, formatSize, isWindows, samePath } from "./format";
   import { describeError, t, type MessageKey } from "./i18n";
   import { settings } from "./settings.svelte";
-  import { detectLang } from "./syntax";
+  import { detectLang, langBadge } from "./syntax";
 
   interface Props {
     /** Path of the open document, highlighted in the tree. */
@@ -340,7 +340,8 @@
                 <path d="M6 4l4 4-4 4" />
               </svg>
             {:else if lang !== "plain"}
-              <span class="badge {lang}">{lang === "abaqus" ? "A" : "N"}</span>
+              {@const badge = langBadge(lang)}
+              <span class="badge {badge.cls}">{badge.text}</span>
             {/if}
           </span>
           {#if row.root}
@@ -501,7 +502,9 @@
   .badge {
     display: grid;
     place-items: center;
-    width: 14px;
+    min-width: 14px;
+    padding: 0 1px;
+    box-sizing: border-box;
     height: 14px;
     border-radius: 3px;
     color: #fff;
@@ -513,6 +516,9 @@
   }
   .badge.nastran {
     background: #2c7a6b;
+  }
+  .badge.code {
+    background: #5a5f66;
   }
   .name {
     flex: 1;

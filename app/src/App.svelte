@@ -6,7 +6,7 @@
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size, isWindows, parentName, samePath } from "./lib/format";
-  import { dependsOnContent, detectLang, LANG_LABEL, type Lang } from "./lib/syntax";
+  import { dependsOnContent, detectLang, langLabel, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import { ENCODING_LABEL } from "./lib/encodings";
   import EncodingMenu from "./lib/EncodingMenu.svelte";
@@ -1199,7 +1199,7 @@
         onclick={() => (encodingOpen = !encodingOpen)}>{ENCODING_LABEL[active.doc.encoding]}</button
       >
       <span>{active.doc.eol === "crlf" ? "CRLF" : "LF"}</span>
-      <span>{lang === "plain" ? t("status.plainText") : LANG_LABEL[lang]}</span>
+      <span>{lang === "plain" ? t("status.plainText") : langLabel(lang)}</span>
     {/if}
   </footer>
 

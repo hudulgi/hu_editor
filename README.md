@@ -71,6 +71,10 @@ Tauri 명령 층은 `e2e/bridge`가 대신합니다. 앱에 명령을 추가하�
 | Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |
 | Ctrl+, | 설정 |
 
+## 문법 강조
+
+Abaqus, Nastran 외에 Python, Shell, Batch, PowerShell, Java, C/C++, JavaScript/TypeScript, Rust, Go, Fortran(고정·자유 형식), TOML, YAML, JSON, INI, XML/HTML, Markdown을 확장자로 구분합니다. 여러 줄 주석과 문자열은 파일 앞 16 MB까지 위에서부터 읽어 판단하고, 그보다 뒤에서는 화면 첫 줄부터 새로 판단합니다 (큰 파일이 느려지지 않도록).
+
 ## 설정
 
 Ctrl+, 또는 파일 메뉴의 설정으로 엽니다. 바꾸면 바로 적용되고, 다른 PC로 복사할 수 있는 파일에 저장됩니다 (Windows: `%APPDATA%\dev.hueditor.editor\settings.json`).

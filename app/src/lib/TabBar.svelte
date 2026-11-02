@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { Lang } from "./syntax";
+  import { langBadge, type Lang } from "./syntax";
 
   export interface TabItem {
     id: number;
@@ -92,7 +92,8 @@
       onpointerdown={(e) => onpointerdown(e, tab.id)}
     >
       {#if tab.lang !== "plain"}
-        <span class="badge {tab.lang}">{tab.lang === "abaqus" ? "A" : "N"}</span>
+        {@const badge = langBadge(tab.lang)}
+        <span class="badge {badge.cls}">{badge.text}</span>
       {/if}
       <span class="name" class:untitled={tab.path === null}>{tab.name}</span>
       {#if tab.hint}
@@ -165,7 +166,9 @@
     display: grid;
     flex: none;
     place-items: center;
-    width: 14px;
+    min-width: 14px;
+    padding: 0 1px;
+    box-sizing: border-box;
     height: 14px;
     border-radius: 3px;
     color: #fff;
@@ -177,6 +180,9 @@
   }
   .badge.nastran {
     background: #2c7a6b;
+  }
+  .badge.code {
+    background: #5a5f66;
   }
   .close {
     display: grid;

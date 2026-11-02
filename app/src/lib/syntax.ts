@@ -1,19 +1,27 @@
-// Per-line highlighting for the visible lines only. Both formats are line
+// Per-line highlighting for the visible lines only. Both solver formats are line
 // based, so a line can be colored without looking at its neighbours. This is
 // a stopgap: highlighting that needs context (which keyword block a data
-// line belongs to, Nastran section) will move into the Rust core.
+// line belongs to, Nastran section) will move into the Rust core. Source code
+// and config files are in languages.ts.
 
-export type Lang = "abaqus" | "nastran" | "plain";
+import { codeBadge, codeLabel, codeLangOf, isCodeLang, scanLine, type CodeLang, type LineState } from "./languages";
+
+export type Lang = "abaqus" | "nastran" | "plain" | CodeLang;
 
 export interface Token {
   text: string;
   cls: string | null;
 }
 
-export const LANG_LABEL: Record<Exclude<Lang, "plain">, string> = {
-  abaqus: "Abaqus",
-  nastran: "Nastran",
-};
+export const LANG_LABEL = { abaqus: "Abaqus", nastran: "Nastran" };
+
+export const langLabel = (lang: Exclude<Lang, "plain">) => (isCodeLang(lang) ? codeLabel(lang) : LANG_LABEL[lang]);
+
+/** The small mark of a language on tabs and in the explorer, and its CSS class. */
+export function langBadge(lang: Exclude<Lang, "plain">) {
+  if (isCodeLang(lang)) return { text: codeBadge(lang), cls: "code" };
+  return { text: lang === "abaqus" ? "A" : "N", cls: lang };
+}
 
 const NASTRAN_EXT = ["bdf", "dat", "nas", "bulk", "fem"];
 /** Used for both solvers: only a file's content can tell which one it is for. */
@@ -28,14 +36,31 @@ export function detectLang(name: string): Lang {
   const ext = extOf(name);
   if (ext === "inp") return "abaqus";
   if (NASTRAN_EXT.includes(ext)) return "nastran";
-  return "plain";
+  return codeLangOf(ext) ?? "plain";
 }
 
-/** Splits `line` into tokens whose texts concatenate back to `line`. */
-export function tokenize(line: string, lang: Lang): Token[] {
+/** Splits a solver deck's or plain `line` into tokens whose texts concatenate back to it. */
+function tokenize(line: string, lang: "abaqus" | "nastran" | "plain"): Token[] {
   if (lang === "abaqus") return abaqus(line);
   if (lang === "nastran") return nastran(line);
   return [{ text: line, cls: null }];
+}
+
+/**
+ * Tokens for consecutive lines, the first starting in `state`, and the state
+ * each line starts in.
+ */
+export function tokenizeLines(lines: string[], lang: Lang, state: LineState = null) {
+  if (!isCodeLang(lang)) return { tokens: lines.map((line) => tokenize(line, lang)), states: [] as LineState[] };
+  const tokens: Token[][] = [];
+  const states: LineState[] = [];
+  for (const line of lines) {
+    states.push(state);
+    const scanned = scanLine(lang, line, state);
+    tokens.push(scanned.tokens);
+    state = scanned.state;
+  }
+  return { tokens, states };
 }
 
 // `, name=value` or `, flag` after the keyword.
