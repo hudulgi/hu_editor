@@ -53,6 +53,11 @@
   let explorer = $state<ReturnType<typeof Explorer>>();
   let findOpen = $state(false);
   let replacing = $state(false);
+  // Outlives the bar, so that F3 can go on and Ctrl+F shows it again.
+  let needle = $state("");
+  let replacement = $state("");
+  let caseSensitive = $state(false);
+  let highlight = $derived(findOpen && needle ? { needle, caseSensitive } : null);
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
   let gotoOpen = $state(false);
@@ -488,6 +493,35 @@
     editor?.focus();
   }
 
+  /** Ctrl+F, Ctrl+H: opens the bar on the selected text, if any. */
+  async function startFind(replace: boolean) {
+    const seed = editor?.findSeed();
+    if (seed) needle = seed;
+    if (replace) replacing = true;
+    else if (!findOpen) replacing = false;
+    findOpen = true;
+    await tick();
+    // With what to find given, what is left to type is its replacement.
+    findBar?.focus(replace && seed ? "replace" : "find");
+  }
+
+  /**
+   * F3 goes on with the last search, Ctrl+F3 searches for the selection or the
+   * word at the caret. The keyboard stays where it is; the bar opens to show
+   * the progress of a long search and to cancel it.
+   */
+  async function findAgain(backward: boolean, fromSelection: boolean) {
+    if (fromSelection || !needle) {
+      const seed = editor?.findSeed(true);
+      if (seed) needle = seed;
+    }
+    if (!needle) return startFind(false);
+    if (!findOpen) replacing = false;
+    findOpen = true;
+    await tick();
+    findBar?.run(backward);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (prompt) return;
     const mod = e.ctrlKey || e.metaKey;
@@ -503,13 +537,10 @@
     else if (e.ctrlKey && e.key === "Tab") cycle(e.shiftKey ? -1 : 1);
     else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) cycle(e.key === "PageDown" ? 1 : -1);
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
-    else if (mod && (key === "f" || key === "h") && active) {
-      if (key === "h") replacing = true;
-      else if (!findOpen) replacing = false;
-      if (findOpen) findBar?.focus();
-      else findOpen = true;
-    } else if (mod && key === "g" && active) openGoto();
-    else if (e.key === "F3" && findOpen) findBar?.run(e.shiftKey);
+    else if (mod && (key === "f" || key === "h") && active) startFind(key === "h");
+    else if (mod && key === "g" && active) openGoto();
+    else if (e.key === "F3" && active) findAgain(e.shiftKey, mod);
+    else if (e.key === "Escape" && findOpen && !encodingOpen && !e.defaultPrevented) findBar?.close();
     else return;
     e.preventDefault();
   }
@@ -651,6 +682,7 @@
                 lang={tab.lang}
                 indexed={tab.status?.scanned ?? 0}
                 lines={tab.status?.lines ?? 0}
+                {highlight}
                 oncaret={(c) => (tab.caret = c)}
                 onstate={(state) => edited(tab.doc.id, state)}
                 onerror={(message) => (notice = message)}
@@ -661,6 +693,9 @@
             <FindBar
               bind:this={findBar}
               bind:replacing
+              bind:needle
+              bind:replacement
+              bind:caseSensitive
               doc={active.doc}
               len={active.state.len}
               viewer={editor}

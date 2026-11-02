@@ -58,8 +58,9 @@ Tauri 명령 층은 `e2e/bridge`가 대신합니다. 앱에 명령을 추가하�
 | Tab | 다음 8칸 경계까지 공백 (Nastran small field) |
 | Alt+드래그, Alt+Shift+방향키 | 박스(컬럼) 선택. 입력·Backspace·Delete·Tab·복사·붙여넣기가 모든 줄에 적용 (짧은 줄은 공백으로 채움, 여러 줄 붙여넣기는 위에서부터 한 줄씩) |
 | Alt+C | 컬럼 모드 켜기 / 끄기 (켜면 Shift+방향키와 드래그가 박스 선택, 상태바에 COL) |
-| Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전 |
-| Ctrl+H, Enter, Ctrl+Alt+Enter | 바꾸기, 바꾸고 다음 찾기, 모두 바꾸기 (한 번에 실행 취소, 최대 200만 건) |
+| Ctrl+F, Enter / Shift+Enter, F3 / Shift+F3 | 찾기, 다음 / 이전. 한 줄 안에서 선택한 글자가 있으면 찾을 말로 들어가고, 화면의 일치 항목이 모두 강조됨. 찾기 창이 닫혀 있어도 F3은 마지막 찾을 말로 이어서 찾음 |
+| Ctrl+F3 / Ctrl+Shift+F3 | 선택한 글자나 캐럿 위치의 단어를 바로 찾기, 다음 / 이전 |
+| Ctrl+H, Enter, Ctrl+Alt+Enter | 바꾸기, 바꾸고 다음 찾기, 모두 바꾸기 (한 번에 실행 취소, 최대 200만 건). 선택한 글자가 있으면 바로 바꿀 말을 입력 |
 | 상태바의 인코딩 표시 클릭 | Read as: 다른 인코딩으로 다시 읽기 (파일은 그대로, 선택은 파일별로 기억) / Save as: 변환해서 저장 (없는 글자나 깨진 바이트가 있으면 중단) |
 | Ctrl+G | 줄 번호로 이동 |
 | Home / End, PageUp / PageDown, Ctrl+Home / End | 줄 처음·끝, 페이지 이동, 파일 처음·끝 |

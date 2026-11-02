@@ -3,13 +3,15 @@
   import * as api from "./api";
   import { formatNumber } from "./format";
   import { describeError, t } from "./i18n";
+  import { isMatch } from "./syntax";
 
   interface Target {
     /** Selects `[from, to)` and scrolls it into view. */
     select(from: number, to: number): void;
-    caretOffset(): number;
     /** Selection as `[anchor, caret]`. */
     selection(): [number, number];
+    /** The selected text if it lies on one visible line. */
+    selectedText(): string | null;
     replaceSelection(text: string): Promise<void>;
     /** Shows a change made elsewhere, keeping the place. */
     applyResult(result: api.EditResult): Promise<void>;
@@ -22,36 +24,53 @@
     viewer: Target;
     /** Whether the replace row is open. */
     replacing?: boolean;
+    /** What to find outlives the bar: the app keeps it. */
+    needle: string;
+    replacement: string;
+    caseSensitive: boolean;
     onclose: () => void;
   }
 
-  let { doc, len, viewer, replacing = $bindable(false), onclose }: Props = $props();
+  let {
+    doc,
+    len,
+    viewer,
+    replacing = $bindable(false),
+    needle = $bindable(),
+    replacement = $bindable(),
+    caseSensitive = $bindable(),
+    onclose,
+  }: Props = $props();
 
   let bar: HTMLDivElement;
   let input: HTMLInputElement;
-  let needle = $state("");
-  let replacement = $state("");
-  let caseSensitive = $state(false);
+  let replaceInput = $state<HTMLInputElement>();
   let searching = $state(false);
   let searched = $state(0);
   let message = $state("");
-  /** The match last found and selected. */
-  let last: { offset: number; len: number; needle: string; caseSensitive: boolean } | null = null;
 
-  // The bar stays open across tabs; a match belongs to the tab it was found in.
+  // A message is about the last search, in this tab.
   let docId = $derived(doc.id);
   $effect(() => {
     void docId;
-    last = null;
+    void needle;
+    void caseSensitive;
     message = "";
   });
   let seq = 0;
 
   let percent = $derived(len ? Math.min(100, Math.floor((searched / len) * 100)) : 0);
 
-  export function focus() {
-    input.focus();
-    input.select();
+  export function focus(field: "find" | "replace" = "find") {
+    const target = field === "replace" && replaceInput ? replaceInput : input;
+    target.focus();
+    target.select();
+  }
+
+  /** The selection is a match already: found before, or selected by hand. */
+  function onMatch() {
+    const text = viewer.selectedText();
+    return text !== null && isMatch(text, needle, caseSensitive);
   }
 
   /** Runs a search or replace; a newer one supersedes it. */
@@ -73,21 +92,20 @@
     if (mine === seq) searched = n;
   };
 
-  /** Next match (previous with `backward`), continuing from the last match. */
+  /** Next match (previous with `backward`) from the selection or the caret. */
   export async function run(backward: boolean) {
     if (!needle) return;
-    const again = last && last.needle === needle && last.caseSensitive === caseSensitive;
-    const from = again ? (backward ? last!.offset : last!.offset + 1) : viewer.caretOffset();
+    const [anchor, caret] = viewer.selection();
+    const start = Math.min(anchor, caret);
+    const from = backward ? start : onMatch() ? start + 1 : caret;
     await track(async (mine) => {
       const result = await api.find(doc.id, needle, from, caseSensitive, backward, progress(mine));
       if (mine !== seq) return;
       if (result.kind === "found") {
-        last = { offset: result.offset, len: result.len, needle, caseSensitive };
         const wrapped = backward ? result.offset >= from : result.offset < from;
         message = wrapped ? t("find.wrapped") : "";
         viewer.select(result.offset, result.offset + result.len);
       } else if (result.kind === "notFound") {
-        last = null;
         message = t("find.noResults");
       }
     });
@@ -96,17 +114,8 @@
   /** Replaces the selected match, then finds the next one. */
   async function replaceOne() {
     if (!needle) return;
-    const [anchor, caret] = viewer.selection();
-    const selected =
-      last?.needle === needle &&
-      last.caseSensitive === caseSensitive &&
-      Math.min(anchor, caret) === last.offset &&
-      Math.abs(caret - anchor) === last.len;
-    if (selected) {
-      await viewer.replaceSelection(replacement);
-      // Search on from the caret, after the replacement, so it is never matched again.
-      last = null;
-    }
+    // The search goes on from the caret, after the replacement, so it is never matched again.
+    if (onMatch()) await viewer.replaceSelection(replacement);
     await run(false);
   }
 
@@ -120,7 +129,6 @@
         message = t("find.cancelled");
         return;
       }
-      last = null;
       message = outcome.count ? t("find.replaced", { count: formatNumber(outcome.count) }) : t("find.noResults");
       if (outcome.result) await viewer.applyResult(outcome.result);
     });
@@ -133,7 +141,7 @@
     api.cancelFind(doc.id);
   }
 
-  function close() {
+  export function close() {
     if (searching) cancel();
     onclose();
   }
@@ -155,12 +163,12 @@
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
     e.preventDefault();
+    e.stopPropagation();
     if (searching) cancel();
     else close();
   }
 
   onMount(() => {
-    focus();
     bar.addEventListener("keydown", onkeydown);
     return () => bar.removeEventListener("keydown", onkeydown);
   });
@@ -196,7 +204,7 @@
     </div>
     {#if replacing}
       <div class="row">
-        <input bind:value={replacement} placeholder={t("find.replace")} spellcheck="false" onkeydown={replaceKeydown} />
+        <input bind:this={replaceInput} bind:value={replacement} placeholder={t("find.replace")} spellcheck="false" onkeydown={replaceKeydown} />
         <button title={t("find.replaceOneTitle")} onclick={replaceOne}>{t("find.replaceOne")}</button>
         <button title={t("find.replaceAllTitle")} onclick={replaceAll}>{t("find.replaceAll")}</button>
       </div>

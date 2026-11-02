@@ -122,3 +122,20 @@ export function applyMarks(tokens: Token[], marks: Mark[]): Token[] {
   }
   return out;
 }
+
+// Case folds ASCII only, like the search in the core.
+const foldCase = (text: string) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** Whether a search for `needle` matches exactly `text`. */
+export const isMatch = (text: string, needle: string, caseSensitive: boolean) =>
+  caseSensitive ? text === needle : foldCase(text) === foldCase(needle);
+
+/** Non-overlapping matches of `needle` in a line, in UTF-16 indices. */
+export function findMatches(line: string, needle: string, caseSensitive: boolean): [number, number][] {
+  const [hay, sought] = caseSensitive ? [line, needle] : [foldCase(line), foldCase(needle)];
+  const found: [number, number][] = [];
+  for (let at = hay.indexOf(sought); at >= 0; at = hay.indexOf(sought, at + sought.length)) {
+    found.push([at, at + sought.length]);
+  }
+  return found;
+}

@@ -159,6 +159,7 @@ export const en = {
   "shortcut.clipboard": "Copy / cut / paste",
   "shortcut.selectAll": "Select all",
   "shortcut.find": "Find, next / previous",
+  "shortcut.findSelection": "Find the selection or the word at the caret, next / previous",
   "shortcut.replace": "Replace",
   "shortcut.replaceAll": "Replace all (in the replace box)",
   "shortcut.goto": "Go to line",

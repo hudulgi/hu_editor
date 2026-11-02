@@ -37,6 +37,7 @@
     ["Ctrl+C, Ctrl+X, Ctrl+V", t("shortcut.clipboard")],
     ["Ctrl+A", t("shortcut.selectAll")],
     ["Ctrl+F, F3, Shift+F3", t("shortcut.find")],
+    ["Ctrl+F3, Ctrl+Shift+F3", t("shortcut.findSelection")],
     ["Ctrl+H", t("shortcut.replace")],
     ["Ctrl+Alt+Enter", t("shortcut.replaceAll")],
     ["Ctrl+G", t("shortcut.goto")],

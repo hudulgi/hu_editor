@@ -160,6 +160,7 @@ export const ko: Record<keyof typeof en, string> = {
   "shortcut.clipboard": "복사 / 잘라내기 / 붙여넣기",
   "shortcut.selectAll": "모두 선택",
   "shortcut.find": "찾기, 다음 / 이전",
+  "shortcut.findSelection": "선택한 글자나 캐럿 위치의 단어 찾기, 다음 / 이전",
   "shortcut.replace": "바꾸기",
   "shortcut.replaceAll": "모두 바꾸기 (바꾸기 입력란에서)",
   "shortcut.goto": "줄 이동",

@@ -26,7 +26,7 @@
   import { displayCol, indexAt, TAB, textWidth } from "./columns";
   import { describeError, t } from "./i18n";
   import { fontStack, lineHeight, settings } from "./settings.svelte";
-  import { applyMarks, tokenize, type Lang, type Mark } from "./syntax";
+  import { applyMarks, findMatches, tokenize, type Lang, type Mark } from "./syntax";
 
   interface Props {
     doc: api.DocInfo;
@@ -35,13 +35,15 @@
     indexed: number;
     /** Lines known so far, for the gutter width. */
     lines: number;
+    /** What the find bar is looking for: its matches on screen stand out. */
+    highlight?: { needle: string; caseSensitive: boolean } | null;
     onview?: (view: api.View) => void;
     oncaret?: (caret: CaretInfo) => void;
     onstate?: (state: api.DocState) => void;
     onerror?: (message: string) => void;
   }
 
-  let { doc, lang, indexed, lines, onview, oncaret, onstate, onerror }: Props = $props();
+  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, onstate, onerror }: Props = $props();
 
   const MIN_THUMB = 24;
   const WORD = /[\p{L}\p{N}_.]/u;
@@ -790,13 +792,48 @@
     await settled();
   }
 
-  export function caretOffset() {
-    return caret;
-  }
-
   /** Selection as `[anchor, caret]`. */
   export function selection(): [number, number] {
     return [anchor, caret];
+  }
+
+  /** The selected text if it lies on one visible line. */
+  export function selectedText(): string | null {
+    if (!view || box || selStart === selEnd) return null;
+    const row = rowOf(selStart);
+    if (row < 0) return null;
+    const line = view.lines[row];
+    const end = colOf(line, selEnd);
+    // Short of the selection's end: it goes on to another line, or past what a long line shows.
+    return offsetOf(line, end) === selEnd ? line.text.slice(colOf(line, selStart), end) : null;
+  }
+
+  /**
+   * What the keyboard user means to search for: the selected text, or with
+   * `orWord` the word at the caret, which then gets selected. A box on one
+   * line becomes a plain selection, which a search can go on from.
+   */
+  export function findSeed(orWord = false): string | null {
+    if (!focused || !view) return null;
+    if (box && boxTop === boxBottom) {
+      const row = lineRow(boxTop);
+      const line = row >= 0 ? view.lines[row] : null;
+      if (line && indexAt(line.text, boxLeft, "left") < indexAt(line.text, boxRight, "right")) {
+        anchor = offsetOf(line, indexAt(line.text, boxLeft, "left"));
+        caret = offsetOf(line, indexAt(line.text, boxRight, "right"));
+        box = null;
+      }
+    }
+    if (orWord && !box && selStart === selEnd) {
+      const row = rowOf(caret);
+      if (row >= 0) {
+        const line = view.lines[row];
+        const col = colOf(line, caret);
+        if (isWord(line.text[col])) selectWord(caret);
+        else if (isWord(line.text[col - 1])) selectWord(offsetOf(line, col - 1));
+      }
+    }
+    return selectedText();
   }
 
   /** Replaces the selection with `text` (Find and Replace). */
@@ -1014,10 +1051,23 @@
   // ---- Rendering helpers -------------------------------------------------
 
   function marksOf(line: Line): Mark[] {
-    if (box) return [];
+    const marks: Mark[] = [];
+    if (highlight?.needle) {
+      for (const [a, b] of findMatches(line.text, highlight.needle, highlight.caseSensitive)) {
+        const selected = offsetOf(line, a) === selStart && offsetOf(line, b) === selEnd;
+        marks.push([a, b, selected ? "found" : "match"]);
+      }
+    }
+    if (box) {
+      if (line.offset >= boxTop && line.offset <= boxBottom) {
+        marks.push([indexAt(line.text, boxLeft, "left"), indexAt(line.text, boxRight, "left"), "boxed"]);
+      }
+      return marks;
+    }
     const a = Math.max(selStart, line.offset);
     const b = Math.min(selEnd, line.offset + line.len);
-    return a < b ? [[colOf(line, a), colOf(line, b), "sel"]] : [];
+    if (a < b) marks.push([colOf(line, a), colOf(line, b), "sel"]);
+    return marks;
   }
 
   /** The selection runs on past the end of this line. */
@@ -1184,6 +1234,10 @@
     line-height: var(--line-h);
     background: var(--bg);
     color: var(--fg);
+    --selection: #0a6cc4;
+  }
+  .editor:not(.focused) {
+    --selection: #55657c;
   }
   .gutter {
     flex: none;
@@ -1223,15 +1277,15 @@
     position: absolute;
     height: var(--line-h);
     z-index: -1;
-    background: #264f78;
+    background: var(--selection);
     pointer-events: none;
   }
   .box.bar {
     z-index: 1;
     background: #aeafad;
   }
-  .editor:not(.focused) .box {
-    background: #3a3d41;
+  .editor:not(.focused) .box.bar {
+    background: var(--selection);
   }
   .column-mode .text {
     cursor: crosshair;
@@ -1333,10 +1387,22 @@
   .no-shading .lines :global(.fb) {
     background: none;
   }
+  /* White text: syntax colors are not readable on backgrounds this strong. */
   .lines :global(.sel) {
-    background: #264f78;
+    background: var(--selection);
+    color: #fff;
   }
-  .editor:not(.focused) .lines :global(.sel) {
-    background: #3a3d41;
+  /* The box itself is drawn behind the lines. */
+  .lines :global(.boxed) {
+    background: none;
+    color: #fff;
+  }
+  .lines :global(.match) {
+    background: #8a6100;
+    color: #fff;
+  }
+  .lines :global(.found) {
+    background: #ffa028;
+    color: #000;
   }
 </style>
