@@ -15,8 +15,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright-core";
-import { Session } from "./harness.mjs";
+import { launchBrowser, Session } from "./harness.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const app = dirname(here);
@@ -98,8 +97,7 @@ try {
   const missing = await commandsMissingFromBridge();
   if (missing.length) throw new Error(`add to app/e2e/bridge: ${missing.join(", ")}`);
 
-  const channel = process.env.E2E_BROWSER ?? (process.platform === "win32" ? "msedge" : "chrome");
-  const browser = await chromium.launch({ channel, headless: true });
+  const browser = await launchBrowser();
   const shots = join(root, "shots");
   mkdirSync(shots);
   for (const name of scenarios) {

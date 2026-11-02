@@ -1165,7 +1165,7 @@
     <div class="lines" bind:this={lineBox}>
       {#if view}
         {#each view.lines as line, i (line.offset)}
-          <div class="line" class:current={settings.highlightLine && !box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, settings.syntaxHighlight ? lang : "plain"), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel"> </span>{/if}</div>
+          <div class="line" class:current={settings.highlightLine && !box && i === caretRow && selStart === selEnd}>{#each applyMarks(tokenize(line.text, settings.syntaxHighlight ? lang : "plain"), marksOf(line)) as seg}<span class={seg.cls}>{seg.text}</span>{/each}{#if line.truncated}<span class="truncated">⋯</span>{/if}{#if selectsBreak(line)}<span class="sel eol"></span>{/if}</div>
         {/each}
       {/if}
     </div>
@@ -1269,6 +1269,7 @@
   .line {
     white-space: pre;
     tab-size: 8;
+    overflow: clip;
   }
   .text {
     isolation: isolate;
@@ -1387,10 +1388,23 @@
   .no-shading .lines :global(.fb) {
     background: none;
   }
+  /* Fill the line's height, so that highlighted lines touch: the padding moves
+     no text and the line clips what is too much. (An inline-block would restart
+     the tab stops inside it.) */
+  .lines :global(.sel),
+  .lines :global(.match),
+  .lines :global(.found) {
+    padding-block: var(--line-h);
+  }
   /* White text: syntax colors are not readable on backgrounds this strong. */
   .lines :global(.sel) {
     background: var(--selection);
     color: #fff;
+  }
+  /* A selected line break, which also makes a selected empty line show. Not
+     text in the line: columns and clicks count its characters. */
+  .lines :global(.eol)::after {
+    content: " ";
   }
   /* The box itself is drawn behind the lines. */
   .lines :global(.boxed) {

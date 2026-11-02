@@ -3,6 +3,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { chromium } from "playwright-core";
 
 /** Runs in the page, in place of Tauri. Native dialogs answer from a queue. */
 function tauriInPage({ bridge, settingsPath, launchPath }) {
@@ -52,11 +53,18 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
 const SLOT = ".slot:not(.hidden)";
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
+/** The installed browser the scenarios run in, headless. */
+export function launchBrowser(args = []) {
+  const channel = process.env.E2E_BROWSER ?? (process.platform === "win32" ? "msedge" : "chrome");
+  return chromium.launch({ channel, headless: true, args });
+}
+
 /** One scenario: its checks, its folder, the apps it started. */
 export class Session {
   passed = 0;
   failures = [];
   apps = [];
+  closed = [];
 
   constructor({ browser, dir, config, url, bridge, shots, verbose }) {
     Object.assign(this, { browser, dir, config, url, bridge, shots, verbose });
@@ -117,27 +125,40 @@ export class Session {
   }
 
   /** Starts the app as on a new machine, with `settings` in its settings file if given. */
-  async launch({ locale = "en-US", settings, launchPath = null, viewport = { width: 1280, height: 800 } } = {}) {
+  async launch({ locale = "en-US", settings, launchPath = null, viewport = { width: 1280, height: 800 }, scale } = {}) {
     const settingsPath = join(this.config, `settings-${this.apps.length}`, "settings.json");
     if (settings) {
       mkdirSync(dirname(settingsPath), { recursive: true });
       writeFileSync(settingsPath, JSON.stringify(settings));
     }
-    const context = await this.browser.newContext({ locale, viewport });
+    // A display scale takes a browser of its own: emulating one (deviceScaleFactor)
+    // blurs the edges of boxes in a way that a real display does not.
+    const browser = scale
+      ? await launchBrowser([`--force-device-scale-factor=${scale}`, `--window-size=${viewport.width},${viewport.height}`])
+      : this.browser;
+    const context = await browser.newContext(scale ? { locale, viewport: null } : { locale, viewport });
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
     await page.addInitScript(tauriInPage, { bridge: this.bridge, settingsPath, launchPath });
     const app = new App(this, page, settingsPath);
+    if (scale) app.ownBrowser = browser;
     this.apps.push(app);
     await page.goto(this.url);
     await page.waitForSelector(".toolbar");
     return app;
   }
 
+  /** Ends one app early; `finish` ends the rest. */
+  async close(app) {
+    for (const error of app.errors) this.fail(`page error: ${error}`);
+    await app.page.context().close();
+    await app.ownBrowser?.close();
+    this.closed.push(app);
+  }
+
   async finish() {
     for (const app of this.apps) {
-      for (const error of app.errors) this.fail(`page error: ${error}`);
-      await app.page.context().close();
+      if (!this.closed.includes(app)) await this.close(app);
     }
   }
 }
