@@ -345,21 +345,28 @@
     for (const [id, place] of places) if (place) keep.editors[id]?.goToPlace(place);
   }
 
-  /** Moves a tab to the other pane, keeping its place; with one pane, makes the other. */
-  async function moveTab(id: number, from: number) {
+  type Side = "left" | "right" | "top" | "bottom";
+
+  /**
+   * Moves a tab to the other pane, keeping its place. With one pane, makes the
+   * other: on `side` if given, else after this one the way the split last was.
+   */
+  async function moveTab(id: number, from: number, side?: Side) {
     const source = panes[from];
     if (panes.length === 1) {
       if (source.ids.length < 2) return;
-      panes.push(newPane());
+      if (side) splitDirection = side === "left" || side === "right" ? "columns" : "rows";
+      if (side === "left" || side === "top") panes.unshift(newPane());
+      else panes.push(newPane());
     }
-    const target = panes[1 - from];
+    const target = panes[panes[0] === source ? 1 : 0];
     const place = source.editors[id]?.place();
     const shown = target.ids.includes(id);
     if (!shown) {
       const next = target.activeId === null ? target.ids.length : target.ids.indexOf(target.activeId) + 1;
       target.ids.splice(next, 0, id);
     }
-    removeView(id, from);
+    removeView(id, panes.indexOf(source));
     activate(id, panes.indexOf(target));
     if (shown || !place) return;
     await tick();
@@ -372,18 +379,37 @@
     return index === undefined ? null : Number(index);
   }
 
-  /** The pane a tab being dragged would go to. */
-  let dropTarget = $state<number | null>(null);
+  /** The side of the text a point is close to; none in the middle or off the text. */
+  function sideAt(x: number, y: number): Side | null {
+    const box = panesBox?.querySelector(".editors")?.getBoundingClientRect();
+    if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
+    const [toLeft, toRight, toTop, toBottom] = [x - box.left, box.right - x, y - box.top, box.bottom - y];
+    const across = Math.min(toLeft, toRight) / box.width;
+    const down = Math.min(toTop, toBottom) / box.height;
+    if (Math.min(across, down) > EDGE) return null;
+    if (across < down) return toLeft < toRight ? "left" : "right";
+    return toTop < toBottom ? "top" : "bottom";
+  }
+
+  const EDGE = 0.3;
+
+  /** Where a tab being dragged would go: the other pane, or a new one on a side of this one. */
+  let dropZone = $state<{ pane: number; side?: Side } | null>(null);
 
   function dragTab(from: number, x: number, y: number) {
-    const over = paneAt(x, y);
-    dropTarget = over === from ? null : over;
+    if (panes.length > 1) {
+      const over = paneAt(x, y);
+      dropZone = over === null || over === from ? null : { pane: over };
+      return;
+    }
+    const side = panes[from].ids.length > 1 ? sideAt(x, y) : null;
+    dropZone = side ? { pane: from, side } : null;
   }
 
   function dropTab(id: number, from: number) {
-    const target = dropTarget;
-    dropTarget = null;
-    if (target !== null) moveTab(id, from);
+    const zone = dropZone;
+    dropZone = null;
+    if (zone) moveTab(id, from, zone.side);
   }
 
   // Resizing the split.
@@ -1064,7 +1090,8 @@
         <section
           class="pane"
           class:focused={i === focused}
-          class:drop-target={i === dropTarget}
+          class:drop-target={i === dropZone?.pane}
+          data-side={i === dropZone?.pane ? dropZone.side : undefined}
           data-pane={i}
           style:flex={panes.length > 1 ? `${i === 0 ? paneShare : 1 - paneShare} 1 0` : null}
           onfocusin={() => (focused = i)}
@@ -1080,7 +1107,7 @@
               ondrag={(x, y) => dragTab(i, x, y)}
               ondrop={(id, point) => {
                 if (point) dragTab(i, point.x, point.y);
-                else dropTarget = null;
+                else dropZone = null;
                 dropTab(id, i);
               }}
             />
@@ -1312,6 +1339,18 @@
     z-index: 20;
     background: rgba(0, 122, 204, 0.25);
     pointer-events: none;
+  }
+  .pane[data-side="left"]::after {
+    right: 50%;
+  }
+  .pane[data-side="right"]::after {
+    left: 50%;
+  }
+  .pane[data-side="top"]::after {
+    bottom: 50%;
+  }
+  .pane[data-side="bottom"]::after {
+    top: 50%;
   }
   .pane-sash {
     flex: none;

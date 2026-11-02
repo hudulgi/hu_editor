@@ -60,8 +60,6 @@ export default async function (t) {
 
   check("one pane to start with", await paneCount(), 1);
   await until("the view menu says so", async () => (await menuItems("View")).slice(5), ["✓Single Pane", "Two Columns", "Two Rows", "-Move Tab to Other Pane", "-Switch Pane"]);
-  await app.menu("View", "Switch Pane").catch(() => {});
-  await press("Escape");
 
   await goTo(200);
   const leftTop = await firstLineOf(0);
@@ -248,6 +246,120 @@ export default async function (t) {
   await until("its close button still works", () => tabsOf(1), ["*deck.bdf"]);
   await app.open(t.path("third.inp"));
 
+  // From one pane: the edges of the text make the second pane, on that side.
+  await press("Control+\\");
+  await until("one pane, three tabs", async () => [await paneCount(), (await app.tabs()).length], [1, 3]);
+  await page.click(".strip .tab:has(.name:text-is('deck.bdf'))");
+  await goTo(250);
+  const top250 = await firstLineOf(0);
+  const zone = (side) => page.$eval(".pane.drop-target", (e) => e.dataset.side ?? "whole").catch(() => null);
+  const dragToSide = async (name, fx, fy) => {
+    await page.mouse.move(...(await center(`.strip .tab:has(.name:text-is('${name}'))`)));
+    await page.mouse.down();
+    const box = await page.locator(`.pane .editors`).first().boundingBox();
+    await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 5 });
+  };
+
+  await dragToSide("deck.bdf", 0.5, 0.5);
+  check("the middle of the text makes nothing", await zone(), null);
+  await page.mouse.up();
+  await until("nothing changed", paneCount, 1);
+  await page.mouse.move(...(await center(".strip .tab:has(.name:text-is('deck.bdf'))")));
+  await page.mouse.down();
+  await page.mouse.move(...(await center(".strip .tab:has(.name:text-is('other.inp'))")), { steps: 5 });
+  check("nor does its own strip", await zone(), null);
+  await page.mouse.up();
+
+  await dragToSide("deck.bdf", 0.95, 0.5);
+  check("the right edge shows the right half", await zone(), "right");
+  await app.shot("split-drag-right");
+  const half = await page.$eval(".pane.drop-target", (e) => {
+    const after = getComputedStyle(e, "::after");
+    return [after.left === `${e.clientWidth / 2}px`, after.right === "0px"];
+  });
+  check("as the half it will be", half, [true, true]);
+  await page.mouse.up();
+  await until("dropped: two columns, the tab on the right", async () => {
+    [left, right] = [await rect(0), await rect(1)];
+    return [await tabsOf(1), left.x + left.width <= right.x + 2, left.y === right.y];
+  }, [["*deck.bdf"], true, true]);
+  check("the rest on the left", (await tabsOf(0)).map((tab) => tab.replace("*", "")).sort(), ["other.inp", "third.inp"]);
+  await until("the tab has the keyboard and its place", async () => [await focusedPane(), await keyboardIn(), await firstLineOf(1), await app.position()], [1, 1, top250, "Ln 250, Col 1"]);
+  check("the mark goes", await page.locator(".drop-target").count(), 0);
+
+  await press("Control+\\");
+  await until("one pane", paneCount, 1);
+  await dragToSide("deck.bdf", 0.5, 0.95);
+  check("the bottom edge", await zone(), "bottom");
+  await page.mouse.up();
+  await until("two rows, the tab below", async () => {
+    [left, right] = [await rect(0), await rect(1)];
+    return [await tabsOf(1), left.y + left.height <= right.y + 2, left.x === right.x];
+  }, [["*deck.bdf"], true, true]);
+
+  await press("Control+\\");
+  await until("one pane", paneCount, 1);
+  await dragToSide("deck.bdf", 0.05, 0.5);
+  check("the left edge", await zone(), "left");
+  await page.mouse.up();
+  await until("two columns, the tab on the left", async () => {
+    [left, right] = [await rect(0), await rect(1)];
+    return [await tabsOf(0), left.x + left.width <= right.x + 2];
+  }, [["*deck.bdf"], true]);
+  await until("the tab has the keyboard and its place", async () => [await focusedPane(), await keyboardIn(), await firstLineOf(0), await app.position()], [0, 0, top250, "Ln 250, Col 1"]);
+  await page.keyboard.type("L");
+  await until("typing goes to it", async () => (await linesOf(0)).some((line) => line.startsWith("L")), true);
+  await press("Control+z");
+  await until("undone", () => tabsOf(0), ["*deck.bdf"]);
+
+  await press("Control+\\");
+  await until("one pane", paneCount, 1);
+  await dragToSide("deck.bdf", 0.5, 0.05);
+  check("the top edge", await zone(), "top");
+  await page.mouse.up();
+  await until("two rows, the tab above", async () => {
+    [left, right] = [await rect(0), await rect(1)];
+    return [await tabsOf(0), left.y + left.height <= right.y + 2];
+  }, [["*deck.bdf"], true]);
+
+  // With two panes the whole of the other one is the target, as before.
+  await page.mouse.move(...(await center(tabIn(0, "deck.bdf"))));
+  await page.mouse.down();
+  await page.mouse.move(...(await center(`${PANE(1)} .editors`)), { steps: 5 });
+  check("two panes: the other one, whole", await zone(), "whole");
+  await page.mouse.up();
+  await until("back to one pane: its only tab moved", paneCount, 1);
+
+  // A pane's only tab has nowhere to come from.
+  for (const name of ["other.inp", "third.inp"]) {
+    await page.hover(`.strip .tab:has(.name:text-is('${name}'))`);
+    await page.click(`.strip .tab:has(.name:text-is('${name}')) .close`);
+  }
+  await until("one tab left", app.tabs, ["*deck.bdf"]);
+  await dragToSide("deck.bdf", 0.95, 0.5);
+  check("the only tab makes no split", await zone(), null);
+  await page.mouse.up();
+  await until("still one pane", paneCount, 1);
+
+  // Let go outside the window's panes, nothing happens either.
+  await app.open(t.path("other.inp"));
+  await app.open(t.path("third.inp"));
+  await page.mouse.move(...(await center(".strip .tab:has(.name:text-is('third.inp'))")));
+  await page.mouse.down();
+  await page.mouse.move(...(await center(".explorer")), { steps: 5 });
+  check("over the explorer, no mark", await zone(), null);
+  await page.mouse.up();
+  await until("nothing moves", paneCount, 1);
+
+  // Back to how the next part expects it: two columns.
+  await dragToSide("deck.bdf", 0.95, 0.5);
+  await page.mouse.up();
+  await until("two panes again", paneCount, 2);
+  await app.menu("View", "Two Columns");
+  await page.click(tabIn(0, "third.inp"));
+  await press("Control+Alt+ArrowRight");
+  await until("laid out for the next part", async () => [await tabsOf(0), await tabsOf(1)], [["*other.inp"], ["deck.bdf", "*third.inp"]]);
+
   // ---- Two rows, and the size of the panes -----------------------------------
 
   await page.click(tabIn(1, "deck.bdf"));
@@ -420,7 +532,7 @@ export default async function (t) {
   await press("Control+1");
   await page.click(tabIn(0, "other.inp"));
   await press("Control+2");
-  await app.open(t.path("third.inp")).catch(() => {});
+  await app.open(t.path("third.inp"));
   await app.menu("View", "Single Pane");
   await until("single pane merges without a question", async () => [await paneCount(), await page.locator(".dialog").count()], [1, 0]);
   check("no tab twice", (await app.tabs()).map((tab) => tab.replace("*", "")).sort(), ["deck.bdf", "other.inp", "renamed.inp", "third.inp"]);
