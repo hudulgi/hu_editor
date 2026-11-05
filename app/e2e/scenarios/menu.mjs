@@ -250,11 +250,14 @@ export default async function (t) {
   await app.menu("View", "Field Shading");
   await app.menu("View", "Explorer");
   await until("explorer off", () => page.locator(".sidebar.hidden").count(), 1);
+  check("the text takes its place", (await page.locator(".panes").boundingBox()).x, 0);
   await page.click(title("View"));
   check("it shows off", (await items())[0], "Explorer|Ctrl+B");
   await page.click(label("Explorer"));
   await until("explorer on", () => page.locator(".sidebar.hidden").count(), 0);
   await until("the keyboard is in the editor", focusIn, "editor");
+  const sidebar = await page.locator(".sidebar").boundingBox();
+  check("the text stands clear of it", (await page.locator(".panes").boundingBox()).x - (sidebar.x + sidebar.width), 6);
 
   // ---- Help ----------------------------------------------------------------
 

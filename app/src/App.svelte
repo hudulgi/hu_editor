@@ -1296,11 +1296,11 @@
     flex: none;
     min-width: 0;
   }
+  /* Reaches 2px over the sidebar to be easy to grab; the rest is the gap before the text. */
   .sash {
     flex: none;
-    width: 4px;
+    width: 6px;
     margin-left: -2px;
-    margin-right: -2px;
     z-index: 5;
     cursor: col-resize;
     border-left: 2px solid transparent;
