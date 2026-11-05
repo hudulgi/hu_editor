@@ -3,6 +3,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { emit, listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import { formatNumber as fmt, formatSize as size, isWindows, parentName, samePath } from "./lib/format";
@@ -13,6 +14,25 @@
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import { describeError, t } from "./lib/i18n";
+  import {
+    arrange,
+    directionOf,
+    flipped,
+    leaves,
+    mapLeaves,
+    presetLayout,
+    presetOf,
+    presetSlots,
+    resized,
+    splitAt,
+    without,
+    type Direction,
+    type LayoutNode,
+    type Preset,
+    type Sash,
+    type Side,
+    type Tree,
+  } from "./lib/layout";
   import MenuBar, { type Menu } from "./lib/MenuBar.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import { settings, settingsFile } from "./lib/settings.svelte";
@@ -20,7 +40,7 @@
 
   type Choice = "save" | "discard" | "cancel";
 
-  /** An open document and what the app shows about it; both panes can show it. */
+  /** An open document and what the app shows about it; several panes can show it. */
   interface Tab {
     doc: api.DocInfo;
     lang: Lang;
@@ -42,10 +62,10 @@
     chosenEncoding: boolean;
   }
 
-  /** One side of a split, with its tabs in order. Each tab keeps its own editor
+  /** One part of the layout, with its tabs in order. Each tab keeps its own editor
    * (caret, selection, scroll position) mounted while hidden. */
   interface Pane {
-    /** Stays with the pane, so that its editors stay when the other pane goes. */
+    /** Stays with the pane, so that its editors stay when the layout changes. */
     key: number;
     ids: number[];
     activeId: number | null;
@@ -57,10 +77,14 @@
   const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, carets: {}, editors: {} });
 
   let tabs = $state<Tab[]>([]);
+  /** In reading order. */
   let panes = $state<Pane[]>([newPane()]);
+  let layout = $state.raw<LayoutNode>({ pane: 0 });
+  let arranged = $derived(arrange(layout));
   /** The pane with the keyboard. */
   let focused = $state(0);
-  let splitDirection = $state<"columns" | "rows">("columns");
+  /** The way the last split went: Ctrl+\\ goes that way again. */
+  let splitDirection = $state<Direction>("columns");
   let activeId = $derived(panes[focused].activeId);
   let active = $derived(tabs.find((t) => t.doc.id === activeId) ?? null);
   let editor = $derived(activeId === null ? undefined : panes[focused].editors[activeId]);
@@ -94,34 +118,37 @@
   const saved = (key: string) => localStorage.getItem(`hu.${key}`);
   let sidebarOpen = $state(saved("sidebarOpen") !== "false");
   let sidebarWidth = $state(Number(saved("sidebarWidth")) || 280);
-  /** The first pane's share of the split. */
-  let paneShare = $state(Number(saved("paneShare")) || 0.5);
 
   $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
   $effect(() => localStorage.setItem("hu.sidebarWidth", String(sidebarWidth)));
-  $effect(() => localStorage.setItem("hu.paneShare", String(paneShare)));
 
   // The open files and how they were laid out come back next time (new documents
-  // without a file do not). Older sessions have only `paths` and `active`.
-  interface Session {
+  // without a file do not), for the first window. Older sessions have `paths` and
+  // `active`, and then `second` with the first pane's share kept apart.
+  interface SavedPane {
     paths: string[];
     active: string | null;
-    second?: { paths: string[]; active: string | null } | null;
-    direction?: "columns" | "rows";
+  }
+
+  interface Session {
+    layout?: Tree<SavedPane>;
+    paths?: string[];
+    active?: string | null;
+    second?: SavedPane | null;
+    direction?: Direction;
     focused?: number;
   }
 
   let restored = false;
   $effect(() => {
-    const paths = (pane: Pane) => pane.ids.flatMap((id) => tabOf(id)?.doc.path ?? []);
-    const activePath = (pane: Pane) => (pane.activeId === null ? null : (tabOf(pane.activeId)?.doc.path ?? null));
-    const session: Session = {
-      paths: paths(panes[0]),
-      active: activePath(panes[0]),
-      second: panes[1] ? { paths: paths(panes[1]), active: activePath(panes[1]) } : null,
-      direction: splitDirection,
-      focused,
+    const saveOf = ({ pane: key }: { pane: number }): SavedPane => {
+      const pane = panes.find((one) => one.key === key);
+      return {
+        paths: pane?.ids.flatMap((id) => tabOf(id)?.doc.path ?? []) ?? [],
+        active: pane && pane.activeId !== null ? (tabOf(pane.activeId)?.doc.path ?? null) : null,
+      };
     };
+    const session: Session = { layout: mapLeaves(layout, saveOf), direction: splitDirection, focused };
     if (restored) localStorage.setItem("hu.session", JSON.stringify(session));
   });
 
@@ -210,16 +237,14 @@
   /** Takes a tab out of pane `at`; a pane left empty closes. The document stays open. */
   function removeView(id: number, at: number) {
     const pane = panes[at];
+    const wasFocused = at === focused;
     const index = pane.ids.indexOf(id);
     pane.ids.splice(index, 1);
     delete pane.editors[id];
     delete pane.carets[id];
     if (pane.activeId === id) pane.activeId = pane.ids[Math.min(index, pane.ids.length - 1)] ?? null;
-    if (!pane.ids.length && panes.length > 1) {
-      panes.splice(at, 1);
-      focused = 0;
-    }
-    if (at === focused || panes.length === 1) {
+    if (!pane.ids.length && panes.length > 1) closePane(at);
+    if (wasFocused || panes.length === 1) {
       const next = panes[focused].activeId;
       if (next !== null) activate(next, focused);
     }
@@ -246,7 +271,7 @@
   });
 
   /** Adds a tab next to the active one, or in place of `replacing` wherever that shows. */
-  function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null) {
+  function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null, show = true) {
     const tab: Tab = {
       doc,
       lang,
@@ -268,7 +293,7 @@
         delete pane.carets[old];
         if (pane.activeId === old) pane.activeId = doc.id;
       }
-      activate(doc.id);
+      if (show) activate(doc.id);
     } else {
       tabs.push(tab);
       addView(doc.id, focused);
@@ -287,8 +312,8 @@
   }
 
   /**
-   * Closes a tab of pane `at`. If the other pane shows the document too, that
-   * is all; otherwise the document goes, asking first if it has unsaved changes.
+   * Closes a tab of pane `at`. If another pane or window shows the document too,
+   * that is all; otherwise the document goes, asking first if it has unsaved changes.
    */
   async function closeTab(id: number, at = focused) {
     const tab = tabOf(id);
@@ -297,7 +322,7 @@
     const last = !panes.some((other) => other !== pane && other.ids.includes(id));
     if (last) {
       await flush(id);
-      if (tab.state.dirty) {
+      if (tab.state.dirty && !(await inOtherWindow(id))) {
         activate(id, at);
         const choice = await ask([tab.doc.name]);
         if (choice === "cancel" || (choice === "save" && !(await saveTab(tab)))) return false;
@@ -319,47 +344,79 @@
 
   // ---- Split ----------------------------------------------------------------
 
-  /** Shows two panes; the first time, the active tab opens in the new one at the same place. */
-  async function split(direction: "columns" | "rows") {
-    splitDirection = direction;
-    if (panes.length > 1 || !active) return;
+  /** Changes the layout: `added` are the panes new to it, `focus` the pane to have the keyboard. */
+  function setLayout(next: LayoutNode, focus: Pane, added: Pane[] = []) {
+    const all = [...panes, ...added];
+    layout = next;
+    panes = leaves(next).map((key) => all.find((pane) => pane.key === key)!);
+    focused = panes.findIndex((pane) => pane.key === focus.key);
+  }
+
+  /** A new, empty pane on `side` of `next`. */
+  function addPane(next: Pane, side: Side) {
+    const pane = newPane();
+    splitDirection = directionOf(side);
+    setLayout(splitAt(layout, next.key, pane.key, side), panes[focused], [pane]);
+    return panes.find((one) => one.key === pane.key)!;
+  }
+
+  /** Takes a pane out of the layout. Its documents stay open; closing its tabs is for the caller. */
+  function closePane(at: number) {
+    const focus = at === focused ? (panes[at + 1] ?? panes[at - 1]) : panes[focused];
+    setLayout(without(layout, panes[at].key), focus);
+  }
+
+  const sideAfter = (direction: Direction): Side => (direction === "columns" ? "right" : "bottom");
+
+  /** A new pane on `side` of this one, showing this pane's tab at the same place. */
+  async function split(side: Side) {
+    if (!active) return;
     const id = active.doc.id;
     const place = editor?.place();
-    panes.push(newPane());
-    addView(id, 1);
+    const pane = addPane(panes[focused], side);
+    addView(id, panes.indexOf(pane));
     await tick();
-    if (place) panes[1].editors[id]?.goToPlace(place);
+    if (place) pane.editors[id]?.goToPlace(place);
   }
-
-  /** Back to one pane, which takes the other's tabs. No document closes. */
-  async function unsplit() {
-    if (panes.length < 2) return;
-    const keep = panes[focused];
-    const other = panes[1 - focused];
-    const places = other.ids.filter((id) => !keep.ids.includes(id)).map((id) => [id, other.editors[id]?.place()] as const);
-    keep.ids = [...new Set([...panes[0].ids, ...panes[1].ids])];
-    panes.splice(1 - focused, 1);
-    focused = 0;
-    if (keep.activeId !== null) activate(keep.activeId, 0);
-    await tick();
-    for (const [id, place] of places) if (place) keep.editors[id]?.goToPlace(place);
-  }
-
-  type Side = "left" | "right" | "top" | "bottom";
 
   /**
-   * Moves a tab to the other pane, keeping its place. With one pane, makes the
-   * other: on `side` if given, else after this one the way the split last was.
+   * Lays the panes out as `preset`, sharing the room evenly. New panes start
+   * empty; panes too many hand their tabs to the last one kept. No document closes.
    */
-  async function moveTab(id: number, from: number, side?: Side) {
-    const source = panes[from];
-    if (panes.length === 1) {
-      if (source.ids.length < 2) return;
-      if (side) splitDirection = side === "left" || side === "right" ? "columns" : "rows";
-      if (side === "left" || side === "top") panes.unshift(newPane());
-      else panes.push(newPane());
+  async function applyPreset(preset: Preset) {
+    const slots = presetSlots(preset);
+    const current = panes[focused];
+    const kept = panes.slice(0, slots);
+    if (!kept.includes(current)) kept[slots - 1] = current;
+    const into = kept[kept.length - 1];
+    const places: [number, ReturnType<NonNullable<typeof editor>["place"]> | undefined][] = [];
+    if (panes.length > slots) {
+      const merging = panes.filter((pane) => pane === into || !kept.includes(pane));
+      for (const pane of merging) {
+        if (pane === into) continue;
+        for (const id of pane.ids) if (!into.ids.includes(id)) places.push([id, pane.editors[id]?.place()]);
+      }
+      into.ids = [...new Set(merging.flatMap((pane) => pane.ids))];
+      into.activeId ??= into.ids[0] ?? null;
     }
-    const target = panes[panes[0] === source ? 1 : 0];
+    const fresh = Array.from({ length: slots - kept.length }, newPane);
+    const next = presetLayout(preset, [...kept, ...fresh].map((pane) => pane.key));
+    if ("direction" in next) splitDirection = next.direction;
+    setLayout(next, current, fresh);
+    focusPane(focused);
+    await tick();
+    for (const [id, place] of places) if (place) into.editors[id]?.goToPlace(place);
+  }
+
+  /** Columns become rows and rows columns; the panes and their sizes stay. */
+  function flipLayout() {
+    if ("direction" in layout) splitDirection = layout.direction === "columns" ? "rows" : "columns";
+    setLayout(flipped(layout), panes[focused]);
+  }
+
+  /** Moves a tab to pane `to`, or to a new pane on `side` of that, keeping its place. */
+  async function moveTab(id: number, source: Pane, to: Pane, side?: Side) {
+    const target = side ? addPane(to, side) : to;
     const place = source.editors[id]?.place();
     const shown = target.ids.includes(id);
     if (!shown) {
@@ -373,15 +430,30 @@
     target.editors[id]?.goToPlace(place);
   }
 
+  /**
+   * Moves the active tab to the pane after or before this one, around the ends
+   * if `wrap`. With one pane, going forward makes the other, the way the split last was.
+   */
+  function moveTabBy(step: 1 | -1, wrap = false) {
+    if (!active) return;
+    const source = panes[focused];
+    if (panes.length === 1) {
+      if (step > 0 && source.ids.length > 1) moveTab(active.doc.id, source, source, sideAfter(splitDirection));
+      return;
+    }
+    const next = panes[wrap ? (focused + step + panes.length) % panes.length : focused + step];
+    if (next) moveTab(active.doc.id, source, next);
+  }
+
   /** The pane under a point, if any. */
   function paneAt(x: number, y: number) {
     const index = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
     return index === undefined ? null : Number(index);
   }
 
-  /** The side of the text a point is close to; none in the middle or off the text. */
-  function sideAt(x: number, y: number): Side | null {
-    const box = panesBox?.querySelector(".editors")?.getBoundingClientRect();
+  /** The side of a pane's text a point is close to; none in the middle or off the text. */
+  function sideAt(at: number, x: number, y: number): Side | null {
+    const box = panesBox?.querySelector(`[data-pane="${at}"] .editors`)?.getBoundingClientRect();
     if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
     const [toLeft, toRight, toTop, toBottom] = [x - box.left, box.right - x, y - box.top, box.bottom - y];
     const across = Math.min(toLeft, toRight) / box.width;
@@ -393,34 +465,123 @@
 
   const EDGE = 0.3;
 
-  /** Where a tab being dragged would go: the other pane, or a new one on a side of this one. */
+  /** Where a tab being dragged would go: into a pane or, near an edge of its text, a new pane on that side of it. */
   let dropZone = $state<{ pane: number; side?: Side } | null>(null);
 
   function dragTab(from: number, x: number, y: number) {
-    if (panes.length > 1) {
-      const over = paneAt(x, y);
-      dropZone = over === null || over === from ? null : { pane: over };
+    const over = paneAt(x, y);
+    if (over === null) {
+      dropZone = null;
       return;
     }
-    const side = panes[from].ids.length > 1 ? sideAt(x, y) : null;
-    dropZone = side ? { pane: from, side } : null;
+    const side = sideAt(over, x, y) ?? undefined;
+    if (over !== from) dropZone = { pane: over, side };
+    else dropZone = side && panes[from].ids.length > 1 ? { pane: from, side } : null;
   }
 
   function dropTab(id: number, from: number) {
     const zone = dropZone;
     dropZone = null;
-    if (zone) moveTab(id, from, zone.side);
+    if (zone) moveTab(id, panes[from], panes[zone.pane], zone.side);
   }
 
-  // Resizing the split.
+  // Resizing the panes.
   let panesBox = $state<HTMLElement>();
-  let paneResizing = false;
+  let resizingPanes: Sash | null = null;
 
   function paneSashMove(e: PointerEvent) {
-    if (!paneResizing || !panesBox) return;
+    if (!resizingPanes || !panesBox) return;
     const box = panesBox.getBoundingClientRect();
-    const share = splitDirection === "columns" ? (e.clientX - box.left) / box.width : (e.clientY - box.top) / box.height;
-    paneShare = Math.min(0.85, Math.max(0.15, share));
+    const { direction, parent } = resizingPanes;
+    const at =
+      direction === "columns"
+        ? ((e.clientX - box.left) / box.width - parent.x) / parent.width
+        : ((e.clientY - box.top) / box.height - parent.y) / parent.height;
+    layout = resized(layout, resizingPanes, at);
+  }
+
+  // ---- Other windows ----------------------------------------------------------
+
+  /**
+   * What happens to a document shown in several windows is told to the others.
+   * Each window has its own panes and tabs; the backend holds the one document,
+   * until the last window lets go of it.
+   */
+  type DocNews =
+    | { kind: "edited"; id: number; change: api.Change; state: api.DocState }
+    | { kind: "saved"; id: number; state: api.DocState; path: string | null; name: string; lang: Lang }
+    | { kind: "encoding"; id: number; encoding: api.Encoding; chosen: boolean }
+    | { kind: "replaced"; id: number; loaded: Loaded; goto: number | null };
+
+  /** What a new window shows first. */
+  interface WindowStart extends Loaded {
+    place: ReturnType<NonNullable<typeof editor>["place"]> | null;
+  }
+
+  const DOC_NEWS = "hu://doc";
+  const thisWindow = getCurrentWindow().label;
+  /** Documents that another window may be showing too. */
+  const sharedDocs = new Set<number>();
+
+  const tell = (news: DocNews) => emit(DOC_NEWS, { ...$state.snapshot(news), from: thisWindow });
+  const inOtherWindow = async (id: number) => sharedDocs.has(id) && (await api.documentWindows(id)) > 1;
+
+  function heard(news: DocNews) {
+    const tab = tabOf(news.id);
+    if (!tab) return;
+    if (news.kind === "edited") {
+      for (const view of viewsOf(news.id)) view.followEdit(news.change);
+      refreshAfterEdit(news.id, news.state);
+    } else if (news.kind === "saved") {
+      Object.assign(tab.doc, { path: news.path, name: news.name });
+      Object.assign(tab, { state: news.state, lang: news.lang, changedOnDisk: false });
+    } else if (news.kind === "encoding") {
+      tab.doc.encoding = news.encoding;
+      tab.chosenEncoding = news.chosen;
+      for (const view of viewsOf(news.id)) view.reread();
+    } else {
+      sharedDocs.add(news.loaded.doc.id);
+      add(news.loaded, tab, news.goto, false);
+    }
+  }
+
+  /** Shows the active tab in a new window, at the same place; `move` closes it here. */
+  async function toNewWindow(move: boolean) {
+    const tab = active;
+    if (!tab) return;
+    const id = tab.doc.id;
+    const pane = panes[focused];
+    await flush(id);
+    const start: WindowStart = $state.snapshot({
+      doc: { ...tab.doc, state: tab.state },
+      lang: tab.lang,
+      chosenEncoding: tab.chosenEncoding,
+      place: pane.editors[id]?.place() ?? null,
+    });
+    await api.retainDocument(id);
+    sharedDocs.add(id);
+    try {
+      await api.openWindow(start);
+    } catch (e) {
+      api.closeDocument(id);
+      notice = describeError(e);
+      return;
+    }
+    if (move) await closeTab(id, panes.indexOf(pane));
+  }
+
+  /** Puts a newly opened document in the place of a tab, here and in the other windows showing it. */
+  async function replaceDoc(tab: Tab, loaded: Loaded, goto: number | null = null) {
+    const old = tab.doc.id;
+    if (sharedDocs.has(old)) {
+      const others = (await api.documentWindows(old)) - 1;
+      for (let i = 0; i < others; i++) await api.retainDocument(loaded.doc.id);
+      if (others > 0) {
+        sharedDocs.add(loaded.doc.id);
+        tell({ kind: "replaced", id: old, loaded, goto });
+      }
+    }
+    add(loaded, tab, goto);
   }
 
   // ---- Unsaved changes ------------------------------------------------------
@@ -444,7 +605,8 @@
   /** Whether the window may close: unsaved files are saved or given up. */
   async function mayCloseAll() {
     await Promise.all(tabs.map((t) => flush(t.doc.id)));
-    const dirty = tabs.filter((t) => t.state.dirty);
+    const dirty: Tab[] = [];
+    for (const tab of tabs) if (tab.state.dirty && !(await inOtherWindow(tab.doc.id))) dirty.push(tab);
     if (!dirty.length) return true;
     if (dirty.length === 1) activate(dirty[0].doc.id);
     const choice = await ask(dirty.map((t) => t.doc.name));
@@ -496,6 +658,10 @@
     try {
       await work((written) => saving && (saving.written = written));
       tab.changedOnDisk = false;
+      if (sharedDocs.has(tab.doc.id)) {
+        const { id, path, name } = tab.doc;
+        tell({ kind: "saved", id, state: tab.state, path, name, lang: tab.lang });
+      }
       return true;
     } catch (e) {
       notice = t("notice.saveFailed", { error: describeError(e) });
@@ -535,6 +701,7 @@
     tab.chosenEncoding = encoding !== null;
     if (tab.doc.path !== null) rememberEncoding(tab.doc.path, encoding);
     for (const view of viewsOf(id)) view.reread();
+    if (sharedDocs.has(id)) tell({ kind: "encoding", id, encoding: tab.doc.encoding, chosen: tab.chosenEncoding });
   }
 
   /** Saves the tab converted to `encoding`. Its bytes change, so it opens anew at the same line. */
@@ -556,7 +723,7 @@
     if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
     rememberEncoding(path, encoding);
     try {
-      add(await load(path), tab, line);
+      await replaceDoc(tab, await load(path), line);
     } catch (e) {
       notice = describeError(e);
     }
@@ -577,14 +744,15 @@
   }
 
   /**
-   * Shows `path` in a tab: the one it is already open in, in either pane, or a
-   * new one in this pane. `reveal` expands the explorer down to it (not wanted
-   * when picked there).
+   * Shows `path` in a tab: the one it is already open in, in any pane, or a new
+   * one in this pane, which an empty pane gets in any case. `reveal` expands the
+   * explorer down to it (not wanted when picked there).
    */
   async function openPath(path: string, reveal = true) {
     const open = tabOfPath(path);
     if (open) {
-      activate(open.doc.id);
+      if (panes[focused].activeId === null) addView(open.doc.id, focused);
+      else activate(open.doc.id);
     } else {
       try {
         const loaded = await load(path);
@@ -616,7 +784,7 @@
   async function reload(tab: Tab) {
     if (!tab.doc.path) return;
     try {
-      add(await load(tab.doc.path), tab);
+      await replaceDoc(tab, await load(tab.doc.path));
     } catch (e) {
       notice = describeError(e);
     }
@@ -643,10 +811,11 @@
     polls.set(id, setInterval(poll, 250));
   }
 
-  /** An edit in pane `at`: the other pane follows if it shows the document. */
-  function edited(id: number, at: number, result: api.EditResult) {
-    if (panes.length > 1) panes[1 - at]?.editors[id]?.followEdit(result.change);
+  /** An edit in a pane: wherever else the document shows follows. */
+  function edited(id: number, from: Pane, result: api.EditResult) {
+    for (const pane of panes) if (pane !== from) pane.editors[id]?.followEdit(result.change);
     refreshAfterEdit(id, result.state);
+    if (sharedDocs.has(id)) tell({ kind: "edited", id, change: result.change, state: result.state });
   }
 
   /** Edits change the line count and can settle the language; refresh them once typing pauses. */
@@ -745,9 +914,15 @@
     about = { version: await getVersion() };
   }
 
+  /** The keyboard goes to a pane, or leaves the editors if the pane is empty. */
   function focusPane(at: number) {
-    const id = panes[at]?.activeId;
-    if (id !== null && id !== undefined) activate(id, at);
+    const pane = panes[at];
+    if (!pane) return;
+    if (pane.activeId !== null) activate(pane.activeId, at);
+    else {
+      focused = at;
+      (document.activeElement as HTMLElement | null)?.blur();
+    }
   }
 
   function closeAbout() {
@@ -767,6 +942,13 @@
     const tab = active;
     const open = tab !== null;
     const splitted = panes.length > 1;
+    const current = presetOf(layout);
+    const preset = (name: Preset, label: string, key: string) => ({
+      label,
+      key,
+      checked: current === name,
+      run: () => applyPreset(name),
+    });
     return [
       {
         label: t("menu.file"),
@@ -791,7 +973,7 @@
           },
           { label: t("menu.encoding"), key: "E", enabled: open, run: () => (encodingOpen = true) },
           "separator",
-          { label: t("menu.closeTab"), key: "C", shortcut: "Ctrl+W", enabled: open, run: () => tab && closeTab(tab.doc.id) },
+          { label: t("menu.closeTab"), key: "C", shortcut: "Ctrl+W", enabled: open || splitted, run: closeTabOrPane },
           { label: t("menu.settings"), key: "T", shortcut: "Ctrl+,", run: () => openSettings() },
           "separator",
           { label: t("menu.exit"), key: "X", shortcut: "Alt+F4", run: () => getCurrentWindow().close() },
@@ -866,17 +1048,38 @@
           { label: t("menu.syntax"), key: "S", checked: settings.syntaxHighlight, run: () => (settings.syntaxHighlight = !settings.syntaxHighlight) },
           { label: t("menu.fieldShading"), key: "F", checked: settings.fieldShading, run: () => (settings.fieldShading = !settings.fieldShading) },
           "separator",
-          { label: t("menu.singlePane"), key: "P", checked: !splitted, run: unsplit },
-          { label: t("menu.twoColumns"), key: "C", shortcut: "Ctrl+\\", enabled: open, checked: splitted && splitDirection === "columns", run: () => split("columns") },
-          { label: t("menu.twoRows"), key: "R", enabled: open, checked: splitted && splitDirection === "rows", run: () => split("rows") },
+          {
+            label: t("menu.editorLayout"),
+            key: "L",
+            items: [
+              { label: t("menu.splitUp"), key: "U", enabled: open, run: () => split("top") },
+              { label: t("menu.splitDown"), key: "D", enabled: open, run: () => split("bottom") },
+              { label: t("menu.splitLeft"), key: "L", enabled: open, run: () => split("left") },
+              { label: t("menu.splitRight"), key: "R", enabled: open, run: () => split("right") },
+              "separator",
+              { label: t("menu.moveToNewWindow"), key: "M", enabled: open, run: () => toNewWindow(true) },
+              { label: t("menu.copyToNewWindow"), key: "C", enabled: open, run: () => toNewWindow(false) },
+              "separator",
+              preset("single", t("menu.layoutSingle"), "S"),
+              preset("twoColumns", t("menu.layoutTwoColumns"), "T"),
+              preset("threeColumns", t("menu.layoutThreeColumns"), "H"),
+              preset("twoRows", t("menu.layoutTwoRows"), "W"),
+              preset("threeRows", t("menu.layoutThreeRows"), "E"),
+              preset("grid", t("menu.layoutGrid"), "G"),
+              preset("twoRowsRight", t("menu.layoutTwoRowsRight"), "I"),
+              preset("twoColumnsBottom", t("menu.layoutTwoColumnsBottom"), "B"),
+              "separator",
+              { label: t("menu.flipLayout"), key: "F", shortcut: "Shift+Alt+0", enabled: splitted, run: flipLayout },
+            ],
+          },
           {
             label: t("menu.moveTab"),
             key: "M",
             shortcut: "Ctrl+Alt+←/→",
             enabled: open && (splitted || panes[0].ids.length > 1),
-            run: () => tab && moveTab(tab.doc.id, focused),
+            run: () => moveTabBy(1, true),
           },
-          { label: t("menu.switchPane"), key: "W", shortcut: "Ctrl+1/2", enabled: splitted, run: () => focusPane(1 - focused) },
+          { label: t("menu.switchPane"), key: "W", shortcut: "Ctrl+1…9", enabled: splitted, run: () => focusPane((focused + 1) % panes.length) },
         ],
       },
       {
@@ -889,6 +1092,15 @@
       },
     ];
   });
+
+  /** The active tab; in an empty pane, with others beside it, the pane itself. */
+  function closeTabOrPane() {
+    if (active) closeTab(active.doc.id, focused);
+    else if (panes.length > 1) {
+      closePane(focused);
+      focusPane(focused);
+    }
+  }
 
   // Alt pressed and released by itself goes to the menu bar, as on Windows. The
   // right Alt is left out: on Korean keyboards it can be the Hangul key.
@@ -925,12 +1137,13 @@
     else if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
-    else if (mod && key === "w" && active) closeTab(active.doc.id, focused);
-    else if (mod && e.code === "Backslash" && active) panes.length > 1 ? unsplit() : split(splitDirection);
-    else if (mod && e.code === "Digit1") focusPane(0);
-    else if (mod && e.code === "Digit2") focusPane(1);
-    else if (mod && e.altKey && e.key === "ArrowRight" && active && focused === 0) moveTab(active.doc.id, 0);
-    else if (mod && e.altKey && e.key === "ArrowLeft" && active && focused === 1) moveTab(active.doc.id, 1);
+    else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
+    else if (mod && e.code === "Backslash" && panes.length > 1) applyPreset("single");
+    else if (mod && e.code === "Backslash" && active) split(sideAfter(splitDirection));
+    else if (mod && /^Digit[1-9]$/.test(e.code)) focusPane(Number(e.code.slice(5)) - 1);
+    else if (e.altKey && e.shiftKey && !mod && e.code === "Digit0") flipLayout();
+    else if (mod && e.altKey && e.key === "ArrowRight") moveTabBy(1);
+    else if (mod && e.altKey && e.key === "ArrowLeft") moveTabBy(-1);
     else if (e.ctrlKey && e.key === "Tab") cycle(e.shiftKey ? -1 : 1);
     else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) cycle(e.key === "PageDown" ? 1 : -1);
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
@@ -963,33 +1176,66 @@
     sidebarWidth = Math.min(640, Math.max(160, resizing.width + e.clientX - resizing.x));
   }
 
-  /** Reopens the files of the last session, then the one passed on the command line. */
-  async function restore() {
-    const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as Session | null;
-    for (const path of session?.paths ?? []) {
-      if ((await api.pathKind(path)) === "file") await openPath(path, false);
-    }
-    const firstActive = session?.active ? tabOfPath(session.active) : undefined;
-    if (firstActive) panes[0].activeId = firstActive.doc.id;
+  /** The layout of a session, of any age. */
+  function savedLayout(session: Session): Tree<SavedPane> {
+    if (session.layout) return session.layout;
+    const first = { paths: session.paths ?? [], active: session.active ?? null };
+    if (!session.second?.paths.length) return first;
+    const share = Number(saved("paneShare")) || 0.5;
+    return {
+      direction: session.direction ?? "columns",
+      children: [
+        { node: first, share },
+        { node: session.second, share: 1 - share },
+      ],
+    };
+  }
 
-    if (session?.direction) splitDirection = session.direction;
-    if (session?.second?.paths.length) {
-      panes.push(newPane());
-      focused = 1;
-      for (const path of session.second.paths) {
+  /** Reopens the panes and files of a session; a pane whose files have all gone goes too. */
+  async function restoreSession(session: Session) {
+    if (session.direction) splitDirection = session.direction;
+    const wanted: { pane: Pane; saved: SavedPane }[] = [];
+    const next = mapLeaves<SavedPane, { pane: number }>(savedLayout(session), (saved) => {
+      const pane = wanted.length ? newPane() : panes[0];
+      wanted.push({ pane, saved });
+      return { pane: pane.key };
+    });
+    setLayout(next, panes[0], wanted.slice(1).map(({ pane }) => pane));
+    for (const [at, { saved }] of wanted.entries()) {
+      focused = at;
+      for (const path of saved.paths) {
         if ((await api.pathKind(path)) !== "file") continue;
-        // Open in the first pane as well: a second tab on the same document.
+        // Open in another pane as well: a second tab on the same document.
         const open = tabOfPath(path);
-        if (open) addView(open.doc.id, 1);
+        if (open) addView(open.doc.id, at);
         else await openPath(path, false);
       }
-      const secondActive = session.second.active ? tabOfPath(session.second.active) : undefined;
-      if (secondActive && panes[1].ids.includes(secondActive.doc.id)) panes[1].activeId = secondActive.doc.id;
-      if (!panes[1].ids.length) panes.pop();
-      if (!panes[0].ids.length && panes[1]) panes.shift();
-      focused = 0;
+      const shown = saved.active ? tabOfPath(saved.active) : undefined;
+      if (shown && panes[at].ids.includes(shown.doc.id)) panes[at].activeId = shown.doc.id;
     }
-    if (panes[session?.focused ?? 0]) focused = session?.focused ?? 0;
+    const keys = wanted.map(({ pane }) => pane.key);
+    for (const [at, { saved }] of wanted.entries()) {
+      const now = panes.findIndex((pane) => pane.key === keys[at]);
+      if (saved.paths.length && !panes[now].ids.length && panes.length > 1) closePane(now);
+    }
+    focused = panes[session.focused ?? 0] ? (session.focused ?? 0) : 0;
+  }
+
+  /** A window opened from another: it starts with that tab, and its layout is not kept. */
+  async function startWith({ place, ...loaded }: WindowStart) {
+    sharedDocs.add(loaded.doc.id);
+    add(loaded);
+    if (loaded.doc.path) explorer?.reveal(loaded.doc.path, false);
+    await tick();
+    if (place) editor?.goToPlace(place);
+  }
+
+  /** Reopens the files of the last session, then the one passed on the command line. */
+  async function restore() {
+    const start = await api.windowStart<WindowStart>();
+    if (start) return startWith(start);
+    const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as Session | null;
+    if (session) await restoreSession(session);
 
     const launched = await api.launchPath();
     const shownId = panes[focused].activeId;
@@ -1014,12 +1260,16 @@
         }
       })
       .then((u) => unlisten.push(u));
-    // Closing the window with unsaved changes asks first.
+    // Closing the window with unsaved changes asks first; other windows go on.
     getCurrentWindow()
       .onCloseRequested(async (e) => {
         if (!(await mayCloseAll())) e.preventDefault();
+        else for (const tab of tabs) api.closeDocument(tab.doc.id);
       })
       .then((u) => unlisten.push(u));
+    listen<DocNews & { from: string }>(DOC_NEWS, ({ payload }) => {
+      if (payload.from !== thisWindow) heard(payload);
+    }).then((u) => unlisten.push(u));
     restore();
     return () => {
       unlisten.forEach((u) => u());
@@ -1071,29 +1321,19 @@
       onpointercancel={() => (resizing = null)}
     ></div>
 
-    <div class="panes" class:rows={splitDirection === "rows"} bind:this={panesBox}>
+    <div class="panes" bind:this={panesBox}>
       {#each panes as pane, i (pane.key)}
-        {#if i > 0}
-          <div
-            class="pane-sash"
-            role="presentation"
-            onmousedown={(e) => e.preventDefault()}
-            onpointerdown={(e) => {
-              e.currentTarget.setPointerCapture(e.pointerId);
-              paneResizing = true;
-            }}
-            onpointermove={paneSashMove}
-            onpointerup={() => (paneResizing = false)}
-            onpointercancel={() => (paneResizing = false)}
-          ></div>
-        {/if}
+        {@const box = arranged.boxes.get(pane.key)!}
         <section
           class="pane"
           class:focused={i === focused}
           class:drop-target={i === dropZone?.pane}
           data-side={i === dropZone?.pane ? dropZone.side : undefined}
           data-pane={i}
-          style:flex={panes.length > 1 ? `${i === 0 ? paneShare : 1 - paneShare} 1 0` : null}
+          style:left="{box.x * 100}%"
+          style:top="{box.y * 100}%"
+          style:width="{box.width * 100}%"
+          style:height="{box.height * 100}%"
           onfocusin={() => (focused = i)}
           onmousedowncapture={() => (focused = i)}
         >
@@ -1140,7 +1380,7 @@
                       lines={tab.status?.lines ?? 0}
                       {highlight}
                       oncaret={(c) => (pane.carets[id] = c)}
-                      onedit={(result) => edited(id, panes.indexOf(pane), result)}
+                      onedit={(result) => edited(id, pane, result)}
                       onerror={(message) => (notice = message)}
                     />
                   </div>
@@ -1169,9 +1409,31 @@
                 {t("empty.new")}
               </p>
               <p class="muted">Abaqus .inp · Nastran .bdf / .dat / .nas</p>
+              {#if panes.length > 1}
+                <p class="muted">{t("empty.closePane")}</p>
+              {/if}
             </div>
           {/if}
         </section>
+      {/each}
+      {#each arranged.sashes as sash (sash.id)}
+        <div
+          class="pane-sash"
+          class:rows={sash.direction === "rows"}
+          role="presentation"
+          style:left="{sash.x * 100}%"
+          style:top="{sash.y * 100}%"
+          style:width="{sash.width * 100}%"
+          style:height="{sash.height * 100}%"
+          onmousedown={(e) => e.preventDefault()}
+          onpointerdown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            resizingPanes = sash;
+          }}
+          onpointermove={paneSashMove}
+          onpointerup={() => (resizingPanes = null)}
+          onpointercancel={() => (resizingPanes = null)}
+        ></div>
       {/each}
       {#if notice}
         <button class="notice" title={t("notice.dismiss")} onclick={() => (notice = null)}>{notice}</button>
@@ -1319,21 +1581,15 @@
   }
   .panes {
     position: relative;
-    display: flex;
     flex: 1;
     min-width: 0;
     min-height: 0;
-  }
-  .panes.rows {
-    flex-direction: column;
   }
   .pane {
-    position: relative;
+    position: absolute;
     display: flex;
-    flex: 1;
     flex-direction: column;
-    min-width: 0;
-    min-height: 0;
+    overflow: hidden;
   }
   /* Where a dragged tab would go. */
   .pane.drop-target::after {
@@ -1357,17 +1613,17 @@
     top: 50%;
   }
   .pane-sash {
-    flex: none;
-    width: 4px;
-    margin: 0 -2px;
+    position: absolute;
     z-index: 5;
+    min-width: 4px;
+    margin-left: -2px;
     cursor: col-resize;
     background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
   }
-  .rows > .pane-sash {
-    width: auto;
-    height: 4px;
-    margin: -2px 0;
+  .pane-sash.rows {
+    min-width: 0;
+    min-height: 4px;
+    margin: -2px 0 0;
     cursor: row-resize;
     background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
   }
@@ -1389,7 +1645,14 @@
     align-items: center;
     justify-content: center;
     height: 100%;
+    padding: 0 16px;
+    box-sizing: border-box;
     color: var(--fg);
+    text-align: center;
+  }
+  /* In an empty pane, nothing else says that it has the keyboard. */
+  .pane.focused:not(:only-of-type) > .empty {
+    box-shadow: inset 0 2px 0 var(--accent);
   }
   .muted {
     color: var(--muted);

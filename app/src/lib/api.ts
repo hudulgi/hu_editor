@@ -128,7 +128,15 @@ export const saveSettings = (text: string) => invoke<void>("save_settings", { te
 /** A new, empty document without a file (its name is up to the caller); no `eol` means the platform's. */
 export const newDocument = (encoding: Encoding, eol: "crlf" | "lf" | null) =>
   invoke<DocInfo>("new_document", { encoding, eol });
+/** One window lets go of a document; it closes with the last. */
 export const closeDocument = (id: number) => invoke<void>("close_document", { id });
+/** Another window is going to show the document. */
+export const retainDocument = (id: number) => invoke<void>("retain_document", { id });
+export const documentWindows = (id: number) => invoke<number>("document_windows", { id });
+/** Opens another window, which gets `start` from `windowStart`. */
+export const openWindow = (start: unknown) => invoke<void>("open_window", { start });
+/** What this window was opened to show; null for the first window. */
+export const windowStart = <T>() => invoke<T | null>("window_start");
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });
 /** Which solver the document's content looks written for, if it says. */

@@ -8,6 +8,7 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Docs::default())
+        .manage(commands::WindowStarts::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
             commands::read_clipboard,
@@ -20,6 +21,10 @@ fn main() {
             commands::load_settings,
             commands::save_settings,
             commands::close_document,
+            commands::retain_document,
+            commands::document_windows,
+            commands::open_window,
+            commands::window_start,
             commands::index_status,
             commands::disk_changed,
             commands::detect_dialect,

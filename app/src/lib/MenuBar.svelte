@@ -10,7 +10,14 @@
     run: () => void;
   }
 
-  export type MenuEntry = MenuItem | "separator";
+  /** An item that opens more items beside it. */
+  export interface Submenu {
+    label: string;
+    key: string;
+    items: (MenuItem | "separator")[];
+  }
+
+  export type MenuEntry = MenuItem | Submenu | "separator";
 
   export interface Menu {
     label: string;
@@ -35,12 +42,26 @@
 
   let { menus }: Props = $props();
 
+  /** How long a submenu stays when the mouse goes past other items on its way there. */
+  const SUBMENU_STAYS = 300;
+
   let bar: HTMLElement;
   let openAt = $state<number | null>(null);
+  /** The open submenu, by its place in the open menu. */
+  let subAt = $state<number | null>(null);
+  /** Moved to stay inside the window. */
+  let subFit = $state({ left: 0, up: 0 });
+  let subPanel = $state<HTMLElement>();
+  let subTimer: ReturnType<typeof setTimeout> | undefined;
   let cameFrom: HTMLElement | null = null;
 
   const titles = () => [...bar.querySelectorAll<HTMLElement>(".title")];
-  const items = () => [...bar.querySelectorAll<HTMLElement>(".panel button:not(:disabled)")];
+  const inSub = () => !!subPanel?.contains(document.activeElement);
+  /** The items the arrow keys go through: of the submenu with the keyboard, or else of the menu. */
+  const items = () => {
+    const level = inSub() ? subPanel : bar.querySelector(".panel");
+    return [...(level?.querySelectorAll<HTMLElement>(":scope > button:not(:disabled), :scope > .parent > button:not(:disabled)") ?? [])];
+  };
   const holdsKeyboard = () => bar.contains(document.activeElement);
 
   function enter() {
@@ -48,6 +69,7 @@
   }
 
   function leave() {
+    closeSubNow();
     openAt = null;
     if (holdsKeyboard()) (document.activeElement as HTMLElement).blur();
     cameFrom?.focus();
@@ -56,11 +78,45 @@
 
   async function show(at: number, start: "title" | "first" | "last") {
     enter();
+    closeSubNow();
     openAt = at;
     await tick();
     const list = items();
     const target = start === "first" ? list[0] : start === "last" ? list.at(-1) : null;
     (target ?? titles()[at]).focus();
+  }
+
+  async function openSub(at: number, takeKeyboard: boolean) {
+    clearTimeout(subTimer);
+    if (subAt !== at) {
+      subAt = at;
+      subFit = { left: 0, up: 0 };
+      await tick();
+      const box = subPanel!.getBoundingClientRect();
+      subFit = { left: Math.max(0, box.right - innerWidth + 4), up: Math.max(0, box.bottom - innerHeight + 4) };
+    }
+    if (takeKeyboard) {
+      await tick();
+      subPanel?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    }
+  }
+
+  function closeSubNow() {
+    clearTimeout(subTimer);
+    subAt = null;
+  }
+
+  /** Back to the item it opened from. */
+  function closeSub() {
+    subPanel?.parentElement?.querySelector<HTMLElement>(":scope > button")?.focus();
+    closeSubNow();
+  }
+
+  /** The mouse moved to another item of the menu: the submenu goes unless it gets there soon. */
+  function closeSubSoon() {
+    if (subAt === null) return;
+    clearTimeout(subTimer);
+    subTimer = setTimeout(closeSubNow, SUBMENU_STAYS);
   }
 
   /** Alt+letter; false if no menu has that letter. */
@@ -91,8 +147,12 @@
       if (at >= 0) show(at, "first");
       return;
     }
-    for (const entry of menus[openAt].items) {
-      if (entry !== "separator" && entry.enabled !== false && `Key${entry.key}` === code) return pick(entry);
+    const entries = menus[openAt].items;
+    const list: MenuEntry[] = inSub() ? (entries[subAt!] as Submenu).items : entries;
+    for (const [at, entry] of list.entries()) {
+      if (entry === "separator" || `Key${entry.key}` !== code) continue;
+      if ("items" in entry) return void openSub(at, true);
+      if (entry.enabled !== false) return pick(entry);
     }
   }
 
@@ -105,14 +165,26 @@
     const item = list.indexOf(document.activeElement as HTMLElement);
     const title = openAt ?? titles().indexOf(document.activeElement as HTMLElement);
     const count = menus.length;
+    const opensSub = (document.activeElement as HTMLElement).dataset.sub;
     switch (e.key) {
       case "Escape":
+        if (inSub()) closeSub();
+        else leave();
+        break;
       case "Tab":
       case "F10":
         leave();
         break;
       case "ArrowLeft":
       case "ArrowRight": {
+        if (e.key === "ArrowLeft" && inSub()) {
+          closeSub();
+          break;
+        }
+        if (e.key === "ArrowRight" && opensSub !== undefined) {
+          openSub(Number(opensSub), true);
+          break;
+        }
         const next = (title + (e.key === "ArrowLeft" ? count - 1 : 1)) % count;
         if (openAt === null) titles()[next].focus();
         else show(next, "first");
@@ -120,11 +192,17 @@
       }
       case "ArrowDown":
         if (openAt === null) show(title, "first");
-        else list[(item + 1) % list.length]?.focus();
+        else {
+          if (!inSub()) closeSubNow();
+          list[(item + 1) % list.length]?.focus();
+        }
         break;
       case "ArrowUp":
         if (openAt === null) show(title, "last");
-        else list[item <= 0 ? list.length - 1 : item - 1]?.focus();
+        else {
+          if (!inSub()) closeSubNow();
+          list[item <= 0 ? list.length - 1 : item - 1]?.focus();
+        }
         break;
       case "Home":
         list[0]?.focus();
@@ -166,6 +244,26 @@
   {parts.before}<u>{parts.letter}</u>{parts.after}
 {/snippet}
 
+{#snippet item(entry: MenuItem, inSubmenu: boolean)}
+  <button
+    class="item"
+    role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+    aria-checked={entry.checked}
+    tabindex="-1"
+    disabled={entry.enabled === false}
+    onclick={() => pick(entry)}
+    onmousemove={(e) => {
+      e.currentTarget.focus();
+      if (inSubmenu) clearTimeout(subTimer);
+      else closeSubSoon();
+    }}
+  >
+    <span class="check">{entry.checked ? "✓" : ""}</span>
+    <span class="label">{@render labelled(entry.label, entry.key)}</span>
+    {#if entry.shortcut}<span class="shortcut">{entry.shortcut}</span>{/if}
+  </button>
+{/snippet}
+
 <div class="menubar" role="menubar" tabindex="-1" bind:this={bar} {onkeydown}>
   {#each menus as menu, i (menu.key)}
     <div class="entry">
@@ -190,20 +288,48 @@
           {#each menu.items as entry, j (j)}
             {#if entry === "separator"}
               <div class="separator" role="separator"></div>
+            {:else if "items" in entry}
+              <div class="parent">
+                <button
+                  class="item"
+                  class:open={subAt === j}
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={subAt === j}
+                  tabindex="-1"
+                  data-sub={j}
+                  onclick={() => openSub(j, true)}
+                  onmousemove={(e) => {
+                    e.currentTarget.focus();
+                    openSub(j, false);
+                  }}
+                >
+                  <span class="check"></span>
+                  <span class="label">{@render labelled(entry.label, entry.key)}</span>
+                  <span class="shortcut">›</span>
+                </button>
+                {#if subAt === j}
+                  <div
+                    class="panel sub"
+                    role="menu"
+                    tabindex="-1"
+                    style:margin-left="{-subFit.left}px"
+                    style:margin-top="{-subFit.up}px"
+                    bind:this={subPanel}
+                    onmousemove={() => clearTimeout(subTimer)}
+                  >
+                    {#each entry.items as inner, k (k)}
+                      {#if inner === "separator"}
+                        <div class="separator" role="separator"></div>
+                      {:else}
+                        {@render item(inner, true)}
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             {:else}
-              <button
-                class="item"
-                role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
-                aria-checked={entry.checked}
-                tabindex="-1"
-                disabled={entry.enabled === false}
-                onclick={() => pick(entry)}
-                onmousemove={(e) => e.currentTarget.focus()}
-              >
-                <span class="check">{entry.checked ? "✓" : ""}</span>
-                <span class="label">{@render labelled(entry.label, entry.key)}</span>
-                {#if entry.shortcut}<span class="shortcut">{entry.shortcut}</span>{/if}
-              </button>
+              {@render item(entry, false)}
             {/if}
           {/each}
         </div>
@@ -246,6 +372,17 @@
     border-radius: 6px;
     background: var(--panel);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    outline: none;
+  }
+  .parent {
+    position: relative;
+  }
+  .panel.sub {
+    top: -5px;
+    left: calc(100% + 2px);
+    max-height: calc(100vh - 8px);
+    box-sizing: border-box;
+    overflow-y: auto;
   }
   .item {
     display: flex;
@@ -260,6 +397,9 @@
   }
   .item:hover {
     background: transparent;
+  }
+  .item.open {
+    background: #45494e;
   }
   .item:focus {
     background: var(--accent);

@@ -2,6 +2,8 @@
 // settings file. Window layout and the last session stay in localStorage;
 // they are state, not choices.
 
+import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as api from "./api";
 import type { Encoding } from "./api";
 
@@ -95,11 +97,19 @@ export async function loadSettings() {
   watch();
 }
 
-/** From now on, a change reaches the page at once and the file soon after. */
+const SETTINGS_NEWS = "hu://settings";
+
+/** From now on, a change reaches the page at once, and the file and the other windows soon after. */
 function watch() {
+  const thisWindow = getCurrentWindow().label;
   let saved = JSON.stringify(settings);
   let timer: ReturnType<typeof setTimeout>;
   let writing = Promise.resolve();
+  listen<{ from: string; text: string }>(SETTINGS_NEWS, ({ payload }) => {
+    if (payload.from === thisWindow) return;
+    Object.assign(settings, usable(JSON.parse(payload.text)));
+    saved = JSON.stringify(settings);
+  });
   $effect.root(() => {
     $effect(() => {
       applyToPage();
@@ -108,6 +118,7 @@ function watch() {
       saved = text;
       clearTimeout(timer);
       timer = setTimeout(() => {
+        emit(SETTINGS_NEWS, { from: thisWindow, text: JSON.stringify(settings) });
         writing = writing
           .then(() => api.saveSettings(JSON.stringify(settings, null, 2)))
           .catch((e) => {

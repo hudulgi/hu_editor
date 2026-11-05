@@ -25,6 +25,10 @@ use serde_json::{Value, json};
 struct Bridge {
     docs: Mutex<HashMap<u32, Arc<Document>>>,
     next_id: AtomicU32,
+    /// How many windows show each document.
+    doc_windows: Mutex<HashMap<u32, u32>>,
+    window_starts: Mutex<HashMap<String, Value>>,
+    next_window: AtomicU32,
     clipboard: Mutex<String>,
 }
 
@@ -123,6 +127,7 @@ impl Bridge {
             "state": doc.state(),
         });
         self.docs.lock().unwrap().insert(id, Arc::new(doc));
+        self.doc_windows.lock().unwrap().insert(id, 1);
         info
     }
 
@@ -165,8 +170,42 @@ impl Bridge {
             }
             "close_document" => {
                 let id: u32 = arg(args, "id")?;
-                self.docs.lock().unwrap().remove(&id);
+                let mut windows = self.doc_windows.lock().unwrap();
+                if let Some(count) = windows.get_mut(&id) {
+                    *count -= 1;
+                    if *count == 0 {
+                        windows.remove(&id);
+                        self.docs.lock().unwrap().remove(&id);
+                    }
+                }
                 Value::Null
+            }
+            "retain_document" => {
+                doc()?;
+                let id: u32 = arg(args, "id")?;
+                *self.doc_windows.lock().unwrap().entry(id).or_insert(0) += 1;
+                Value::Null
+            }
+            "document_windows" => {
+                doc()?;
+                let id: u32 = arg(args, "id")?;
+                json!(self.doc_windows.lock().unwrap().get(&id))
+            }
+            // The label goes back to the page here: the scenarios make the window.
+            "open_window" => {
+                let id = self.next_window.fetch_add(1, Ordering::Relaxed) + 1;
+                let label = format!("editor-{id}");
+                let start: Value = arg(args, "start")?;
+                self.window_starts
+                    .lock()
+                    .unwrap()
+                    .insert(label.clone(), start);
+                json!(label)
+            }
+            "window_start" => {
+                let label: String = arg(args, "label")?;
+                let start = self.window_starts.lock().unwrap().remove(&label);
+                start.unwrap_or(Value::Null)
             }
             "index_status" => to_json(doc()?.index_status())?,
             "disk_changed" => json!(doc()?.changed_on_disk()),
@@ -287,6 +326,8 @@ impl Bridge {
             "read_clipboard" => json!(*self.clipboard.lock().unwrap()),
             // Only for the scenarios: what `copy` and `copy_box` put on the clipboard.
             "test_clipboard" => json!(*self.clipboard.lock().unwrap()),
+            // Only for the scenarios: how many documents the app still holds.
+            "test_open_documents" => json!(self.docs.lock().unwrap().len()),
             _ => return Err(format!("unknown command {cmd}")),
         })
     }

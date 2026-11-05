@@ -6,11 +6,18 @@ import { dirname, join } from "node:path";
 import { chromium } from "playwright-core";
 
 /** Runs in the page, in place of Tauri. Native dialogs answer from a queue. */
-function tauriInPage({ bridge, settingsPath, launchPath }) {
+function tauriInPage({ bridge, settingsPath, launchPath, label }) {
   const e2e = { dialogAnswers: [], dialogCalls: [], listeners: {}, destroyed: 0, title: "" };
   window.__e2e = e2e;
+  // Events reach every window, the one that sent them too.
+  const deliver = (event, payload) => {
+    const handler = e2e.listeners[event];
+    if (handler) window[`_${handler}`]({ event, id: 1, payload });
+  };
+  const events = new BroadcastChannel("e2e-events");
+  events.onmessage = ({ data }) => deliver(data.event, data.payload);
   window.__TAURI_INTERNALS__ = {
-    metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
+    metadata: { currentWindow: { label }, currentWebview: { windowLabel: label, label } },
     transformCallback(callback) {
       const id = Math.floor(Math.random() * 1e9);
       window[`_${id}`] = callback;
@@ -30,6 +37,11 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
         e2e.listeners[args.event] = args.handler;
         return 1;
       }
+      if (cmd === "plugin:event|emit") {
+        events.postMessage({ event: args.event, payload: args.payload });
+        setTimeout(() => deliver(args.event, args.payload));
+        return null;
+      }
       if (cmd === "plugin:dialog|save" || cmd === "plugin:dialog|open") {
         e2e.dialogCalls.push(args.options.defaultPath ?? null);
         return e2e.dialogAnswers.shift() ?? null;
@@ -43,6 +55,8 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
       }
       if (cmd.startsWith("plugin:")) return null;
       if (cmd === "load_settings" || cmd === "save_settings") args = { ...args, path: settingsPath };
+      if (cmd === "window_start") args = { label };
+      if (cmd === "open_window" && e2e.failWindow) throw "no more windows";
       const response = await fetch(bridge, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -50,12 +64,15 @@ function tauriInPage({ bridge, settingsPath, launchPath }) {
       });
       const answer = await response.json();
       if ("err" in answer) throw answer.err;
+      if (cmd === "open_window") window.__e2eOpenWindow(answer.ok);
       return answer.ok;
     },
   };
 }
 
 const SLOT = ".pane.focused .slot:not(.hidden)";
+// Twice: once for the expression and once for the selector's own quoting.
+const escapeRegExp = (text) => text.replace(/[()]/g, "\\\\$&");
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** The installed browser the scenarios run in, headless. */
@@ -142,20 +159,29 @@ export class Session {
       ? await launchBrowser([`--force-device-scale-factor=${scale}`, `--window-size=${viewport.width},${viewport.height}`])
       : this.browser;
     const context = await browser.newContext(scale ? { locale, viewport: null } : { locale, viewport });
-    const page = await context.newPage();
-    page.setDefaultTimeout(10000);
-    await page.addInitScript(tauriInPage, { bridge: this.bridge, settingsPath, launchPath });
-    const app = new App(this, page, settingsPath);
+    const start = async (label, launchPath) => {
+      const page = await context.newPage();
+      page.setDefaultTimeout(10000);
+      await page.addInitScript(tauriInPage, { bridge: this.bridge, settingsPath, launchPath, label });
+      const app = new App(this, page, settingsPath);
+      await page.goto(this.url);
+      await page.waitForSelector(".menubar");
+      return app;
+    };
+    const opened = [];
+    await context.exposeFunction("__e2eOpenWindow", async (label) => opened.push(await start(label, null)));
+    const app = await start("main", launchPath);
+    app.opened = opened;
     if (scale) app.ownBrowser = browser;
     this.apps.push(app);
-    await page.goto(this.url);
-    await page.waitForSelector(".menubar");
     return app;
   }
 
   /** Ends one app early; `finish` ends the rest. */
   async close(app) {
-    for (const error of app.errors) this.fail(`page error: ${error}`);
+    for (const window of [app, ...app.opened]) {
+      for (const error of window.errors) this.fail(`page error: ${error}`);
+    }
     await app.page.context().close();
     await app.ownBrowser?.close();
     this.closed.push(app);
@@ -173,6 +199,8 @@ export class App {
   errors = [];
   /** Page errors that a scenario provokes on purpose. */
   expectedErrors = [];
+  /** The other windows that this one's menu opened, in order, as apps of their own. */
+  opened = [];
 
   constructor(session, page, settingsPath) {
     Object.assign(this, { session, page, settingsPath });
@@ -285,11 +313,14 @@ export class App {
     await this.page.keyboard.up("Alt");
   }
 
-  /** Picks an item in a menu with the mouse. */
-  async menu(title, item) {
+  /** Picks an item in a menu with the mouse, through a submenu if one is named. */
+  async menu(title, ...path) {
     await this.page.click(`.menubar .title:text-matches('^${title}$')`);
-    await this.page.click(`.menubar .panel .label:text-matches('^${item}$')`);
+    for (const item of path) await this.page.click(`.menubar .panel .label:text-matches('^${escapeRegExp(item)}$')`);
   }
+
+  /** Picks an item of View > Editor Layout. */
+  layout = (item) => this.menu("View", "Editor Layout", item);
 
   /** The window's close button. */
   closeWindow = () =>

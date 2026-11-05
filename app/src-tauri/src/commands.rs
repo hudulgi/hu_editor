@@ -12,9 +12,10 @@ use hu_core::{
     FindResult, IndexStatus, View, ViewTarget, dir, ipc_message, settings,
 };
 use serde::Serialize;
+use serde_json::Value;
 use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[derive(Default)]
@@ -27,6 +28,15 @@ struct OpenDoc {
     doc: Document,
     /// Cancels the running search; a new search replaces it.
     find_cancel: Mutex<Arc<AtomicBool>>,
+    /// How many windows show it; it closes with the last.
+    windows: AtomicU32,
+}
+
+/// What each window opened by `open_window` shows first, until it asks.
+#[derive(Default)]
+pub struct WindowStarts {
+    waiting: Mutex<HashMap<String, Value>>,
+    next_id: AtomicU32,
 }
 
 impl Docs {
@@ -44,6 +54,7 @@ impl Docs {
         let open = OpenDoc {
             doc,
             find_cancel: Mutex::default(),
+            windows: AtomicU32::new(1),
         };
         self.open.lock().unwrap().insert(id, Arc::new(open));
         info
@@ -233,12 +244,61 @@ fn file_name(path: &Path) -> String {
 
 #[tauri::command]
 pub fn close_document(id: u32, docs: State<'_, Docs>) {
-    if let Some(open) = docs.open.lock().unwrap().remove(&id) {
-        open.find_cancel
-            .lock()
-            .unwrap()
-            .store(true, Ordering::Relaxed);
+    let mut documents = docs.open.lock().unwrap();
+    let Some(open) = documents.get(&id) else {
+        return;
+    };
+    if open.windows.fetch_sub(1, Ordering::Relaxed) > 1 {
+        return;
     }
+    open.find_cancel
+        .lock()
+        .unwrap()
+        .store(true, Ordering::Relaxed);
+    documents.remove(&id);
+}
+
+/// Another window is going to show the document.
+#[tauri::command]
+pub fn retain_document(id: u32, docs: State<'_, Docs>) -> Result<(), String> {
+    docs.get(id)?.windows.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn document_windows(id: u32, docs: State<'_, Docs>) -> Result<u32, String> {
+    Ok(docs.get(id)?.windows.load(Ordering::Relaxed))
+}
+
+/// Opens another window, which gets `start` from `window_start`. Async because
+/// making a window from a synchronous command deadlocks on Windows.
+#[tauri::command]
+pub async fn open_window(
+    start: Value,
+    app: AppHandle,
+    starts: State<'_, WindowStarts>,
+) -> Result<(), String> {
+    let label = format!(
+        "editor-{}",
+        starts.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    starts.waiting.lock().unwrap().insert(label.clone(), start);
+    let built = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
+        .title("HU Editor")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(480.0, 320.0)
+        .build();
+    if let Err(error) = built {
+        starts.waiting.lock().unwrap().remove(&label);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// What this window was opened to show; `None` for the first window.
+#[tauri::command]
+pub fn window_start(window: WebviewWindow, starts: State<'_, WindowStarts>) -> Option<Value> {
+    starts.waiting.lock().unwrap().remove(window.label())
 }
 
 #[tauri::command]

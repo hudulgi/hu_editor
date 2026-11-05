@@ -56,10 +56,20 @@ export default async function (t) {
     return items;
   };
 
+  /** The presets of View > Editor Layout that are checked. */
+  const layoutShown = async () => {
+    await page.click(".menubar .title:text-matches('^View$')");
+    await page.click(".menubar .panel .label:text-matches('^Editor Layout$')");
+    const items = await page.$$eval(".menubar .panel.sub .item", (els) => els.filter((e) => e.querySelector(".check").textContent).map((e) => e.querySelector(".label").textContent.trim()));
+    await press("Escape", "Escape");
+    return items;
+  };
+
   // ---- Splitting ------------------------------------------------------------
 
   check("one pane to start with", await paneCount(), 1);
-  await until("the view menu says so", async () => (await menuItems("View")).slice(5), ["✓Single Pane", "Two Columns", "Two Rows", "-Move Tab to Other Pane", "-Switch Pane"]);
+  await until("the view menu says so", async () => (await menuItems("View")).slice(5), ["Editor Layout", "-Move Tab to Other Pane", "-Switch Pane"]);
+  await until("and its layout menu", layoutShown, ["Single"]);
 
   await goTo(200);
   const leftTop = await firstLineOf(0);
@@ -355,7 +365,7 @@ export default async function (t) {
   await dragToSide("deck.bdf", 0.95, 0.5);
   await page.mouse.up();
   await until("two panes again", paneCount, 2);
-  await app.menu("View", "Two Columns");
+  await app.layout("Two Columns");
   await page.click(tabIn(0, "third.inp"));
   await press("Control+Alt+ArrowRight");
   await until("laid out for the next part", async () => [await tabsOf(0), await tabsOf(1)], [["*other.inp"], ["deck.bdf", "*third.inp"]]);
@@ -365,7 +375,7 @@ export default async function (t) {
   await page.click(tabIn(1, "deck.bdf"));
   await goTo(150);
   const top150 = await firstLineOf(1);
-  await app.menu("View", "Two Rows");
+  await app.layout("Two Rows");
   await until("one above the other", async () => {
     [left, right] = [await rect(0), await rect(1)];
     return [left.y + left.height <= right.y + 2, left.x === right.x, left.width === right.width];
@@ -377,7 +387,7 @@ export default async function (t) {
     return (await linesOf(1)).length === Math.floor(paneH / lineH);
   }, true);
   await app.shot("split-rows");
-  check("the menu shows it", (await menuItems("View")).slice(5, 8), ["Single Pane", "Two Columns", "✓Two Rows"]);
+  check("the menu shows it", await layoutShown(), ["Two Rows"]);
 
   const sash = async () => center(".pane-sash");
   let [sx, sy] = await sash();
@@ -397,8 +407,8 @@ export default async function (t) {
   await page.mouse.move(sx, panesBox.y + 2, { steps: 4 });
   await page.mouse.up();
   await until("a pane does not vanish", async () => Math.abs((await rect(0)).height / panesBox.height - 0.15) < 0.02, true);
-  await app.menu("View", "Two Columns");
-  await until("back to columns, same share", async () => {
+  await press("Shift+Alt+0");
+  await until("flipped to columns, same share", async () => {
     const box = await page.locator(".panes").boundingBox();
     return Math.abs((await rect(0)).width / box.width - 0.15) < 0.02;
   }, true);
@@ -533,7 +543,7 @@ export default async function (t) {
   await page.click(tabIn(0, "other.inp"));
   await press("Control+2");
   await app.open(t.path("third.inp"));
-  await app.menu("View", "Single Pane");
+  await app.layout("Single");
   await until("single pane merges without a question", async () => [await paneCount(), await page.locator(".dialog").count()], [1, 0]);
   check("no tab twice", (await app.tabs()).map((tab) => tab.replace("*", "")).sort(), ["deck.bdf", "other.inp", "renamed.inp", "third.inp"]);
   await until("the keyboard is in the editor", keyboardIn, 0);
@@ -543,7 +553,7 @@ export default async function (t) {
   await app.open(t.path("deck.bdf"));
   await press("Control+\\");
   await until("split", paneCount, 2);
-  await app.menu("View", "Two Rows");
+  await app.layout("Two Rows");
   await app.open(t.path("other.inp"));
   await press("Control+2");
   await until("focused", focusedPane, 1);
@@ -552,7 +562,7 @@ export default async function (t) {
   await page.reload();
   await until("the panes come back", paneCount, 2);
   await until("with their tabs", async () => [await tabsOf(0), await tabsOf(1)], tabsBefore);
-  await until("the direction", async () => (await menuItems("View")).slice(5, 8), ["Single Pane", "Two Columns", "✓Two Rows"]);
+  await until("the direction", layoutShown, ["Two Rows"]);
   await until("and the pane with the keyboard", async () => [await focusedPane(), await keyboardIn()], [1, 1]);
   await until("a document in both is still one", async () => {
     await press("Control+Home");
@@ -573,7 +583,8 @@ export default async function (t) {
   // A file gone since: its pane goes too if nothing is left.
   await page.evaluate(() => {
     const session = JSON.parse(localStorage.getItem("hu.session"));
-    session.second = { paths: ["/no/such/file.inp"], active: "/no/such/file.inp" };
+    const gone = { paths: ["/no/such/file.inp"], active: "/no/such/file.inp" };
+    session.layout = { direction: "columns", children: [{ node: session.layout.children[0].node, share: 0.5 }, { node: gone, share: 0.5 }] };
     session.focused = 1;
     localStorage.setItem("hu.session", JSON.stringify(session));
   });
@@ -597,6 +608,6 @@ export default async function (t) {
   check(
     "korean menu",
     (await korean.page.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent.trim()))).slice(5),
-    ["단일 화면(P)", "좌우 분할(C)", "상하 분할(R)", "다른 칸으로 탭 이동(M)", "다른 칸으로 전환(W)"],
+    ["편집기 레이아웃(L)", "다른 칸으로 탭 이동(M)", "다른 칸으로 전환(W)"],
   );
 }
