@@ -258,8 +258,8 @@ export default async function (t) {
   await until("the keyboard is in the editor", focusIn, "editor");
   const sidebar = await page.locator(".sidebar").boundingBox();
   check("the text stands clear of it", (await page.locator(".panes").boundingBox()).x - (sidebar.x + sidebar.width), 6);
-  const background = (selector) => page.$eval(selector, (e) => getComputedStyle(e).backgroundColor);
-  check("and the space is the explorer's color", await background(".sash"), await background(".explorer"));
+  const lines = await page.$eval(".sash", (e) => getComputedStyle(e).boxShadow.match(/inset/g)?.length);
+  check("with a line on each side of the space", lines, 2);
 
   // ---- Help ----------------------------------------------------------------
 
