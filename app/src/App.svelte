@@ -1296,7 +1296,8 @@
     flex: none;
     min-width: 0;
   }
-  /* Reaches 2px over the sidebar to be easy to grab; the rest is the gap before the text. */
+  /* Reaches 2px over the sidebar to be easy to grab. The rest continues the sidebar's color
+     as a little space, up to a line right against the text. */
   .sash {
     flex: none;
     width: 6px;
@@ -1304,11 +1305,12 @@
     z-index: 5;
     cursor: col-resize;
     border-left: 2px solid transparent;
+    background: var(--panel);
     background-clip: content-box;
-    box-shadow: inset 1px 0 0 var(--border);
+    box-shadow: inset -1px 0 0 var(--border);
   }
   .sash:hover {
-    box-shadow: inset 2px 0 0 var(--accent);
+    box-shadow: inset -2px 0 0 var(--accent);
   }
   .hidden {
     display: none;
