@@ -16,7 +16,8 @@
   interface Props {
     /** Path of the open document, highlighted in the tree. */
     active: string | null;
-    onopen: (path: string) => void;
+    /** `preview`: picked with a single click, not meant to stay yet. */
+    onopen: (path: string, preview?: boolean) => void;
   }
 
   let { active, onopen }: Props = $props();
@@ -149,7 +150,7 @@
   function activate(row: Extract<Row, { kind: "entry" }>) {
     select(row.key, row.entry.path);
     if (row.entry.isDir) toggle(row.key, row.entry.path);
-    else onopen(row.entry.path);
+    else onopen(row.entry.path, true);
   }
 
   async function scrollToSelected(block: ScrollLogicalPosition) {
@@ -333,6 +334,7 @@
           title={entry.path}
           style:padding-left="{6 + row.depth * 14}px"
           onclick={() => activate(row)}
+          ondblclick={() => row.kind === "entry" && !row.entry.isDir && onopen(row.entry.path)}
         >
           <span class="glyph">
             {#if entry.isDir}

@@ -10,6 +10,8 @@
     dirty: boolean;
     /** Folder name, shown when another tab has the same file name. */
     hint: string | null;
+    /** The next file opened as a preview takes its place. */
+    preview: boolean;
   }
 </script>
 
@@ -28,9 +30,16 @@
     ondrag: (x: number, y: number) => void;
     /** A dragged tab was let go at this point; no point if it did not get anywhere. */
     ondrop: (id: number, point: { x: number; y: number } | null) => void;
+    /** A double click: the tab stops being a preview. */
+    onpin: (id: number) => void;
+    /** No new files open in this pane. */
+    locked: boolean;
+    onsplit: (down: boolean) => void;
+    onunlock: () => void;
+    onmore: (button: HTMLElement) => void;
   }
 
-  let { tabs, active, focused, onselect, onclose, ondrag, ondrop }: Props = $props();
+  let { tabs, active, focused, onselect, onclose, ondrag, ondrop, onpin, locked, onsplit, onunlock, onmore }: Props = $props();
 
   let strip: HTMLDivElement;
 
@@ -78,18 +87,21 @@
   }
 </script>
 
+<div class="bar" class:focused>
 <div class="strip" class:focused role="tablist" bind:this={strip} {onwheel}>
   {#each tabs as tab (tab.id)}
     <div
       class="tab"
       class:active={tab.id === active}
       class:dirty={tab.dirty}
+      class:preview={tab.preview}
       role="tab"
       tabindex="-1"
       aria-selected={tab.id === active}
       title={tab.path ?? t("tabs.notSaved", { name: tab.name })}
       onmousedown={(e) => onmousedown(e, tab.id)}
       onpointerdown={(e) => onpointerdown(e, tab.id)}
+      ondblclick={() => onpin(tab.id)}
     >
       {#if tab.lang !== "plain"}
         {@const badge = langBadge(tab.lang)}
@@ -105,6 +117,7 @@
         aria-label={t("tabs.closeNamed", { name: tab.name })}
         onmousedown={(e) => e.stopPropagation()}
         onpointerdown={(e) => e.stopPropagation()}
+        ondblclick={(e) => e.stopPropagation()}
         onclick={() => onclose(tab.id)}
       >
         <svg class="x" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
@@ -113,17 +126,95 @@
     </div>
   {/each}
 </div>
+<!-- The buttons leave the keyboard where it is. -->
+<div class="actions" role="toolbar">
+  <button
+    class="action split"
+    title={t("tabs.split")}
+    aria-label={t("tabs.split")}
+    tabindex="-1"
+    onmousedown={(e) => e.preventDefault()}
+    onclick={(e) => onsplit(e.altKey)}
+  >
+    <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /><path d="M8 2.5v11" /></svg>
+  </button>
+  {#if locked}
+    <button
+      class="action lock"
+      title={t("tabs.unlock")}
+      aria-label={t("tabs.unlock")}
+      tabindex="-1"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={onunlock}
+    >
+      <svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="6.5" rx="1.5" /><path d="M5.25 7V5a2.75 2.75 0 0 1 5.5 0v2M8 9.75v1.25" /></svg>
+    </button>
+  {/if}
+  <button
+    class="action more"
+    title={t("tabs.more")}
+    aria-label={t("tabs.more")}
+    aria-haspopup="menu"
+    tabindex="-1"
+    onmousedown={(e) => e.preventDefault()}
+    onclick={(e) => onmore(e.currentTarget)}
+  >
+    <svg viewBox="0 0 16 16"><circle class="filled" cx="3.5" cy="8" r="1.1" /><circle class="filled" cx="8" cy="8" r="1.1" /><circle class="filled" cx="12.5" cy="8" r="1.1" /></svg>
+  </button>
+</div>
+</div>
 
 <style>
-  .strip {
+  .bar {
     display: flex;
     flex: none;
     height: 34px;
+    background: var(--panel);
+    user-select: none;
+  }
+  .strip {
+    display: flex;
+    flex: 1;
+    min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    background: var(--panel);
     scrollbar-width: none;
-    user-select: none;
+  }
+  .actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    padding: 0 6px;
+    color: var(--muted);
+  }
+  .bar.focused .actions {
+    color: var(--fg);
+  }
+  .action {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+  }
+  .action:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .action.lock {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .action svg {
+    width: 16px;
+    height: 16px;
+  }
+  .filled {
+    fill: currentColor;
+    stroke: none;
   }
   .strip::-webkit-scrollbar {
     display: none;
@@ -155,7 +246,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .name.untitled {
+  .name.untitled,
+  .tab.preview .name {
     font-style: italic;
   }
   .hint {

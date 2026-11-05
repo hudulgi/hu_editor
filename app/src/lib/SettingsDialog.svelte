@@ -1,11 +1,13 @@
+<script lang="ts" module>
+  export type Category = "general" | "editor" | "files" | "shortcuts";
+</script>
+
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { ENCODING_LABEL, ENCODINGS } from "./encodings";
   import { t, type MessageKey } from "./i18n";
   import { clampFontSize, clampTabSize, resetSettings, settings } from "./settings.svelte";
   import { LANG_LABEL } from "./syntax";
-
-  type Category = "general" | "editor" | "files" | "shortcuts";
 
   interface Props {
     /** The page to open on. */
@@ -33,6 +35,8 @@
     ["Ctrl+S", t("shortcut.save")],
     ["Ctrl+Shift+S", t("shortcut.saveAs")],
     ["Ctrl+W", t("shortcut.closeTab")],
+    ["Ctrl+K W", t("shortcut.closeAll")],
+    ["Ctrl+K U", t("shortcut.closeSaved")],
     ["Ctrl+Tab, Ctrl+Shift+Tab", t("shortcut.nextTab")],
     ["Ctrl+B", t("shortcut.explorer")],
     ["Ctrl+,", t("shortcut.settings")],
@@ -143,6 +147,7 @@
         </label>
         {@render check(t("settings.lineNumbers"), settings.lineNumbers, (on) => (settings.lineNumbers = on))}
         {@render check(t("settings.highlightLine"), settings.highlightLine, (on) => (settings.highlightLine = on))}
+        {@render check(t("settings.previewEditors"), settings.previewEditors, (on) => (settings.previewEditors = on))}
         <label class="field">
           <span>{t("settings.tabKey")}</span>
           <select

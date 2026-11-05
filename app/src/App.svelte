@@ -13,6 +13,7 @@
   import EncodingMenu from "./lib/EncodingMenu.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import FindBar from "./lib/FindBar.svelte";
+  import DropMenu, { type DropEntry } from "./lib/DropMenu.svelte";
   import { describeError, t } from "./lib/i18n";
   import {
     arrange,
@@ -34,7 +35,8 @@
     type Tree,
   } from "./lib/layout";
   import MenuBar, { type Menu } from "./lib/MenuBar.svelte";
-  import SettingsDialog from "./lib/SettingsDialog.svelte";
+  import OpenEditors from "./lib/OpenEditors.svelte";
+  import SettingsDialog, { type Category } from "./lib/SettingsDialog.svelte";
   import { settings, settingsFile } from "./lib/settings.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
 
@@ -69,12 +71,16 @@
     key: number;
     ids: number[];
     activeId: number | null;
+    /** The tab that the next preview takes the place of. */
+    previewId: number | null;
+    /** New files open in another pane. */
+    locked: boolean;
     carets: Record<number, CaretInfo | null>;
     editors: Record<number, ReturnType<typeof Editor> | undefined>;
   }
 
   let paneKeys = 0;
-  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, carets: {}, editors: {} });
+  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, previewId: null, locked: false, carets: {}, editors: {} });
 
   let tabs = $state<Tab[]>([]);
   /** In reading order. */
@@ -103,7 +109,14 @@
   let highlight = $derived(findOpen && needle ? { needle, caseSensitive } : null);
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
-  let settingsPage = $state<"general" | "shortcuts">("general");
+  let settingsPage = $state<Category>("general");
+  /** The more-actions menu of a pane, hanging from its button. */
+  let moreMenu = $state.raw<{ key: number; button: HTMLElement } | null>(null);
+  /** The pane whose tabs are being listed to pick from. */
+  let listing = $state<number | null>(null);
+  /** Ctrl+K went down; the next key says what for. */
+  let chord = $state(false);
+  let chordFrom: HTMLElement | null = null;
   let about = $state<{ version: string } | null>(null);
   let gotoOpen = $state(false);
   let gotoValue = $state("");
@@ -128,6 +141,8 @@
   interface SavedPane {
     paths: string[];
     active: string | null;
+    preview?: string | null;
+    locked?: boolean;
   }
 
   interface Session {
@@ -146,6 +161,8 @@
       return {
         paths: pane?.ids.flatMap((id) => tabOf(id)?.doc.path ?? []) ?? [],
         active: pane && pane.activeId !== null ? (tabOf(pane.activeId)?.doc.path ?? null) : null,
+        preview: pane && pane.previewId !== null ? (tabOf(pane.previewId)?.doc.path ?? null) : null,
+        locked: pane?.locked,
       };
     };
     const session: Session = { layout: mapLeaves(layout, saveOf), direction: splitDirection, focused };
@@ -176,6 +193,7 @@
         dirty: state.dirty,
         // Same name in two folders: show the folder.
         hint: doc.path && nameCounts.get(doc.name)! > 1 ? parentName(doc.path) : null,
+        preview: pane.previewId === id,
       };
     });
   }
@@ -242,7 +260,10 @@
     pane.ids.splice(index, 1);
     delete pane.editors[id];
     delete pane.carets[id];
+    if (pane.previewId === id) pane.previewId = null;
     if (pane.activeId === id) pane.activeId = pane.ids[Math.min(index, pane.ids.length - 1)] ?? null;
+    // An empty pane has no button to unlock it with.
+    if (!pane.ids.length) pane.locked = false;
     if (!pane.ids.length && panes.length > 1) closePane(at);
     if (wasFocused || panes.length === 1) {
       const next = panes[focused].activeId;
@@ -270,8 +291,37 @@
     });
   });
 
-  /** Adds a tab next to the active one, or in place of `replacing` wherever that shows. */
-  function add({ doc, lang, chosenEncoding }: Loaded, replacing: Tab | null = null, goto: number | null = null, show = true) {
+  /** The tab is here to stay, wherever it was a preview. */
+  function pin(id: number) {
+    for (const pane of panes) if (pane.previewId === id) pane.previewId = null;
+  }
+
+  // With previews off, no tab waits to be replaced.
+  $effect(() => {
+    if (!settings.previewEditors) untrack(() => panes.forEach((pane) => (pane.previewId = null)));
+  });
+
+  /** Where a new tab goes: this pane or, if that is locked, the next one that is not, or a new one. */
+  function openTarget() {
+    for (let step = 0; step < panes.length; step++) {
+      const at = (focused + step) % panes.length;
+      if (!panes[at].locked) return at;
+    }
+    const added = addPane(panes[focused], sideAfter(splitDirection));
+    return panes.indexOf(added);
+  }
+
+  /**
+   * Adds a tab next to the active one, or in place of `replacing` wherever that
+   * shows. A `preview` takes the place of the pane's last one.
+   */
+  function add(
+    { doc, lang, chosenEncoding }: Loaded,
+    replacing: Tab | null = null,
+    goto: number | null = null,
+    show = true,
+    preview = false,
+  ) {
     const tab: Tab = {
       doc,
       lang,
@@ -292,11 +342,22 @@
         pane.ids[at] = doc.id;
         delete pane.carets[old];
         if (pane.activeId === old) pane.activeId = doc.id;
+        if (pane.previewId === old) pane.previewId = null;
       }
       if (show) activate(doc.id);
     } else {
       tabs.push(tab);
-      addView(doc.id, focused);
+      const at = openTarget();
+      const pane = panes[at];
+      const previous = pane.previewId;
+      if (preview && previous !== null) {
+        pane.ids.splice(pane.ids.indexOf(previous) + 1, 0, doc.id);
+        activate(doc.id, at);
+        closeView(previous, pane);
+      } else {
+        addView(doc.id, at);
+      }
+      if (preview) pane.previewId = doc.id;
     }
     watchIndex(doc.id);
   }
@@ -328,12 +389,31 @@
         if (choice === "cancel" || (choice === "save" && !(await saveTab(tab)))) return false;
       }
     }
+    closeView(id, pane);
+    return true;
+  }
+
+  /** Takes a tab out of a pane, without asking; the document goes with its last tab here. */
+  function closeView(id: number, pane: Pane) {
+    const last = !panes.some((other) => other !== pane && other.ids.includes(id));
     removeView(id, panes.indexOf(pane));
     if (last) {
       drop(id);
-      tabs.splice(tabs.indexOf(tab), 1);
+      tabs.splice(tabs.indexOf(tabOf(id)!), 1);
     }
-    return true;
+  }
+
+  /** Closes all tabs of a pane, asking once about those with unsaved changes that nothing else shows. */
+  async function closeAll(pane: Pane) {
+    const alone = pane.ids.flatMap((id) => (panes.some((other) => other !== pane && other.ids.includes(id)) ? [] : (tabOf(id) ?? [])));
+    if (!(await mayClose(alone))) return;
+    for (const id of [...pane.ids]) closeView(id, pane);
+  }
+
+  /** Closes the tabs of a pane with nothing to save. */
+  async function closeSaved(pane: Pane) {
+    await Promise.all(pane.ids.map(flush));
+    for (const id of [...pane.ids]) if (!tabOf(id)?.state.dirty) closeView(id, pane);
   }
 
   function cycle(step: number) {
@@ -551,6 +631,7 @@
     if (!tab) return;
     const id = tab.doc.id;
     const pane = panes[focused];
+    pin(id);
     await flush(id);
     const start: WindowStart = $state.snapshot({
       doc: { ...tab.doc, state: tab.state },
@@ -602,11 +683,11 @@
     button.focus();
   }
 
-  /** Whether the window may close: unsaved files are saved or given up. */
-  async function mayCloseAll() {
-    await Promise.all(tabs.map((t) => flush(t.doc.id)));
+  /** Whether these documents may close: unsaved ones that no other window shows are saved or given up. */
+  async function mayClose(closing: Tab[]) {
+    await Promise.all(closing.map((t) => flush(t.doc.id)));
     const dirty: Tab[] = [];
-    for (const tab of tabs) if (tab.state.dirty && !(await inOtherWindow(tab.doc.id))) dirty.push(tab);
+    for (const tab of closing) if (tab.state.dirty && !(await inOtherWindow(tab.doc.id))) dirty.push(tab);
     if (!dirty.length) return true;
     if (dirty.length === 1) activate(dirty[0].doc.id);
     const choice = await ask(dirty.map((t) => t.doc.name));
@@ -658,6 +739,7 @@
     try {
       await work((written) => saving && (saving.written = written));
       tab.changedOnDisk = false;
+      pin(tab.doc.id);
       if (sharedDocs.has(tab.doc.id)) {
         const { id, path, name } = tab.doc;
         tell({ kind: "saved", id, state: tab.state, path, name, lang: tab.lang });
@@ -737,6 +819,8 @@
   }
 
   const tabOfPath = (path: string) => tabs.find((tab) => tab.doc.path !== null && samePath(tab.doc.path, path));
+  /** Files on their way into a tab. */
+  const opening = new Map<string, Promise<void>>();
 
   async function chooseFile() {
     const path = await openDialog({ multiple: false, directory: false, filters: filters() });
@@ -746,23 +830,34 @@
   /**
    * Shows `path` in a tab: the one it is already open in, in any pane, or a new
    * one in this pane, which an empty pane gets in any case. `reveal` expands the
-   * explorer down to it (not wanted when picked there).
+   * explorer down to it (not wanted when picked there). `preview`: not meant to
+   * stay yet; otherwise a tab that was a preview stays from now on.
    */
-  async function openPath(path: string, reveal = true) {
+  async function openPath(path: string, reveal = true, preview = false) {
+    // A double click arrives while its first click is still opening the file.
+    await opening.get(path);
     const open = tabOfPath(path);
     if (open) {
-      if (panes[focused].activeId === null) addView(open.doc.id, focused);
+      if (panes[focused].activeId === null && !panes[focused].locked) addView(open.doc.id, focused);
       else activate(open.doc.id);
+      if (!preview) pin(open.doc.id);
     } else {
-      try {
-        const loaded = await load(path);
-        // A blank, untouched new document gives way to the file.
-        const blank = active && active.doc.path === null && !active.state.dirty && active.state.len === 0;
-        add(loaded, blank ? active : null);
-      } catch (e) {
-        notice = describeError(e);
-        return;
-      }
+      const done = (async () => {
+        try {
+          const loaded = await load(path);
+          // A blank, untouched new document gives way to the file.
+          const blank = active && !panes[focused].locked && active.doc.path === null && !active.state.dirty && active.state.len === 0;
+          add(loaded, blank ? active : null, null, true, preview && settings.previewEditors);
+          return true;
+        } catch (e) {
+          notice = describeError(e);
+          return false;
+        }
+      })();
+      opening.set(path, done.then(() => {}));
+      const opened = await done;
+      opening.delete(path);
+      if (!opened) return;
     }
     if (reveal) explorer?.reveal(path, false);
   }
@@ -813,6 +908,7 @@
 
   /** An edit in a pane: wherever else the document shows follows. */
   function edited(id: number, from: Pane, result: api.EditResult) {
+    pin(id);
     for (const pane of panes) if (pane !== from) pane.editors[id]?.followEdit(result.change);
     refreshAfterEdit(id, result.state);
     if (sharedDocs.has(id)) tell({ kind: "edited", id, change: result.change, state: result.state });
@@ -869,7 +965,7 @@
     if (gotoOpen && gotoInput) gotoInput.focus();
   });
 
-  function openSettings(page: "general" | "shortcuts" = "general") {
+  function openSettings(page: Category = "general") {
     encodingOpen = false;
     gotoOpen = false;
     settingsPage = page;
@@ -1093,6 +1189,61 @@
     ];
   });
 
+  // ---- A pane's own menu --------------------------------------------------------
+
+  function toggleMoreMenu(key: number, button: HTMLElement) {
+    if (moreMenu?.button === button) closeMoreMenu();
+    else moreMenu = { key, button };
+  }
+
+  function closeMoreMenu() {
+    moreMenu = null;
+    editor?.focus();
+  }
+
+  function toggleLock(pane: Pane) {
+    pane.locked = !pane.locked;
+    focusPane(panes.indexOf(pane));
+  }
+
+  let moreItems = $derived.by<DropEntry[]>(() => {
+    const pane = panes.find((one) => one.key === moreMenu?.key);
+    if (!pane) return [];
+    return [
+      { label: t("more.showOpen"), run: () => (listing = pane.key) },
+      "separator",
+      { label: t("more.closeAll"), shortcut: "Ctrl+K W", run: () => closeAll(pane) },
+      { label: t("more.closeSaved"), shortcut: "Ctrl+K U", run: () => closeSaved(pane) },
+      "separator",
+      { label: t("more.preview"), checked: settings.previewEditors, run: () => (settings.previewEditors = !settings.previewEditors) },
+      "separator",
+      { label: t("more.lock"), checked: pane.locked, run: () => toggleLock(pane) },
+      "separator",
+      { label: t("more.configure"), run: () => openSettings("editor") },
+    ];
+  });
+
+  function pickListed(id: number) {
+    const at = panes.findIndex((pane) => pane.key === listing);
+    listing = null;
+    activate(id, at);
+  }
+
+  function closeListing() {
+    listing = null;
+    editor?.focus();
+  }
+
+  /** The key after Ctrl+K. The keyboard was away from the text meanwhile: an IME must not compose it. */
+  function finishChord(e: KeyboardEvent) {
+    chord = false;
+    chordFrom?.focus();
+    chordFrom = null;
+    if (e.code === "KeyW") closeAll(panes[focused]);
+    else if (e.code === "KeyU") closeSaved(panes[focused]);
+    e.preventDefault();
+  }
+
   /** The active tab; in an empty pane, with others beside it, the pane itself. */
   function closeTabOrPane() {
     if (active) closeTab(active.doc.id, focused);
@@ -1124,6 +1275,10 @@
       else if (e.key === "Tab") e.preventDefault();
       return;
     }
+    if (chord) {
+      if (!["Control", "Meta", "Shift", "Alt"].includes(e.key)) finishChord(e);
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (e.altKey && !mod && !e.shiftKey && !settingsOpen && !encodingOpen && menuBar?.openByKey(e.code)) {
@@ -1134,7 +1289,11 @@
       if (settingsOpen) closeSettings();
       else openSettings();
     } else if (settingsOpen) return;
-    else if (mod && key === "o") chooseFile();
+    else if (mod && !e.shiftKey && !e.altKey && e.code === "KeyK") {
+      chord = true;
+      chordFrom = document.activeElement as HTMLElement | null;
+      chordFrom?.blur();
+    } else if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
     else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
@@ -1212,7 +1371,11 @@
       }
       const shown = saved.active ? tabOfPath(saved.active) : undefined;
       if (shown && panes[at].ids.includes(shown.doc.id)) panes[at].activeId = shown.doc.id;
+      const preview = saved.preview ? tabOfPath(saved.preview) : undefined;
+      if (preview && settings.previewEditors && panes[at].ids.includes(preview.doc.id)) panes[at].previewId = preview.doc.id;
     }
+    // Only now: a locked pane would have sent its own files elsewhere.
+    for (const [at, { saved }] of wanted.entries()) panes[at].locked = !!saved.locked;
     const keys = wanted.map(({ pane }) => pane.key);
     for (const [at, { saved }] of wanted.entries()) {
       const now = panes.findIndex((pane) => pane.key === keys[at]);
@@ -1241,7 +1404,8 @@
     const shownId = panes[focused].activeId;
     const activePath = shownId === null ? null : tabOf(shownId)?.doc.path;
     const current = launched ?? activePath;
-    if (current) await openPath(current, true);
+    // The tab showing is only revealed: only the command line opens a file on purpose.
+    if (current) await openPath(current, true, !launched);
     restored = true;
   }
 
@@ -1263,7 +1427,7 @@
     // Closing the window with unsaved changes asks first; other windows go on.
     getCurrentWindow()
       .onCloseRequested(async (e) => {
-        if (!(await mayCloseAll())) e.preventDefault();
+        if (!(await mayClose(tabs))) e.preventDefault();
         else for (const tab of tabs) api.closeDocument(tab.doc.id);
       })
       .then((u) => unlisten.push(u));
@@ -1283,7 +1447,11 @@
   {onkeyup}
   {onfocus}
   onkeydowncapture={(e) => (altAlone = e.code === "AltLeft")}
-  onmousedowncapture={() => (altAlone = false)}
+  onmousedowncapture={() => {
+    altAlone = false;
+    chord = false;
+    chordFrom = null;
+  }}
   onblur={() => (altAlone = false)}
 />
 
@@ -1307,7 +1475,7 @@
       <Explorer
         bind:this={explorer}
         active={active?.doc.path ?? null}
-        onopen={(path) => openPath(path, false)}
+        onopen={(path, preview) => openPath(path, false, preview)}
       />
     </div>
     <div
@@ -1350,6 +1518,11 @@
                 else dropZone = null;
                 dropTab(id, i);
               }}
+              onpin={pin}
+              locked={pane.locked}
+              onsplit={(down) => split(down ? "bottom" : "right")}
+              onunlock={() => toggleLock(pane)}
+              onmore={(button) => toggleMoreMenu(pane.key, button)}
             />
             {#if i === focused && findOpen && active && editor}
               <FindBar
@@ -1442,7 +1615,9 @@
   </div>
 
   <footer class="statusbar">
-    {#if active}
+    {#if chord}
+      <span>{t("status.chord")}</span>
+    {:else if active}
       <span>{position}</span>
       <span>{size(active.state.len)}</span>
       {#if saving?.id === active.doc.id}
@@ -1475,6 +1650,17 @@
       onsave={(encoding) => saveConverted(tab, encoding)}
       onclose={closeEncodingMenu}
     />
+  {/if}
+
+  {#if moreMenu}
+    <DropMenu items={moreItems} anchor={moreMenu.button} onclose={closeMoreMenu} />
+  {/if}
+
+  {#if listing !== null}
+    {@const pane = panes.find((one) => one.key === listing)}
+    {#if pane}
+      <OpenEditors tabs={tabItems(pane)} active={pane.activeId} onpick={pickListed} onclose={closeListing} />
+    {/if}
   {/if}
 
   {#if settingsOpen && !prompt}

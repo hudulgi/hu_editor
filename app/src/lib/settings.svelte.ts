@@ -18,6 +18,8 @@ export interface Settings {
   fontSize: number;
   lineNumbers: boolean;
   highlightLine: boolean;
+  /** A file picked in the explorer takes the place of the last one, until it is edited or kept. */
+  previewEditors: boolean;
   /** The Tab key inserts spaces up to the next multiple of `tabSize`; otherwise a tab character. */
   tabSpaces: boolean;
   tabSize: number;
@@ -44,6 +46,7 @@ function defaults(): Settings {
     fontSize: 13,
     lineNumbers: true,
     highlightLine: true,
+    previewEditors: true,
     tabSpaces: true,
     tabSize: 8,
     syntaxHighlight: true,

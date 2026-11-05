@@ -18,13 +18,8 @@ export default async function (t) {
   const first = (window) => window.page.$eval(".pane.focused .slot:not(.hidden) .gutter .ln", (e) => Number(e.textContent));
   const dirty = (window) => window.page.locator(".strip .tab.dirty").count();
   /** How many documents the backend holds, not counting those of scenarios before this one. */
-  const heldInAll = () =>
-    page.evaluate(async (bridge) => {
-      const response = await fetch(bridge, { method: "POST", body: JSON.stringify({ cmd: "test_open_documents", args: {} }) });
-      return (await response.json()).ok;
-    }, t.bridge);
-  const before = (await heldInAll()) - 1;
-  const documents = async () => (await heldInAll()) - before;
+  const before = (await app.heldDocuments()) - 1;
+  const documents = async () => (await app.heldDocuments()) - before;
   const goTo = async (window, line) => {
     await pressIn(window, "Control+g");
     await window.page.waitForSelector(".goto input");

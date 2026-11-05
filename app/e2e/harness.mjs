@@ -282,6 +282,13 @@ export class App {
   answerDialog = (path) => this.page.evaluate((path) => window.__e2e.dialogAnswers.push(path), path);
   dialogCalls = () => this.page.evaluate(() => window.__e2e.dialogCalls);
 
+  /** How many documents the backend holds, for all scenarios so far. */
+  heldDocuments = () =>
+    this.page.evaluate(async (bridge) => {
+      const response = await fetch(bridge, { method: "POST", body: JSON.stringify({ cmd: "test_open_documents", args: {} }) });
+      return (await response.json()).ok;
+    }, this.session.bridge);
+
   clipboard = () =>
     this.page.evaluate(async (bridge) => {
       const response = await fetch(bridge, {
