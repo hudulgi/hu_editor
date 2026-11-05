@@ -697,7 +697,7 @@
   function onmousedown(e: MouseEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
-    input.focus();
+    input.focus({ preventScroll: true });
     blink++;
     if (e.altKey || columnMode) {
       const point = boxPoint(e.clientX, e.clientY);
@@ -793,8 +793,9 @@
 
   // ---- For the app ------------------------------------------------------
 
+  // The browser would scroll to the hidden input; where the text stands is up to `placeCaret`.
   export function focus() {
-    input?.focus();
+    input?.focus({ preventScroll: true });
   }
 
   function selectEverything() {

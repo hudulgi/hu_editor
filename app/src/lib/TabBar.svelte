@@ -12,6 +12,8 @@
     hint: string | null;
     /** The next file opened as a preview takes its place. */
     preview: boolean;
+    /** At the start of the strip, closed only on purpose. */
+    pinned: boolean;
   }
 </script>
 
@@ -31,7 +33,10 @@
     /** A dragged tab was let go at this point; no point if it did not get anywhere. */
     ondrop: (id: number, point: { x: number; y: number } | null) => void;
     /** A double click: the tab stops being a preview. */
-    onpin: (id: number) => void;
+    onkeep: (id: number) => void;
+    onunpin: (id: number) => void;
+    /** A right click on a tab. */
+    oncontext: (id: number, x: number, y: number) => void;
     /** No new files open in this pane. */
     locked: boolean;
     onsplit: (down: boolean) => void;
@@ -39,7 +44,7 @@
     onmore: (button: HTMLElement) => void;
   }
 
-  let { tabs, active, focused, onselect, onclose, ondrag, ondrop, onpin, locked, onsplit, onunlock, onmore }: Props = $props();
+  let { tabs, active, focused, onselect, onclose, ondrag, ondrop, onkeep, onunpin, oncontext, locked, onsplit, onunlock, onmore }: Props = $props();
 
   let strip: HTMLDivElement;
 
@@ -78,12 +83,12 @@
     window.addEventListener("pointercancel", end);
   }
 
-  function onmousedown(e: MouseEvent, id: number) {
+  function onmousedown(e: MouseEvent, tab: TabItem) {
     // Keep the focus in the editor, which the app moves to the selected tab.
     e.preventDefault();
     // Middle click closes, like a browser.
-    if (e.button === 1) onclose(id);
-    else if (e.button === 0) onselect(id);
+    if (e.button === 1 && !tab.pinned) onclose(tab.id);
+    else if (e.button === 0) onselect(tab.id);
   }
 </script>
 
@@ -95,13 +100,18 @@
       class:active={tab.id === active}
       class:dirty={tab.dirty}
       class:preview={tab.preview}
+      class:pinned={tab.pinned}
       role="tab"
       tabindex="-1"
       aria-selected={tab.id === active}
       title={tab.path ?? t("tabs.notSaved", { name: tab.name })}
-      onmousedown={(e) => onmousedown(e, tab.id)}
+      onmousedown={(e) => onmousedown(e, tab)}
       onpointerdown={(e) => onpointerdown(e, tab.id)}
-      ondblclick={() => onpin(tab.id)}
+      ondblclick={() => onkeep(tab.id)}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        oncontext(tab.id, e.clientX, e.clientY);
+      }}
     >
       {#if tab.lang !== "plain"}
         {@const badge = langBadge(tab.lang)}
@@ -113,14 +123,15 @@
       {/if}
       <button
         class="close"
-        title={t("tabs.close")}
-        aria-label={t("tabs.closeNamed", { name: tab.name })}
+        title={tab.pinned ? t("tabs.unpin") : t("tabs.close")}
+        aria-label={tab.pinned ? t("tabs.unpin") : t("tabs.closeNamed", { name: tab.name })}
         onmousedown={(e) => e.stopPropagation()}
         onpointerdown={(e) => e.stopPropagation()}
         ondblclick={(e) => e.stopPropagation()}
-        onclick={() => onclose(tab.id)}
+        onclick={() => (tab.pinned ? onunpin(tab.id) : onclose(tab.id))}
       >
         <svg class="x" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+        <svg class="pin" viewBox="0 0 16 16"><path d="M9.5 2.5l4 4-1.5.5-2.5 2.5-.5 3-2-2-3.5 3.5M6 9.5l-2-2 3-.5 2.5-2.5z" /></svg>
         <svg class="dot" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" /></svg>
       </button>
     </div>
@@ -303,18 +314,24 @@
     fill: currentColor;
     stroke: none;
   }
-  /* The close button shows on the active or hovered tab; a dirty tab shows a dot instead until hovered. */
+  /* The close button shows on the active or hovered tab; a dirty tab shows a dot instead until hovered.
+     A pinned tab always shows its pin, in the place of the close button. */
   .tab .x,
+  .tab .pin,
   .tab .dot,
   .tab.dirty:hover .dot {
     display: none;
   }
-  .tab.active:not(.dirty) .x,
-  .tab:hover .x,
+  .tab:not(.pinned).active:not(.dirty) .x,
+  .tab:not(.pinned):hover .x,
   .tab.dirty:not(:hover) .dot {
     display: block;
   }
-  .tab:not(.active):not(.dirty):not(:hover) .close {
+  .tab:not(.active):not(.dirty):not(:hover):not(.pinned) .close {
     visibility: hidden;
+  }
+  .tab.pinned:not(.dirty) .pin,
+  .tab.pinned:hover .pin {
+    display: block;
   }
 </style>

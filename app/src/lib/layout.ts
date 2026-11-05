@@ -126,6 +126,37 @@ export function arrange(root: LayoutNode) {
   return { boxes, sashes };
 }
 
+/** The pane next to the pane `key` on `side`, if any: the one sharing the most of that border. */
+export function neighbor(root: LayoutNode, key: number, side: Side): number | null {
+  const { boxes } = arrange(root);
+  const from = boxes.get(key);
+  if (!from) return null;
+  const TOUCH = 1e-9;
+  let best: number | null = null;
+  let most = TOUCH;
+  for (const [other, box] of boxes) {
+    if (other === key) continue;
+    const touching =
+      side === "left"
+        ? Math.abs(box.x + box.width - from.x) < TOUCH
+        : side === "right"
+          ? Math.abs(from.x + from.width - box.x) < TOUCH
+          : side === "top"
+            ? Math.abs(box.y + box.height - from.y) < TOUCH
+            : Math.abs(from.y + from.height - box.y) < TOUCH;
+    if (!touching) continue;
+    const shared =
+      side === "left" || side === "right"
+        ? Math.min(box.y + box.height, from.y + from.height) - Math.max(box.y, from.y)
+        : Math.min(box.x + box.width, from.x + from.width) - Math.max(box.x, from.x);
+    if (shared > most) {
+      most = shared;
+      best = other;
+    }
+  }
+  return best;
+}
+
 /** A sash moved to `at`, a fraction of its split. */
 export function resized(root: LayoutNode, sash: Pick<Sash, "path" | "index">, at: number): LayoutNode {
   const visit = (node: LayoutNode, depth: number): LayoutNode => {

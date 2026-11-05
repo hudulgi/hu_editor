@@ -21,6 +21,7 @@
     flipped,
     leaves,
     mapLeaves,
+    neighbor,
     presetLayout,
     presetOf,
     presetSlots,
@@ -73,6 +74,8 @@
     activeId: number | null;
     /** The tab that the next preview takes the place of. */
     previewId: number | null;
+    /** The tabs held at the start of `ids`, which closing many leaves alone. */
+    pinned: number[];
     /** New files open in another pane. */
     locked: boolean;
     carets: Record<number, CaretInfo | null>;
@@ -80,7 +83,7 @@
   }
 
   let paneKeys = 0;
-  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, previewId: null, locked: false, carets: {}, editors: {} });
+  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, previewId: null, pinned: [], locked: false, carets: {}, editors: {} });
 
   let tabs = $state<Tab[]>([]);
   /** In reading order. */
@@ -110,8 +113,8 @@
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
   let settingsPage = $state<Category>("general");
-  /** The more-actions menu of a pane, hanging from its button. */
-  let moreMenu = $state.raw<{ key: number; button: HTMLElement } | null>(null);
+  /** A pane's menu: more actions, hanging from its button, or a tab's, at the mouse. */
+  let paneMenu = $state.raw<{ key: number; button?: HTMLElement; tab?: number; point?: { x: number; y: number } } | null>(null);
   /** The pane whose tabs are being listed to pick from. */
   let listing = $state<number | null>(null);
   /** Ctrl+K went down; the next key says what for. */
@@ -142,6 +145,7 @@
     paths: string[];
     active: string | null;
     preview?: string | null;
+    pinned?: string[];
     locked?: boolean;
   }
 
@@ -162,6 +166,7 @@
         paths: pane?.ids.flatMap((id) => tabOf(id)?.doc.path ?? []) ?? [],
         active: pane && pane.activeId !== null ? (tabOf(pane.activeId)?.doc.path ?? null) : null,
         preview: pane && pane.previewId !== null ? (tabOf(pane.previewId)?.doc.path ?? null) : null,
+        pinned: pane?.pinned.flatMap((id) => tabOf(id)?.doc.path ?? []),
         locked: pane?.locked,
       };
     };
@@ -194,6 +199,7 @@
         // Same name in two folders: show the folder.
         hint: doc.path && nameCounts.get(doc.name)! > 1 ? parentName(doc.path) : null,
         preview: pane.previewId === id,
+        pinned: pane.pinned.includes(id),
       };
     });
   }
@@ -245,11 +251,14 @@
   /** Adds a tab for an open document to pane `at`, next to its active tab. */
   function addView(id: number, at: number) {
     const pane = panes[at];
-    if (!pane.ids.includes(id)) {
-      const next = pane.activeId === null ? pane.ids.length : pane.ids.indexOf(pane.activeId) + 1;
-      pane.ids.splice(next, 0, id);
-    }
+    if (!pane.ids.includes(id)) pane.ids.splice(placeForTab(pane), 0, id);
     activate(id, at);
+  }
+
+  /** Where a tab goes in: after the active one, and after those pinned. */
+  function placeForTab(pane: Pane) {
+    const next = pane.activeId === null ? pane.ids.length : pane.ids.indexOf(pane.activeId) + 1;
+    return Math.max(next, pane.pinned.length);
   }
 
   /** Takes a tab out of pane `at`; a pane left empty closes. The document stays open. */
@@ -261,6 +270,7 @@
     delete pane.editors[id];
     delete pane.carets[id];
     if (pane.previewId === id) pane.previewId = null;
+    pane.pinned = pane.pinned.filter((one) => one !== id);
     if (pane.activeId === id) pane.activeId = pane.ids[Math.min(index, pane.ids.length - 1)] ?? null;
     // An empty pane has no button to unlock it with.
     if (!pane.ids.length) pane.locked = false;
@@ -292,8 +302,21 @@
   });
 
   /** The tab is here to stay, wherever it was a preview. */
-  function pin(id: number) {
+  function keepOpen(id: number) {
     for (const pane of panes) if (pane.previewId === id) pane.previewId = null;
+  }
+
+  /** Pinned, a tab goes after those pinned before it; unpinned, right after those still pinned. */
+  function togglePin(id: number, pane: Pane) {
+    pane.ids.splice(pane.ids.indexOf(id), 1);
+    if (pane.pinned.includes(id)) {
+      pane.pinned = pane.pinned.filter((one) => one !== id);
+    } else {
+      keepOpen(id);
+      pane.pinned.push(id);
+    }
+    const count = pane.pinned.length;
+    pane.ids.splice(pane.pinned.includes(id) ? count - 1 : count, 0, id);
   }
 
   // With previews off, no tab waits to be replaced.
@@ -343,6 +366,7 @@
         delete pane.carets[old];
         if (pane.activeId === old) pane.activeId = doc.id;
         if (pane.previewId === old) pane.previewId = null;
+        pane.pinned = pane.pinned.map((one) => (one === old ? doc.id : one));
       }
       if (show) activate(doc.id);
     } else {
@@ -403,17 +427,28 @@
     }
   }
 
-  /** Closes all tabs of a pane, asking once about those with unsaved changes that nothing else shows. */
-  async function closeAll(pane: Pane) {
-    const alone = pane.ids.flatMap((id) => (panes.some((other) => other !== pane && other.ids.includes(id)) ? [] : (tabOf(id) ?? [])));
+  /** Closes tabs of a pane, except those pinned, asking once about unsaved changes that nothing else shows. */
+  async function closeTabs(pane: Pane, ids: number[]) {
+    const closing = ids.filter((id) => !pane.pinned.includes(id));
+    const alone = closing.flatMap((id) => (panes.some((other) => other !== pane && other.ids.includes(id)) ? [] : (tabOf(id) ?? [])));
     if (!(await mayClose(alone))) return;
-    for (const id of [...pane.ids]) closeView(id, pane);
+    for (const id of closing) closeView(id, pane);
   }
+
+  const closeAll = (pane: Pane) => closeTabs(pane, [...pane.ids]);
+
+  /** All but this tab, which then shows. */
+  async function closeOthers(pane: Pane, id: number) {
+    await closeTabs(pane, pane.ids.filter((one) => one !== id));
+    if (pane.ids.every((one) => one === id || pane.pinned.includes(one))) activate(id, panes.indexOf(pane));
+  }
+
+  const closeToRight = (pane: Pane, id: number) => closeTabs(pane, pane.ids.slice(pane.ids.indexOf(id) + 1));
 
   /** Closes the tabs of a pane with nothing to save. */
   async function closeSaved(pane: Pane) {
     await Promise.all(pane.ids.map(flush));
-    for (const id of [...pane.ids]) if (!tabOf(id)?.state.dirty) closeView(id, pane);
+    for (const id of pane.ids.filter((one) => !pane.pinned.includes(one) && !tabOf(one)?.state.dirty)) closeView(id, pane);
   }
 
   function cycle(step: number) {
@@ -476,7 +511,10 @@
         if (pane === into) continue;
         for (const id of pane.ids) if (!into.ids.includes(id)) places.push([id, pane.editors[id]?.place()]);
       }
-      into.ids = [...new Set(merging.flatMap((pane) => pane.ids))];
+      // Those pinned anywhere stay pinned, in front.
+      const pinned = [...new Set(merging.flatMap((pane) => pane.pinned))];
+      into.ids = [...new Set([...pinned, ...merging.flatMap((pane) => pane.ids)])];
+      into.pinned = pinned;
       into.activeId ??= into.ids[0] ?? null;
     }
     const fresh = Array.from({ length: slots - kept.length }, newPane);
@@ -499,10 +537,9 @@
     const target = side ? addPane(to, side) : to;
     const place = source.editors[id]?.place();
     const shown = target.ids.includes(id);
-    if (!shown) {
-      const next = target.activeId === null ? target.ids.length : target.ids.indexOf(target.activeId) + 1;
-      target.ids.splice(next, 0, id);
-    }
+    const pinned = source.pinned.includes(id) && !target.pinned.includes(id);
+    if (!shown) target.ids.splice(placeForTab(target), 0, id);
+    if (pinned) togglePin(id, target);
     removeView(id, panes.indexOf(source));
     activate(id, panes.indexOf(target));
     if (shown || !place) return;
@@ -563,6 +600,12 @@
     const zone = dropZone;
     dropZone = null;
     if (zone) moveTab(id, panes[from], panes[zone.pane], zone.side);
+  }
+
+  /** Moves a tab to the pane next to its own on `side`, or if there is none, to a new one there. */
+  function moveTabToSide(id: number, pane: Pane, side: Side) {
+    const next = panes.find((one) => one.key === neighbor(layout, pane.key, side));
+    moveTab(id, pane, next ?? pane, next ? undefined : side);
   }
 
   // Resizing the panes.
@@ -631,7 +674,7 @@
     if (!tab) return;
     const id = tab.doc.id;
     const pane = panes[focused];
-    pin(id);
+    keepOpen(id);
     await flush(id);
     const start: WindowStart = $state.snapshot({
       doc: { ...tab.doc, state: tab.state },
@@ -739,7 +782,7 @@
     try {
       await work((written) => saving && (saving.written = written));
       tab.changedOnDisk = false;
-      pin(tab.doc.id);
+      keepOpen(tab.doc.id);
       if (sharedDocs.has(tab.doc.id)) {
         const { id, path, name } = tab.doc;
         tell({ kind: "saved", id, state: tab.state, path, name, lang: tab.lang });
@@ -840,7 +883,7 @@
     if (open) {
       if (panes[focused].activeId === null && !panes[focused].locked) addView(open.doc.id, focused);
       else activate(open.doc.id);
-      if (!preview) pin(open.doc.id);
+      if (!preview) keepOpen(open.doc.id);
     } else {
       const done = (async () => {
         try {
@@ -908,7 +951,7 @@
 
   /** An edit in a pane: wherever else the document shows follows. */
   function edited(id: number, from: Pane, result: api.EditResult) {
-    pin(id);
+    keepOpen(id);
     for (const pane of panes) if (pane !== from) pane.editors[id]?.followEdit(result.change);
     refreshAfterEdit(id, result.state);
     if (sharedDocs.has(id)) tell({ kind: "edited", id, change: result.change, state: result.state });
@@ -1192,12 +1235,12 @@
   // ---- A pane's own menu --------------------------------------------------------
 
   function toggleMoreMenu(key: number, button: HTMLElement) {
-    if (moreMenu?.button === button) closeMoreMenu();
-    else moreMenu = { key, button };
+    if (paneMenu?.button === button) closePaneMenu();
+    else paneMenu = { key, button };
   }
 
-  function closeMoreMenu() {
-    moreMenu = null;
+  function closePaneMenu() {
+    paneMenu = null;
     editor?.focus();
   }
 
@@ -1206,9 +1249,51 @@
     focusPane(panes.indexOf(pane));
   }
 
-  let moreItems = $derived.by<DropEntry[]>(() => {
-    const pane = panes.find((one) => one.key === moreMenu?.key);
+  /** A tab's own menu. What runs on a tab that is not showing first makes it show, where it has to show. */
+  function tabMenuItems(pane: Pane, id: number): DropEntry[] {
+    const others = pane.ids.filter((one) => one !== id && !pane.pinned.includes(one));
+    const toRight = pane.ids.slice(pane.ids.indexOf(id) + 1).filter((one) => !pane.pinned.includes(one));
+    const pinned = pane.pinned.includes(id);
+    const showing = (run: () => void) => () => {
+      activate(id, panes.indexOf(pane));
+      run();
+    };
+    const canMove = (side: Side) => neighbor(layout, pane.key, side) !== null || pane.ids.length > 1;
+    return [
+      { label: t("tabMenu.close"), shortcut: "Ctrl+W", run: () => closeTab(id, panes.indexOf(pane)) },
+      { label: t("tabMenu.closeOthers"), shortcut: "Ctrl+Alt+T", enabled: others.length > 0, run: () => closeOthers(pane, id) },
+      { label: t("tabMenu.closeRight"), enabled: toRight.length > 0, run: () => closeToRight(pane, id) },
+      { label: t("more.closeSaved"), shortcut: "Ctrl+K U", run: () => closeSaved(pane) },
+      { label: t("more.closeAll"), shortcut: "Ctrl+K W", run: () => closeAll(pane) },
+      "separator",
+      { label: t("tabMenu.keepOpen"), shortcut: "Ctrl+K Enter", enabled: pane.previewId === id, run: () => keepOpen(id) },
+      { label: t(pinned ? "tabMenu.unpin" : "tabMenu.pin"), shortcut: "Ctrl+K Shift+Enter", run: () => togglePin(id, pane) },
+      "separator",
+      { label: t("tabMenu.splitRight"), run: showing(() => split("right")) },
+      {
+        label: t("tabMenu.splitMove"),
+        items: [
+          { label: t("menu.splitUp"), run: showing(() => split("top")) },
+          { label: t("menu.splitDown"), run: showing(() => split("bottom")) },
+          { label: t("menu.splitLeft"), run: showing(() => split("left")) },
+          { label: t("menu.splitRight"), run: showing(() => split("right")) },
+          "separator",
+          { label: t("tabMenu.moveUp"), enabled: canMove("top"), run: () => moveTabToSide(id, pane, "top") },
+          { label: t("tabMenu.moveDown"), enabled: canMove("bottom"), run: () => moveTabToSide(id, pane, "bottom") },
+          { label: t("tabMenu.moveLeft"), enabled: canMove("left"), run: () => moveTabToSide(id, pane, "left") },
+          { label: t("tabMenu.moveRight"), enabled: canMove("right"), run: () => moveTabToSide(id, pane, "right") },
+        ],
+      },
+      "separator",
+      { label: t("tabMenu.moveToNewWindow"), run: showing(() => toNewWindow(true)) },
+      { label: t("tabMenu.copyToNewWindow"), shortcut: "Ctrl+K O", run: showing(() => toNewWindow(false)) },
+    ];
+  }
+
+  let paneMenuItems = $derived.by<DropEntry[]>(() => {
+    const pane = panes.find((one) => one.key === paneMenu?.key);
     if (!pane) return [];
+    if (paneMenu?.tab !== undefined) return tabMenuItems(pane, paneMenu.tab);
     return [
       { label: t("more.showOpen"), run: () => (listing = pane.key) },
       "separator",
@@ -1239,14 +1324,22 @@
     chord = false;
     chordFrom?.focus();
     chordFrom = null;
-    if (e.code === "KeyW") closeAll(panes[focused]);
-    else if (e.code === "KeyU") closeSaved(panes[focused]);
+    const pane = panes[focused];
+    if (e.code === "KeyW") closeAll(pane);
+    else if (e.code === "KeyU") closeSaved(pane);
+    else if (e.code === "KeyO") toNewWindow(false);
+    else if (e.key === "Enter" && pane.activeId !== null) {
+      if (e.shiftKey) togglePin(pane.activeId, pane);
+      else keepOpen(pane.activeId);
+    }
     e.preventDefault();
   }
 
   /** The active tab; in an empty pane, with others beside it, the pane itself. */
   function closeTabOrPane() {
-    if (active) closeTab(active.doc.id, focused);
+    // A pinned tab closes only on purpose, from its menu: the keyboard just goes on to the next.
+    if (active && panes[focused].pinned.includes(active.doc.id)) cycle(1);
+    else if (active) closeTab(active.doc.id, focused);
     else if (panes.length > 1) {
       closePane(focused);
       focusPane(focused);
@@ -1297,6 +1390,7 @@
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
     else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
+    else if (mod && e.altKey && e.code === "KeyT" && active) closeOthers(panes[focused], active.doc.id);
     else if (mod && e.code === "Backslash" && panes.length > 1) applyPreset("single");
     else if (mod && e.code === "Backslash" && active) split(sideAfter(splitDirection));
     else if (mod && /^Digit[1-9]$/.test(e.code)) focusPane(Number(e.code.slice(5)) - 1);
@@ -1373,6 +1467,10 @@
       if (shown && panes[at].ids.includes(shown.doc.id)) panes[at].activeId = shown.doc.id;
       const preview = saved.preview ? tabOfPath(saved.preview) : undefined;
       if (preview && settings.previewEditors && panes[at].ids.includes(preview.doc.id)) panes[at].previewId = preview.doc.id;
+      for (const path of saved.pinned ?? []) {
+        const pinned = tabOfPath(path);
+        if (pinned && panes[at].ids.includes(pinned.doc.id)) togglePin(pinned.doc.id, panes[at]);
+      }
     }
     // Only now: a locked pane would have sent its own files elsewhere.
     for (const [at, { saved }] of wanted.entries()) panes[at].locked = !!saved.locked;
@@ -1518,7 +1616,9 @@
                 else dropZone = null;
                 dropTab(id, i);
               }}
-              onpin={pin}
+              onkeep={keepOpen}
+              onunpin={(id) => togglePin(id, pane)}
+              oncontext={(id, x, y) => (paneMenu = { key: pane.key, tab: id, point: { x, y } })}
               locked={pane.locked}
               onsplit={(down) => split(down ? "bottom" : "right")}
               onunlock={() => toggleLock(pane)}
@@ -1541,7 +1641,8 @@
               />
             {/if}
             <div class="editors">
-              {#each pane.ids as id (id)}
+              <!-- In a stable order, whatever the tabs': an editor moved would lose the keyboard and its scrolling. -->
+              {#each [...pane.ids].sort((a, b) => a - b) as id (id)}
                 {@const tab = tabOf(id)}
                 {#if tab}
                   <div class="slot" class:hidden={id !== pane.activeId}>
@@ -1652,8 +1753,8 @@
     />
   {/if}
 
-  {#if moreMenu}
-    <DropMenu items={moreItems} anchor={moreMenu.button} onclose={closeMoreMenu} />
+  {#if paneMenu}
+    <DropMenu items={paneMenuItems} anchor={paneMenu.button} point={paneMenu.point} onclose={closePaneMenu} />
   {/if}
 
   {#if listing !== null}
