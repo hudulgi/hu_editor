@@ -24,6 +24,106 @@ async function drawnInStep(t, app, label) {
 /** The number at the start of a data line, which is its line number. */
 const lineNumberOf = (text) => Number(text.slice(8, 16));
 
+const WIDE = "0123456789".repeat(40);
+
+/** Without line numbers the text keeps a margin, and the margin works as part of the text. */
+async function margin(t) {
+  const { until, check } = t;
+  const app = await t.launch({ settings: { lineNumbers: false }, launchPath: t.path("wide.txt") });
+  const { page } = app;
+  await page.waitForSelector(".line");
+  const { cell } = await app.metrics();
+  const left = (selector) => page.$eval(`${SLOT} ${selector}`, (e) => e.getBoundingClientRect().left);
+  const col = async () => Number((await app.position()).match(/Col (\d+)/)[1]);
+  const scrolled = () => page.$eval(`${SLOT} .text`, (e) => e.scrollLeft);
+  const inMargin = async (row) => [(await left(".editor")) + 4, (await app.at(row, 0))[1]];
+  const drag = async (from, to) => {
+    await page.mouse.move(...from);
+    await page.mouse.down();
+    await page.mouse.move(...to, { steps: 3 });
+    await page.mouse.up();
+  };
+
+  check("there is a margin", (await left(".lines .line")) - (await left(".editor")), 12);
+  await page.evaluate(() => document.fonts.ready);
+
+  // The caret still sits on the text.
+  await page.mouse.click(...(await app.at(0, 5)));
+  await until("click in the text", app.position, "Ln 1, Col 6");
+  await until("the caret is at its column", async () => Math.abs((await left(".caret")) - (await left(".lines .line")) - 5 * cell) < 1, true);
+  await app.shot("margin");
+
+  // A click in the margin goes to the start of that line, and keeps the keyboard.
+  await page.mouse.click(...(await inMargin(1)));
+  await until("click in the margin", app.position, "Ln 2, Col 1");
+  await until("the caret is at the start of the text", async () => Math.abs((await left(".caret")) - (await left(".lines .line"))) < 1, true);
+  check("the keyboard stays in the text", await page.evaluate(() => document.activeElement.tagName), "TEXTAREA");
+  await page.keyboard.type("A");
+  await until("typing after it", async () => (await app.lines())[1].slice(0, 3), "A01");
+  await page.keyboard.press("Control+z");
+  await until("undone", async () => (await app.lines())[1], WIDE);
+
+  // Dragging from the margin selects from the start of the line.
+  await drag(await inMargin(0), await app.at(1, 3));
+  await page.keyboard.press("Control+c");
+  await until("drag from the margin", app.clipboard, `${WIDE}\n012`);
+
+  // A box from the margin starts at the first column.
+  await app.altDrag(await inMargin(0), await app.at(1, 3));
+  await until("a box from the margin", app.position, "Ln 2 · Box 2 × 3");
+  check("it is drawn from the start of the text", Math.abs((await left(".box")) - (await left(".lines .line"))) < 1, true);
+  await page.keyboard.press("Escape");
+
+  // Scrolled sideways, the margin stands for the first column in view, and the
+  // text does not reach into it. At a fractional position, as on a scaled display,
+  // and with the older caret call of other engines, which takes whole pixels.
+  for (const [shift, whole] of [[0, false], [0.4, false], [0.6, false], [0.6, true]]) {
+    const label = (text) => `shifted ${shift}${whole ? " in whole pixels" : ""}: ${text}`;
+    await page.$eval(`${SLOT} .editor`, (e, shift) => (e.style.marginLeft = `${shift}px`), shift);
+    await page.evaluate((whole) => (document.caretPositionFromPoint = whole ? undefined : Document.prototype.caretPositionFromPoint), whole);
+    await page.mouse.click(...(await app.at(0, 0)));
+    await page.keyboard.press("End");
+    await until(label("scrolled to the end of the line"), async () => (await scrolled()) > 1000, true);
+    if (!shift) await app.shot("margin-scrolled");
+    const inView = (await scrolled()) / cell;
+    await page.mouse.click(...(await inMargin(1)));
+    await until(label("click in the margin"), async () => (await app.position()).startsWith("Ln 2,"), true);
+    check(label("goes to the first column in view"), Math.abs((await col()) - 1 - inView) <= 1, true);
+    await page.mouse.click(...(await inMargin(2)));
+    await until(label("on a line that ends before it"), app.position, "Ln 3, Col 6");
+
+    await page.mouse.click(...(await app.at(0, 0)));
+    await page.keyboard.press("End");
+    await until(label("scrolled again"), async () => (await scrolled()) > 1000, true);
+    const box = await left(".text");
+    await app.altDrag(await inMargin(1), [box + 12 + 10 * cell, (await app.at(1, 0))[1]]);
+    const width = Number((await app.position()).match(/× (\d+)/)?.[1]);
+    check(label("a box from there starts at that column"), Math.abs(width - 10) <= 1, true);
+    await page.keyboard.press("Escape");
+  }
+  await page.$eval(`${SLOT} .editor`, (e) => (e.style.marginLeft = ""));
+  await page.evaluate(() => (document.caretPositionFromPoint = Document.prototype.caretPositionFromPoint));
+
+  // The line numbers come back in place of the margin.
+  await page.keyboard.press("Control+Home");
+  await app.page.keyboard.press("Alt+v");
+  await app.page.keyboard.press("n");
+  await until("line numbers on", () => page.locator(`${SLOT} .gutter`).count(), 1);
+  const gutter = await page.$eval(`${SLOT} .gutter`, (e) => e.getBoundingClientRect().right);
+  check("the text follows the numbers", await left(".lines .line"), gutter);
+
+  // Dragging over the numbers while scrolled ends at the first column in view, not at the line's end.
+  await page.mouse.click(...(await app.at(0, 0)));
+  await page.keyboard.press("End");
+  await until("scrolled to the end of the line", async () => (await scrolled()) > 1000, true);
+  const anchorX = gutter + 200;
+  const y = (await app.at(1, 0))[1];
+  await page.mouse.click(anchorX, y);
+  const anchor = await col();
+  await drag([anchorX, y], [gutter - 20, y]);
+  check("a drag over the numbers goes left", (await col()) < anchor, true);
+}
+
 async function exercise(t, app, size) {
   const { page } = app;
   const { until } = t;
@@ -146,7 +246,9 @@ async function exercise(t, app, size) {
 }
 
 export default async function (t) {
-  t.write({ "deck.bdf": DECK, "other.bdf": DECK });
+  t.write({ "deck.bdf": DECK, "other.bdf": DECK, "wide.txt": `${WIDE}\n${WIDE}\nshort\n\n${WIDE}\n` });
+
+  await margin(t);
 
   for (const size of [20, 9, 13]) {
     const app = await t.launch({ settings: { fontSize: size }, launchPath: t.path("deck.bdf") });

@@ -506,7 +506,7 @@
     const row = Math.max(0, Math.min(view.lines.length - 1, Math.floor((clientY - top) / lineH)));
     const line = view.lines[row];
     const el = lineBox.children[row] as HTMLElement;
-    const x = clientX - el.getBoundingClientRect().left;
+    const x = insideText(clientX) - el.getBoundingClientRect().left;
     const end = xAt(el, line.text.length);
     if (x >= end) return { line: line.offset, col: textWidth(line.text) + Math.round((x - end) / cellW) };
     return { line: line.offset, col: displayCol(line.text, colOf(line, offsetAt(clientX, clientY)!)) };
@@ -667,6 +667,11 @@
     return r ? { node: r.startContainer, offset: r.startOffset } : null;
   }
 
+  /** Left of the text, in the margin or over the line numbers, counts as the first column in view. */
+  function insideText(clientX: number) {
+    return Math.max(clientX, scroller.getBoundingClientRect().left + scroller.clientLeft);
+  }
+
   /** Document offset under a point, clamped to the visible lines. */
   function offsetAt(clientX: number, clientY: number) {
     if (!view?.lines.length || !lineBox) return null;
@@ -675,8 +680,9 @@
     const line = view.lines[row];
     const el = lineBox.children[row] as HTMLElement;
     const rect = el.getBoundingClientRect();
-    const point = caretPoint(clientX, rect.top + lineH / 2);
-    if (!point || !el.contains(point.node)) return offsetOf(line, clientX <= rect.left ? 0 : line.text.length);
+    const x = insideText(clientX);
+    const point = caretPoint(x, rect.top + lineH / 2);
+    if (!point || !el.contains(point.node)) return offsetOf(line, x <= rect.left ? 0 : line.text.length);
     const range = document.createRange();
     range.setStart(el, 0);
     range.setEnd(point.node, point.offset);
@@ -1250,6 +1256,7 @@
   class:focused
   class:column-mode={columnMode}
   class:no-shading={!settings.fieldShading}
+  class:no-gutter={!settings.lineNumbers}
   bind:this={root}
 >
   {#if settings.lineNumbers}
@@ -1370,6 +1377,11 @@
     overflow-x: auto;
     overflow-y: hidden;
     cursor: text;
+  }
+  /* A border rather than padding: what is placed in the text counts from inside
+     it, the text scrolls clear of it, and it still takes the mouse. */
+  .no-gutter .text {
+    border-left: 12px solid transparent;
   }
   .lines {
     min-width: max-content;
