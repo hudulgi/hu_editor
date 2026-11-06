@@ -289,6 +289,12 @@
   const folderOf = (row: EntryRow): Folder | null =>
     row.entry.isDir ? { key: row.key, path: row.entry.path, base: row.base } : (row.parent ?? null);
 
+  /** Where the buttons above the tree make new files and folders: the selected row's folder. */
+  let selectedFolder = $derived.by(() => {
+    const row = rows.find((r): r is EntryRow => r.kind === "entry" && r.key === selected);
+    return row ? folderOf(row) : null;
+  });
+
   async function onkeydown(e: KeyboardEvent) {
     // Not the keys typed into a name.
     if (e.target !== tree) return;
@@ -585,6 +591,24 @@
       onclick={() => active && reveal(active, false)}
     >
       <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5" /><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" /></svg>
+    </button>
+    <button
+      class="icon"
+      title={t("explorer.newFile")}
+      aria-label={t("explorer.newFile")}
+      disabled={!selectedFolder}
+      onclick={() => selectedFolder && startNew("newFile", selectedFolder)}
+    >
+      <svg viewBox="0 0 16 16"><path d="M7.5 13.5h-4v-12h5l3 3V8M8.5 1.5v3h3M12 9.5v5M9.5 12h5" /></svg>
+    </button>
+    <button
+      class="icon"
+      title={t("explorer.newFolder")}
+      aria-label={t("explorer.newFolder")}
+      disabled={!selectedFolder}
+      onclick={() => selectedFolder && startNew("newDir", selectedFolder)}
+    >
+      <svg viewBox="0 0 16 16"><path d="M7.5 12.5h-6v-9h4L7 5h7.5v3M12 9.5v5M9.5 12h5" /></svg>
     </button>
     <button class="icon" title={t("explorer.refresh")} aria-label={t("explorer.refresh")} onclick={refresh}>
       <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" /></svg>

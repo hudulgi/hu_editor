@@ -1,7 +1,7 @@
 // The explorer's own menus, from a right click: on a file, on a folder, and on
 // the space below the rows; and what they do on the disk.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const REVEAL = { win32: "Reveal in File Explorer", darwin: "Reveal in Finder" }[process.platform] ?? "Open Containing Folder";
@@ -233,6 +233,27 @@ export default async function (t) {
   await page.mouse.click(...(await app.at(0, 0)));
   await until("a name taken, left: given up", naming, 0);
 
+  // The buttons above the tree: in the selected one's folder.
+  const NEW_FILE = ".explorer header button[title='New File…']";
+  const NEW_FOLDER = ".explorer header button[title='New Folder…']";
+  await choose("work", "sub", "part.inp");
+  await page.click(NEW_FILE);
+  await page.waitForSelector(NAME);
+  check("the new file button: a name to type", await keyboardIn(), "name");
+  await page.keyboard.type("button.inp");
+  await press("Enter");
+  await until("in the selected file's folder, and open", async () => [onDisk("work", "sub", "button.inp"), await app.path()], [true, t.path("work", "sub", "button.inp")]);
+  await choose("work", "sub", "results");
+  await page.click(NEW_FOLDER);
+  await page.waitForSelector(NAME);
+  await page.keyboard.type("inner");
+  await press("Enter");
+  await until("the new folder button: a folder, in the selected folder", async () => [onDisk("work", "sub", "results", "inner") && statSync(t.path("work", "sub", "results", "inner")).isDirectory(), await selected()], [true, "inner"]);
+  await page.click(".explorer button[title='Collapse all']");
+  check("the selected one out of sight: nowhere to make them", await page.$$eval(`${NEW_FILE}, ${NEW_FOLDER}`, (buttons) => buttons.map((b) => b.disabled)), [true, true]);
+  await page.click(".explorer button[title='Show the open file']");
+  await until("back in sight", () => page.$$eval(`${NEW_FILE}, ${NEW_FOLDER}`, (buttons) => buttons.map((b) => b.disabled)), [false, false]);
+
   // ---- Rename ------------------------------------------------------------------------------------
 
   await menuOn("work", "mesh.inp");
@@ -411,6 +432,7 @@ export default async function (t) {
 
   const korean = await t.launch({ settings: { language: "ko" }, launchPath: t.path("work", "parts", "piece.inp") });
   await korean.page.waitForSelector(".row.selected");
+  check("the buttons in Korean", await korean.page.$$eval(".explorer header button", (buttons) => buttons.map((b) => b.title).slice(1, 3)), ["새 파일…", "새 폴더…"]);
   await korean.page.click(".row.selected", { button: "right" });
   await korean.page.waitForSelector(MENU);
   check("in Korean", (await entries(korean.page)).map((entry) => entry.split("|")[0]), [
