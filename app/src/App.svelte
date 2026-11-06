@@ -109,7 +109,8 @@
   let needle = $state("");
   let replacement = $state("");
   let caseSensitive = $state(false);
-  let highlight = $derived(findOpen && needle ? { needle, caseSensitive } : null);
+  let wholeWord = $state(false);
+  let highlight = $derived(findOpen && needle ? { needle, matching: { caseSensitive, wholeWord } } : null);
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
   let settingsPage = $state<Category>("general");
@@ -1492,6 +1493,7 @@
     else if (mod && (key === "f" || key === "h") && active) startFind(key === "h");
     else if (mod && key === "g" && active) openGoto();
     else if (e.key === "F3" && active) findAgain(e.shiftKey, mod);
+    else if (e.altKey && !mod && e.code === "KeyW" && findOpen) wholeWord = !wholeWord;
     else if (e.key === "F10" && !encodingOpen) menuBar?.toggleKeyboard();
     else if (e.key === "Escape" && findOpen && !encodingOpen && !e.defaultPrevented) findBar?.close();
     else return;
@@ -1720,6 +1722,7 @@
                 bind:needle
                 bind:replacement
                 bind:caseSensitive
+                bind:wholeWord
                 doc={active.doc}
                 len={active.state.len}
                 viewer={editor}

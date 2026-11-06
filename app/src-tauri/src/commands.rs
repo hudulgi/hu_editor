@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use hu_core::{
     BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions,
-    FindResult, IndexStatus, View, ViewTarget, dir, ipc_message, settings,
+    FindResult, IndexStatus, Matching, View, ViewTarget, dir, ipc_message, settings,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -458,6 +458,7 @@ pub async fn replace_all(
     needle: String,
     replacement: String,
     case_sensitive: bool,
+    whole_word: bool,
     anchor: u64,
     caret: u64,
     on_progress: Channel<u64>,
@@ -480,7 +481,10 @@ pub async fn replace_all(
             .replace_all(
                 &needle,
                 &replacement,
-                case_sensitive,
+                Matching {
+                    case_sensitive,
+                    whole_word,
+                },
                 (anchor, caret),
                 &cancel,
                 &mut progress,
@@ -563,6 +567,7 @@ pub async fn find(
     needle: String,
     from: u64,
     case_sensitive: bool,
+    whole_word: bool,
     backward: bool,
     on_progress: Channel<u64>,
     docs: State<'_, Docs>,
@@ -576,7 +581,10 @@ pub async fn find(
     let len = needle.len() as u64;
     let result = blocking(move || {
         let options = FindOptions {
-            case_sensitive,
+            matching: Matching {
+                case_sensitive,
+                whole_word,
+            },
             backward,
             wrap: true,
         };

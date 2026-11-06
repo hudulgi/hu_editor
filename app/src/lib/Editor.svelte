@@ -40,7 +40,7 @@
     /** Lines known so far, for the gutter width. */
     lines: number;
     /** What the find bar is looking for: its matches on screen stand out. */
-    highlight?: { needle: string; caseSensitive: boolean } | null;
+    highlight?: { needle: string; matching: api.Matching } | null;
     onview?: (view: api.View) => void;
     oncaret?: (caret: CaretInfo) => void;
     /** A right click in the text, at this point. */
@@ -857,15 +857,20 @@
     return [anchor, caret];
   }
 
-  /** The selected text if it lies on one visible line. */
-  export function selectedText(): string | null {
+  /** The selection's line and columns, if it lies on one visible line. */
+  export function selectionInLine(): { line: string; from: number; to: number } | null {
     if (!view || box || selStart === selEnd) return null;
     const row = rowOf(selStart);
     if (row < 0) return null;
     const line = view.lines[row];
     const end = colOf(line, selEnd);
     // Short of the selection's end: it goes on to another line, or past what a long line shows.
-    return offsetOf(line, end) === selEnd ? line.text.slice(colOf(line, selStart), end) : null;
+    return offsetOf(line, end) === selEnd ? { line: line.text, from: colOf(line, selStart), to: end } : null;
+  }
+
+  function selectedText() {
+    const sel = selectionInLine();
+    return sel && sel.line.slice(sel.from, sel.to);
   }
 
   /**
@@ -1190,7 +1195,7 @@
   function marksOf(line: Line): Mark[] {
     const marks: Mark[] = [];
     if (highlight?.needle) {
-      for (const [a, b] of findMatches(line.text, highlight.needle, highlight.caseSensitive)) {
+      for (const [a, b] of findMatches(line.text, highlight.needle, highlight.matching)) {
         const selected = offsetOf(line, a) === selStart && offsetOf(line, b) === selEnd;
         marks.push([a, b, selected ? "found" : "match"]);
       }

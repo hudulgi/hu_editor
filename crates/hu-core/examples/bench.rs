@@ -8,7 +8,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use hu_core::{Document, FindOptions, ViewTarget};
+use hu_core::{Document, FindOptions, Matching, ViewTarget};
 
 const ROWS: usize = 60;
 
@@ -88,10 +88,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     report("scroll 3 lines (avg)", started.elapsed() / 1000);
 
-    for case_sensitive in [true, false] {
+    for (case_sensitive, whole_word) in [(true, false), (false, false), (false, true)] {
         let started = Instant::now();
         let options = FindOptions {
-            case_sensitive,
+            matching: Matching {
+                case_sensitive,
+                whole_word,
+            },
             backward: false,
             wrap: true,
         };
@@ -103,10 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut |_| {},
         )?;
         let elapsed = started.elapsed();
-        let case = if case_sensitive {
-            "match case"
-        } else {
-            "ignore case"
+        let case = match (case_sensitive, whole_word) {
+            (true, _) => "match case",
+            (false, false) => "ignore case",
+            (false, true) => "ignore case, whole word",
         };
         report(&format!("find {needle:?} ({case})"), elapsed);
         println!(

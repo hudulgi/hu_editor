@@ -4,6 +4,7 @@
 // line belongs to, Nastran section) will move into the Rust core. Source code
 // and config files are in languages.ts.
 
+import type { Matching } from "./api";
 import { codeBadge, codeLabel, codeLangOf, FIELD_COLORS, isCodeLang, scanLine, separatedFields, type CodeLang, type LineState } from "./languages";
 
 export type Lang = "abaqus" | "nastran" | "plain" | CodeLang;
@@ -181,16 +182,42 @@ export function applyMarks(tokens: Token[], marks: Mark[]): Token[] {
 // Case folds ASCII only, like the search in the core.
 const foldCase = (text: string) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
-/** Whether a search for `needle` matches exactly `text`. */
-export const isMatch = (text: string, needle: string, caseSensitive: boolean) =>
-  caseSensitive ? text === needle : foldCase(text) === foldCase(needle);
+// Like the core, which sees bytes: every character past ASCII is a word character.
+const isWordChar = (c: string | undefined) => c !== undefined && (/[A-Za-z0-9_]/.test(c) || c.charCodeAt(0) >= 0x80);
+const isDigit = (c: string | undefined) => c !== undefined && c >= "0" && c <= "9";
+
+/**
+ * Whether the `edge` character of a match goes on into `next`, beside it,
+ * with `beyond` after that. A point next to a digit is a decimal point, part
+ * of the number, unless a name is on its other side (`Part-1-1.Set-1`).
+ */
+function joins(edge: string, next: string | undefined, beyond: string | undefined) {
+  if (next === "." && isDigit(edge)) return !(isWordChar(beyond) && !isDigit(beyond));
+  return isWordChar(edge) && isWordChar(next);
+}
+
+/** Whether `line.slice(from, to)` is a whole word there, in the core's sense. */
+function standsAlone(line: string, from: number, to: number) {
+  return !joins(line[from], line[from - 1], line[from - 2]) && !joins(line[to - 1], line[to], line[to + 1]);
+}
+
+/** Whether a search for `needle` matches exactly `line.slice(from, to)`. */
+export function isMatchAt(line: string, from: number, to: number, needle: string, matching: Matching) {
+  const text = line.slice(from, to);
+  const same = matching.caseSensitive ? text === needle : foldCase(text) === foldCase(needle);
+  return same && (!matching.wholeWord || standsAlone(line, from, to));
+}
 
 /** Non-overlapping matches of `needle` in a line, in UTF-16 indices. */
-export function findMatches(line: string, needle: string, caseSensitive: boolean): [number, number][] {
-  const [hay, sought] = caseSensitive ? [line, needle] : [foldCase(line), foldCase(needle)];
+export function findMatches(line: string, needle: string, matching: Matching): [number, number][] {
+  const [hay, sought] = matching.caseSensitive ? [line, needle] : [foldCase(line), foldCase(needle)];
   const found: [number, number][] = [];
-  for (let at = hay.indexOf(sought); at >= 0; at = hay.indexOf(sought, at + sought.length)) {
+  let free = 0;
+  // Overlapping ones too: one inside a longer word must not hide one beside it.
+  for (let at = hay.indexOf(sought); at >= 0; at = hay.indexOf(sought, at + 1)) {
+    if (at < free || (matching.wholeWord && !standsAlone(line, at, at + sought.length))) continue;
     found.push([at, at + sought.length]);
+    free = at + sought.length;
   }
   return found;
 }

@@ -28,5 +28,5 @@ pub use document::{Change, DocState, Document, EditResult, Eol, MAX_COPY, MAX_RE
 pub use history::EditKind;
 pub use line_index::IndexStatus;
 pub use problem::{Problem, ipc_message};
-pub use search::{FindOptions, FindResult};
+pub use search::{FindOptions, FindResult, Matching};
 pub use text::{BoxLine, BoxRows, Text, View, ViewLine, ViewTarget};

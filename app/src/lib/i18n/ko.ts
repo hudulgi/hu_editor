@@ -168,6 +168,7 @@ export const ko: Record<keyof typeof en, string> = {
   "find.find": "찾기",
   "find.replace": "바꾸기",
   "find.matchCase": "대소문자 구분",
+  "find.wholeWord": "단어 단위로 (Alt+W)",
   "find.previous": "이전 찾기 (Shift+Enter, Shift+F3)",
   "find.next": "다음 찾기 (Enter, F3)",
   "find.searching": "찾는 중… {percent}%",

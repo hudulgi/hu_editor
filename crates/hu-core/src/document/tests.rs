@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::search::{FindOptions, FindResult};
+use crate::search::{FindOptions, FindResult, Matching};
 use crate::source::BLOCK_SIZE;
 use crate::text::BoxRows;
 
@@ -556,21 +556,22 @@ fn box_paste_spreads_lines() {
     assert_eq!(last, 4);
 }
 
-fn naive_replace(
-    model: &[u8],
-    needle: &[u8],
-    with: &[u8],
-    case_sensitive: bool,
-) -> (Vec<u8>, usize) {
+fn naive_replace(model: &[u8], needle: &[u8], with: &[u8], matching: Matching) -> (Vec<u8>, usize) {
+    let word =
+        |b: Option<&u8>| b.is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80);
     let (mut out, mut count, mut i) = (Vec::new(), 0, 0);
     while i < model.len() {
         let hit = model.len() - i >= needle.len() && {
             let window = &model[i..i + needle.len()];
-            if case_sensitive {
+            let same = if matching.case_sensitive {
                 window == needle
             } else {
                 window.eq_ignore_ascii_case(needle)
-            }
+            };
+            // The needles here are words without digits.
+            let end = i + needle.len();
+            same && !(matching.whole_word
+                && (i > 0 && word(model.get(i - 1)) || word(model.get(end))))
         };
         if hit {
             out.extend_from_slice(with);
@@ -599,19 +600,20 @@ fn replace_all_matches_a_naive_replace() {
         );
     }
     let cancel = AtomicBool::new(false);
-    for (needle, with, case_sensitive) in [
-        ("*Element", "*ELEM", true),
-        ("*element", "", false),
-        ("0000", "0\n0", true),
+    let matching = |case_sensitive, whole_word| Matching {
+        case_sensitive,
+        whole_word,
+    };
+    for (needle, with, matching) in [
+        ("*Element", "*ELEM", matching(true, false)),
+        ("x", "y", matching(true, true)),
+        ("*element", "", matching(false, false)),
+        ("0000", "0\n0", matching(true, false)),
     ] {
-        let (expected, count) = naive_replace(
-            &model,
-            needle.as_bytes(),
-            &stored(&doc, with),
-            case_sensitive,
-        );
+        let (expected, count) =
+            naive_replace(&model, needle.as_bytes(), &stored(&doc, with), matching);
         let (replaced, _) = doc
-            .replace_all(needle, with, case_sensitive, (0, 0), &cancel, &mut |_| {})
+            .replace_all(needle, with, matching, (0, 0), &cancel, &mut |_| {})
             .unwrap()
             .unwrap();
         assert_eq!(replaced, count, "{needle:?}");
@@ -633,7 +635,7 @@ fn replace_all_without_matches_changes_nothing() {
         .replace_all(
             "missing",
             "x",
-            true,
+            Matching::default(),
             (0, 0),
             &AtomicBool::new(false),
             &mut |_| {},

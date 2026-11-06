@@ -167,6 +167,7 @@ export const en = {
   "find.find": "Find",
   "find.replace": "Replace",
   "find.matchCase": "Match case",
+  "find.wholeWord": "Match whole word (Alt+W)",
   "find.previous": "Previous match (Shift+Enter, Shift+F3)",
   "find.next": "Next match (Enter, F3)",
   "find.searching": "Searching… {percent}%",

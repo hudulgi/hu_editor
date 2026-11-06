@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hu_core::{
-    BoxRows, Document, EditKind, Encoding, Eol, FindOptions, FindResult, ViewTarget, dir,
+    BoxRows, Document, EditKind, Encoding, Eol, FindOptions, FindResult, Matching, ViewTarget, dir,
     ipc_message, settings,
 };
 use serde::Serialize;
@@ -259,16 +259,12 @@ impl Bridge {
                 let (needle, replacement): (String, String) =
                     (arg(args, "needle")?, arg(args, "replacement")?);
                 let before = (arg(args, "anchor")?, arg(args, "caret")?);
-                let case_sensitive = arg(args, "caseSensitive")?;
+                let matching = Matching {
+                    case_sensitive: arg(args, "caseSensitive")?,
+                    whole_word: arg(args, "wholeWord")?,
+                };
                 let done = doc()?
-                    .replace_all(
-                        &needle,
-                        &replacement,
-                        case_sensitive,
-                        before,
-                        &never,
-                        &mut |_| {},
-                    )
+                    .replace_all(&needle, &replacement, matching, before, &never, &mut |_| {})
                     .map_err(problem)?;
                 match done {
                     Some((count, result)) => {
@@ -306,7 +302,10 @@ impl Bridge {
                 let needle: String = arg(args, "needle")?;
                 let needle = doc.encoding().encode(&needle).into_owned();
                 let options = FindOptions {
-                    case_sensitive: arg(args, "caseSensitive")?,
+                    matching: Matching {
+                        case_sensitive: arg(args, "caseSensitive")?,
+                        whole_word: arg(args, "wholeWord")?,
+                    },
                     backward: arg(args, "backward")?,
                     wrap: true,
                 };

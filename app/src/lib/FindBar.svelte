@@ -3,15 +3,15 @@
   import * as api from "./api";
   import { formatNumber } from "./format";
   import { describeError, t } from "./i18n";
-  import { isMatch } from "./syntax";
+  import { isMatchAt } from "./syntax";
 
   interface Target {
     /** Selects `[from, to)` and scrolls it into view. */
     select(from: number, to: number): void;
     /** Selection as `[anchor, caret]`. */
     selection(): [number, number];
-    /** The selected text if it lies on one visible line. */
-    selectedText(): string | null;
+    /** The selection's line and columns, if it lies on one visible line. */
+    selectionInLine(): { line: string; from: number; to: number } | null;
     replaceSelection(text: string): Promise<void>;
     /** Shows a change made elsewhere, keeping the place. */
     applyResult(result: api.EditResult): Promise<void>;
@@ -28,6 +28,7 @@
     needle: string;
     replacement: string;
     caseSensitive: boolean;
+    wholeWord: boolean;
     onclose: () => void;
   }
 
@@ -39,6 +40,7 @@
     needle = $bindable(),
     replacement = $bindable(),
     caseSensitive = $bindable(),
+    wholeWord = $bindable(),
     onclose,
   }: Props = $props();
 
@@ -55,9 +57,12 @@
     void docId;
     void needle;
     void caseSensitive;
+    void wholeWord;
     message = "";
   });
   let seq = 0;
+
+  let matching = $derived({ caseSensitive, wholeWord });
 
   let percent = $derived(len ? Math.min(100, Math.floor((searched / len) * 100)) : 0);
 
@@ -69,8 +74,8 @@
 
   /** The selection is a match already: found before, or selected by hand. */
   function onMatch() {
-    const text = viewer.selectedText();
-    return text !== null && isMatch(text, needle, caseSensitive);
+    const sel = viewer.selectionInLine();
+    return sel !== null && isMatchAt(sel.line, sel.from, sel.to, needle, matching);
   }
 
   /** Runs a search or replace; a newer one supersedes it. */
@@ -99,7 +104,7 @@
     const start = Math.min(anchor, caret);
     const from = backward ? start : onMatch() ? start + 1 : caret;
     await track(async (mine) => {
-      const result = await api.find(doc.id, needle, from, caseSensitive, backward, progress(mine));
+      const result = await api.find(doc.id, needle, from, matching, backward, progress(mine));
       if (mine !== seq) return;
       if (result.kind === "found") {
         const wrapped = backward ? result.offset >= from : result.offset < from;
@@ -123,7 +128,7 @@
     if (!needle) return;
     const [anchor, caret] = viewer.selection();
     await track(async (mine) => {
-      const outcome = await api.replaceAll(doc.id, needle, replacement, caseSensitive, anchor, caret, progress(mine));
+      const outcome = await api.replaceAll(doc.id, needle, replacement, matching, anchor, caret, progress(mine));
       if (mine !== seq) return;
       if (outcome.kind === "cancelled") {
         message = t("find.cancelled");
@@ -189,6 +194,9 @@
       <input bind:this={input} bind:value={needle} placeholder={t("find.find")} spellcheck="false" onkeydown={findKeydown} />
       <button class:on={caseSensitive} title={t("find.matchCase")} onclick={() => (caseSensitive = !caseSensitive)}
         >Aa</button
+      >
+      <button class="word" class:on={wholeWord} title={t("find.wholeWord")} onclick={() => (wholeWord = !wholeWord)}
+        >ab</button
       >
       <button title={t("find.previous")} onclick={() => run(true)}>↑</button>
       <button title={t("find.next")} onclick={() => run(false)}>↓</button>
@@ -272,6 +280,11 @@
     color: var(--muted);
     font-size: 12px;
     white-space: nowrap;
+  }
+  /* VSCode's mark for a whole word: a bar under it. */
+  .word {
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
   button.on {
     background: var(--accent);

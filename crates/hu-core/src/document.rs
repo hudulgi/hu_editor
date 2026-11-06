@@ -482,7 +482,7 @@ impl Document {
         &self,
         needle: &str,
         replacement: &str,
-        case_sensitive: bool,
+        matching: search::Matching,
         before: (u64, u64),
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(u64),
@@ -491,14 +491,8 @@ impl Document {
         let piece = self.added_piece(&self.encode(replacement));
         for _ in 0..3 {
             let (text, _, version) = self.snapshot();
-            let Some(found) = search::find_all(
-                &text,
-                &needle,
-                case_sensitive,
-                MAX_REPLACE,
-                cancel,
-                progress,
-            )?
+            let Some(found) =
+                search::find_all(&text, &needle, matching, MAX_REPLACE, cancel, progress)?
             else {
                 return Ok(None);
             };

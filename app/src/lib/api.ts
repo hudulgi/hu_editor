@@ -179,11 +179,18 @@ export const editBox = (
 export const copyBox = (id: number, top: number, bottom: number, left: number, right: number) =>
   invoke<void>("copy_box", { id, top, bottom, left, right });
 
+/** What counts as a match. */
+export interface Matching {
+  caseSensitive: boolean;
+  /** Not where the needle goes on into a longer word or number. */
+  wholeWord: boolean;
+}
+
 export function replaceAll(
   id: number,
   needle: string,
   replacement: string,
-  caseSensitive: boolean,
+  matching: Matching,
   anchor: number,
   caret: number,
   onProgress: (searched: number) => void,
@@ -194,7 +201,7 @@ export function replaceAll(
     id,
     needle,
     replacement,
-    caseSensitive,
+    ...matching,
     anchor,
     caret,
     onProgress: channel,
@@ -231,7 +238,7 @@ export function find(
   id: number,
   needle: string,
   from: number,
-  caseSensitive: boolean,
+  matching: Matching,
   backward: boolean,
   onProgress: (searched: number) => void,
 ) {
@@ -241,7 +248,7 @@ export function find(
     id,
     needle,
     from,
-    caseSensitive,
+    ...matching,
     backward,
     onProgress: channel,
   });
