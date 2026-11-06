@@ -25,6 +25,8 @@ export interface Settings {
   tabSize: number;
   syntaxHighlight: boolean;
   fieldShading: boolean;
+  /** Each field of CSV, Abaqus data lines and Nastran cards in a color of its own, and its number in the status bar. */
+  rainbowColumns: boolean;
   newFileEncoding: Encoding;
   /** "os": the platform's line break. */
   newFileEol: "os" | "crlf" | "lf";
@@ -51,6 +53,7 @@ function defaults(): Settings {
     tabSize: 8,
     syntaxHighlight: true,
     fieldShading: true,
+    rainbowColumns: false,
     newFileEncoding: "utf8",
     newFileEol: "os",
     fallbackEncoding: "cp949",

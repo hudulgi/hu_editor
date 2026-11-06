@@ -4,7 +4,7 @@
 // line belongs to, Nastran section) will move into the Rust core. Source code
 // and config files are in languages.ts.
 
-import { codeBadge, codeLabel, codeLangOf, isCodeLang, scanLine, type CodeLang, type LineState } from "./languages";
+import { codeBadge, codeLabel, codeLangOf, FIELD_COLORS, isCodeLang, scanLine, separatedFields, type CodeLang, type LineState } from "./languages";
 
 export type Lang = "abaqus" | "nastran" | "plain" | CodeLang;
 
@@ -68,7 +68,7 @@ const PARAM = /(,\s*)([^,=]*)(?:(=)([^,]*))?/g;
 
 function abaqus(line: string): Token[] {
   if (line.startsWith("**")) return [{ text: line, cls: "comment" }];
-  if (!line.startsWith("*")) return [{ text: line, cls: null }];
+  if (!line.startsWith("*")) return abaqusData(line);
   const comma = line.indexOf(",");
   if (comma < 0) return [{ text: line, cls: "keyword" }];
   const tokens: Token[] = [{ text: line.slice(0, comma), cls: "keyword" }];
@@ -77,6 +77,16 @@ function abaqus(line: string): Token[] {
     if (m[3]) tokens.push({ text: m[3], cls: "punct" }, { text: m[4], cls: "value" });
   }
   return tokens;
+}
+
+// A data line: fields between commas, which rainbow columns color.
+function abaqusData(line: string): Token[] {
+  const tokens: Token[] = [];
+  line.split(",").forEach((field, i) => {
+    if (i > 0) tokens.push({ text: ",", cls: "punct" });
+    if (field) tokens.push({ text: field, cls: `rb${i % FIELD_COLORS}` });
+  });
+  return tokens.length ? tokens : [{ text: line, cls: null }];
 }
 
 // Executive / case control lines: `SOL 101`, `CEND`, `SUBCASE 1`, `LOAD = 2`.
@@ -106,7 +116,7 @@ function nastran(line: string): Token[] {
       tokens.push({ text: line.slice(pos), cls: "cont" });
       break;
     }
-    tokens.push({ text: line.slice(pos, pos + width), cls: i % 2 ? "fb" : "fa" });
+    tokens.push({ text: line.slice(pos, pos + width), cls: `${i % 2 ? "fb" : "fa"} rb${(i + 1) % FIELD_COLORS}` });
   }
   return tokens;
 }
@@ -115,9 +125,29 @@ function nastranFree(line: string): Token[] {
   const parts = line.split(",");
   const tokens: Token[] = [{ text: parts[0], cls: /^[A-Za-z]/.test(parts[0]) ? "card" : "cont" }];
   parts.slice(1).forEach((part, i) => {
-    tokens.push({ text: ",", cls: "punct" }, { text: part, cls: i % 2 ? "fb" : "fa" });
+    tokens.push({ text: ",", cls: "punct" }, { text: part, cls: `${i % 2 ? "fb" : "fa"} rb${(i + 1) % FIELD_COLORS}` });
   });
   return tokens;
+}
+
+const commasBefore = (line: string, col: number) => line.slice(0, col).split(",").length - 1;
+
+/**
+ * The field, counted from 1, that UTF-16 index `col` of `line` is in, for what
+ * has fields: CSV, Abaqus data lines, Nastran cards. Null for anything else.
+ */
+export function fieldAt(lang: Lang, line: string, col: number): number | null {
+  if (lang === "csv" || lang === "tsv") {
+    const fields = separatedFields(line, lang === "csv" ? "," : "\t");
+    return fields.findIndex((field) => col <= field.end) + 1 || fields.length;
+  }
+  if (lang === "abaqus") return line.startsWith("*") ? null : commasBefore(line, col) + 1;
+  if (lang !== "nastran" || line.startsWith("$") || NASTRAN_CONTROL.test(line)) return null;
+  if (line.includes(",")) return commasBefore(line, col) + 1;
+  // Fixed: the name, then fields of 8 columns (16 for large field), then the continuation.
+  if (col < 8) return 1;
+  const large = line.slice(0, 8).trimEnd().endsWith("*");
+  return large ? Math.min(6, 2 + Math.floor((col - 8) / 16)) : Math.min(10, 2 + Math.floor((col - 8) / 8));
 }
 
 /** A highlighted range of a line, in UTF-16 indices, and its class. */

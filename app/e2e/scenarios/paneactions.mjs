@@ -198,7 +198,7 @@ export default async function (t) {
   await until("one pane", paneCount, 1);
   await page.click(tabIn(0, "b.inp"));
   const ROWS = ".picker .row";
-  const listed = () => page.$$eval(ROWS, (els) => els.map((e) => `${e.classList.contains("selected") ? "*" : ""}${e.querySelector(".name").textContent}${e.querySelector(".dirty") ? " ●" : ""}`));
+  const listed = () => page.$$eval(ROWS, (els) => els.map((e) => `${e.classList.contains("selected") ? "*" : ""}${e.querySelector(".name").textContent}${e.querySelector(".mark") ? " ●" : ""}`));
   await more("Show Opened Editors");
   await until("the pane's tabs, the one showing marked", listed, ["deck.bdf", "a.inp", "*b.inp", "c.inp"]);
   await app.shot("actions-list");

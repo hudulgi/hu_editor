@@ -181,7 +181,7 @@ export default async function (t) {
   await press("Enter");
   await until("enter opens it too", subOpen, 1);
   await press("Escape", "ArrowDown");
-  await until("down moves on, past what is unavailable", focusIn, "menu: Explorer");
+  await until("down moves on, past what is unavailable", focusIn, "menu: Command Palette…");
   await press("ArrowUp", "Escape");
   await until("the keyboard comes back", focusIn, "editor 0");
   await press("Alt+v", "l", "t");

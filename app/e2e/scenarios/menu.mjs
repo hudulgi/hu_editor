@@ -59,11 +59,13 @@ export default async function (t) {
   await page.hover(title("View"));
   await until("the view menu", openMenu, "View");
   check("the view menu shows what is on", await items(), [
+    "Command Palette…|Ctrl+Shift+P",
     "✓Explorer|Ctrl+B",
     "✓Line Numbers|",
     "✓Highlight Current Line|",
     "✓Syntax Highlighting|",
     "✓Field Shading|",
+    "Rainbow Columns|",
     "Editor Layout|›",
     "-Move Tab to Other Pane|Ctrl+Alt+←/→",
     "-Switch Pane|Ctrl+1…9",
@@ -250,7 +252,7 @@ export default async function (t) {
   await until("explorer off", () => page.locator(".sidebar.hidden").count(), 1);
   check("the text takes its place", (await page.locator(".panes").boundingBox()).x, 0);
   await page.click(title("View"));
-  check("it shows off", (await items())[0], "Explorer|Ctrl+B");
+  check("it shows off", (await items())[1], "Explorer|Ctrl+B");
   await page.click(label("Explorer"));
   await until("explorer on", () => page.locator(".sidebar.hidden").count(), 0);
   await until("the keyboard is in the editor", focusIn, "editor");
@@ -341,16 +343,16 @@ export default async function (t) {
   await press("Alt+v");
   await until("opened by the keyboard", openMenu, "View");
   await page.waitForTimeout(250);
-  check("the mouse under it takes nothing", await focusIn(), "item Explorer");
+  check("the mouse under it takes nothing", await focusIn(), "item Command Palette…");
   await press("ArrowDown");
-  check("down goes on from there", await focusIn(), "item Line Numbers");
+  check("down goes on from there", await focusIn(), "item Explorer");
   await press("Escape");
   await page.mouse.move(1000, 700);
 
   // Enter and space run the item.
-  await press("Alt+v", "ArrowDown", "Enter");
+  await press("Alt+v", "ArrowDown", "ArrowDown", "Enter");
   await until("enter runs it", () => page.locator(`${SLOT} .gutter`).count(), 0);
-  await press("Alt+v", "ArrowDown", " ");
+  await press("Alt+v", "ArrowDown", "ArrowDown", " ");
   await until("space runs it", () => page.locator(`${SLOT} .gutter`).count(), 1);
 
   // Alt alone and F10 go to the titles; down opens, and they come back out.
@@ -371,7 +373,7 @@ export default async function (t) {
   await press("F10");
   await until("f10 goes to the titles", focusIn, "title File");
   await press("v");
-  await until("a letter opens one", async () => [await openMenu(), await focusIn()], ["View", "item Explorer"]);
+  await until("a letter opens one", async () => [await openMenu(), await focusIn()], ["View", "item Command Palette…"]);
   await press("F10");
   await until("f10 leaves", async () => [await focusIn(), await openMenu()], ["editor", null]);
   await press("Alt");

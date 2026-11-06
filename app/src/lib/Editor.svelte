@@ -7,6 +7,8 @@
     /** Box selection size; `rows` is null when the box reaches off screen. */
     box: { rows: number | null; cols: number } | null;
     columnMode: boolean;
+    /** The field the caret is in, with rainbow columns on; see `fieldAt`. */
+    field: number | null;
   }
 </script>
 
@@ -28,7 +30,7 @@
   import { fontStack, lineHeight, settings } from "./settings.svelte";
   import { dependsOnLinesAbove, isCodeLang } from "./languages";
   import { LineStates } from "./lineStates";
-  import { applyMarks, findMatches, tokenizeLines, type Lang, type Mark } from "./syntax";
+  import { applyMarks, fieldAt, findMatches, tokenizeLines, type Lang, type Mark } from "./syntax";
 
   interface Props {
     doc: api.DocInfo;
@@ -41,12 +43,14 @@
     highlight?: { needle: string; caseSensitive: boolean } | null;
     onview?: (view: api.View) => void;
     oncaret?: (caret: CaretInfo) => void;
+    /** A right click in the text, at this point. */
+    oncontext?: (x: number, y: number) => void;
     /** A change made here. */
     onedit?: (result: api.EditResult) => void;
     onerror?: (message: string) => void;
   }
 
-  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, onedit, onerror }: Props = $props();
+  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, oncontext, onedit, onerror }: Props = $props();
 
   const MIN_THUMB = 24;
   const WORD = /[\p{L}\p{N}_.]/u;
@@ -727,6 +731,21 @@
     if (clicks <= 1) startDrag("text");
   }
 
+  /** A right click outside the selection moves the caret there first, as in VS Code. */
+  function oncontextmenu(e: MouseEvent) {
+    e.preventDefault();
+    if (!box) {
+      const offset = offsetAt(e.clientX, e.clientY);
+      if (offset !== null && (offset < selStart || offset > selEnd)) {
+        enqueue(() => {
+          caret = anchor = offset;
+          preferredCol = null;
+        });
+      }
+    }
+    oncontext?.(e.clientX, e.clientY);
+  }
+
   function startDrag(kind: "text" | "box") {
     dragging = kind;
     window.addEventListener("mousemove", onDragMove);
@@ -1113,6 +1132,7 @@
     void box?.caretLine;
     void box?.caretCol;
     void columnMode;
+    void settings.rainbowColumns;
     untrack(() => {
       // In a box, the position is its caret corner.
       const row = box ? lineRow(box.caretLine) : rowOf(caret);
@@ -1124,6 +1144,7 @@
         selected: box ? 0 : selEnd - selStart,
         box: box ? { rows: boxRows, cols: boxRight - boxLeft } : null,
         columnMode,
+        field: settings.rainbowColumns && line && !box ? fieldAt(lang, line.text, colOf(line, caret)) : null,
       });
     });
   });
@@ -1258,6 +1279,7 @@
   class:column-mode={columnMode}
   class:no-shading={!settings.fieldShading}
   class:no-gutter={!settings.lineNumbers}
+  class:rainbow={settings.rainbowColumns}
   bind:this={root}
 >
   {#if settings.lineNumbers}
@@ -1275,6 +1297,7 @@
     bind:this={scroller}
     bind:clientHeight={height}
     {onmousedown}
+    {oncontextmenu}
   >
     {#each boxRects as rect, i (i)}
       <div class="box" class:bar={boxLeft === boxRight} style:left="{rect.x}px" style:top="{rect.y}px" style:width="{rect.w}px"></div>
@@ -1515,6 +1538,31 @@
   }
   .no-shading .lines :global(.fb) {
     background: none;
+  }
+  /* Rainbow columns: a color for each field, around again after eight. */
+  .rainbow .lines :global(.rb0) {
+    color: #9cdcfe;
+  }
+  .rainbow .lines :global(.rb1) {
+    color: #ce9178;
+  }
+  .rainbow .lines :global(.rb2) {
+    color: #b5cea8;
+  }
+  .rainbow .lines :global(.rb3) {
+    color: #c586c0;
+  }
+  .rainbow .lines :global(.rb4) {
+    color: #dcdcaa;
+  }
+  .rainbow .lines :global(.rb5) {
+    color: #4fc1ff;
+  }
+  .rainbow .lines :global(.rb6) {
+    color: #f48771;
+  }
+  .rainbow .lines :global(.rb7) {
+    color: #d4d4d4;
   }
   /* Fill the line's height, so that highlighted lines touch: the padding moves
      no text and the line clips what is too much. (An inline-block would restart

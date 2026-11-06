@@ -1,28 +1,46 @@
+<script lang="ts" module>
+  export interface PickerItem {
+    key: number | string;
+    name: string;
+    /** Shown after the name, dimmed; also searched. */
+    detail?: string;
+    /** A sign after the name: unsaved, on. */
+    mark?: string;
+    shortcut?: string;
+  }
+</script>
+
 <script lang="ts">
-  // The tabs of a pane in a list to filter and pick from: for when they no longer
-  // fit in the strip.
+  // A list to filter by typing and pick from: the tabs of a pane, the commands.
 
   import { tick, untrack } from "svelte";
-  import { t } from "./i18n";
-  import type { TabItem } from "./TabBar.svelte";
 
   interface Props {
-    tabs: TabItem[];
-    active: number | null;
-    onpick: (id: number) => void;
+    items: PickerItem[];
+    /** Marked to start with. */
+    selected?: number | string | null;
+    placeholder: string;
+    /** Said when nothing matches. */
+    none: string;
+    label: string;
+    onpick: (key: number | string) => void;
     onclose: () => void;
   }
 
-  let { tabs, active, onpick, onclose }: Props = $props();
+  let { items, selected: first = null, placeholder, none, label, onpick, onclose }: Props = $props();
 
   let filter = $state("");
-  // To start with, the tab already showing.
-  let selected = $state(untrack(() => Math.max(0, tabs.findIndex((tab) => tab.id === active))));
   let list = $state<HTMLElement>();
+  let selected = $state(untrack(() => Math.max(0, items.findIndex((item) => item.key === first))));
 
   let shown = $derived.by(() => {
-    const wanted = filter.trim().toLowerCase();
-    return wanted ? tabs.filter((tab) => `${tab.name} ${tab.path ?? ""}`.toLowerCase().includes(wanted)) : tabs;
+    const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return items;
+    // Every word somewhere in it, in any order.
+    return items.filter((item) => {
+      const text = `${item.name} ${item.detail ?? ""}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
   });
 
   async function select(at: number) {
@@ -36,7 +54,7 @@
     const count = shown.length;
     if (e.key === "Escape") onclose();
     else if (e.key === "Enter") {
-      if (shown[selected]) onpick(shown[selected].id);
+      if (shown[selected]) onpick(shown[selected].key);
     } else if (e.key === "ArrowDown" && count) select((selected + 1) % count);
     else if (e.key === "ArrowUp" && count) select((selected + count - 1) % count);
     else return;
@@ -47,18 +65,10 @@
 </script>
 
 <div class="cover" role="presentation" onmousedown={onclose}></div>
-<div class="picker" role="dialog" aria-label={t("more.showOpen")}>
-  <input
-    use:takeFocus
-    bind:value={filter}
-    placeholder={t("openEditors.filter")}
-    spellcheck="false"
-    autocomplete="off"
-    oninput={() => (selected = 0)}
-    {onkeydown}
-  />
+<div class="picker" role="dialog" aria-label={label}>
+  <input use:takeFocus bind:value={filter} {placeholder} spellcheck="false" autocomplete="off" oninput={() => (selected = 0)} {onkeydown} />
   <div class="list" role="listbox" tabindex="-1" bind:this={list}>
-    {#each shown as tab, i (tab.id)}
+    {#each shown as item, i (item.key)}
       <button
         class="row"
         class:selected={i === selected}
@@ -67,14 +77,15 @@
         tabindex="-1"
         onmousedown={(e) => e.preventDefault()}
         onmousemove={() => (selected = i)}
-        onclick={() => onpick(tab.id)}
+        onclick={() => onpick(item.key)}
       >
-        <span class="name">{tab.name}</span>
-        {#if tab.dirty}<span class="dirty">●</span>{/if}
-        <span class="path">{tab.path ?? ""}</span>
+        <span class="name">{item.name}</span>
+        {#if item.mark}<span class="mark">{item.mark}</span>{/if}
+        {#if item.detail}<span class="detail">{item.detail}</span>{/if}
+        {#if item.shortcut}<span class="shortcut">{item.shortcut}</span>{/if}
       </button>
     {:else}
-      <p class="none">{t("openEditors.none")}</p>
+      <p class="none">{none}</p>
     {/each}
   </div>
 </div>
@@ -104,7 +115,7 @@
     box-sizing: border-box;
   }
   .list {
-    max-height: min(320px, 50vh);
+    max-height: min(360px, 50vh);
     margin-top: 6px;
     overflow-y: auto;
     outline: none;
@@ -131,13 +142,21 @@
   .name {
     flex: none;
   }
-  .path {
+  .detail {
     overflow: hidden;
     color: var(--muted);
     font-size: 12px;
     text-overflow: ellipsis;
   }
-  .row.selected .path {
+  .shortcut {
+    flex: none;
+    margin-left: auto;
+    padding-left: 24px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .row.selected .detail,
+  .row.selected .shortcut {
     color: inherit;
   }
   .none {

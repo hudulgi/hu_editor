@@ -22,7 +22,9 @@ export type CodeLang =
   | "json"
   | "ini"
   | "xml"
-  | "markdown";
+  | "markdown"
+  | "csv"
+  | "tsv";
 
 /** What the next line starts inside of; plain data, null for nothing. */
 export type LineState =
@@ -56,6 +58,8 @@ const LANGUAGES: Record<CodeLang, { label: string; badge: string; extensions: st
   ini: { label: "INI", badge: "In", extensions: ["ini", "cfg", "conf", "properties", "env"] },
   xml: { label: "XML/HTML", badge: "<>", extensions: ["xml", "xsd", "xsl", "svg", "html", "htm", "xhtml", "vue", "svelte"] },
   markdown: { label: "Markdown", badge: "MD", extensions: ["md", "markdown"] },
+  csv: { label: "CSV", badge: "CS", extensions: ["csv"] },
+  tsv: { label: "TSV", badge: "TS", extensions: ["tsv", "tab"] },
 };
 
 const BY_EXTENSION = new Map<string, CodeLang>(
@@ -68,7 +72,7 @@ export const codeLabel = (lang: CodeLang) => LANGUAGES[lang].label;
 export const codeBadge = (lang: CodeLang) => LANGUAGES[lang].badge;
 
 /** Languages whose lines can depend on the lines before. */
-export const dependsOnLinesAbove = (lang: CodeLang) => !["batch", "ini", "fortran", "fortranFixed"].includes(lang);
+export const dependsOnLinesAbove = (lang: CodeLang) => !["batch", "ini", "fortran", "fortranFixed", "csv", "tsv"].includes(lang);
 
 // ---- Scanning ---------------------------------------------------------------
 
@@ -687,6 +691,38 @@ const markdown: Scanner = (line, state, out) => {
   return null;
 };
 
+/** How many colors the fields of a line go through. */
+export const FIELD_COLORS = 8;
+
+/**
+ * The fields of a CSV line, where a quoted field may hold the separator. A
+ * field's class tells which it is; the colors show only with rainbow columns on.
+ */
+export function separatedFields(line: string, separator: string): { start: number; end: number }[] {
+  const fields: { start: number; end: number }[] = [];
+  let start = 0;
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') quoted = !quoted;
+    else if (!quoted && line[i] === separator) {
+      fields.push({ start, end: i });
+      start = i + 1;
+    }
+  }
+  fields.push({ start, end: line.length });
+  return fields;
+}
+
+const separated =
+  (separator: string): Scanner =>
+  (line, _state, out) => {
+    separatedFields(line, separator).forEach(({ start, end }, i) => {
+      if (i > 0) out.push(separator, "punct");
+      out.push(line.slice(start, end), `rb${i % FIELD_COLORS}`);
+    });
+    return null;
+  };
+
 const SCANNERS: Record<CodeLang, Scanner> = {
   python,
   shell,
@@ -705,6 +741,8 @@ const SCANNERS: Record<CodeLang, Scanner> = {
   ini,
   xml,
   markdown,
+  csv: separated(","),
+  tsv: separated("\t"),
 };
 
 /** Splits `line` into tokens whose texts concatenate back to it, and gives the next line's state. */

@@ -35,8 +35,8 @@
     type Side,
     type Tree,
   } from "./lib/layout";
-  import MenuBar, { type Menu } from "./lib/MenuBar.svelte";
-  import OpenEditors from "./lib/OpenEditors.svelte";
+  import MenuBar, { type Menu, type MenuEntry } from "./lib/MenuBar.svelte";
+  import Picker, { type PickerItem } from "./lib/Picker.svelte";
   import SettingsDialog, { type Category } from "./lib/SettingsDialog.svelte";
   import { settings, settingsFile } from "./lib/settings.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
@@ -114,7 +114,13 @@
   let settingsOpen = $state(false);
   let settingsPage = $state<Category>("general");
   /** A pane's menu: more actions, hanging from its button, or a tab's, at the mouse. */
-  let paneMenu = $state.raw<{ key: number; button?: HTMLElement; tab?: number; point?: { x: number; y: number } } | null>(null);
+  let paneMenu = $state.raw<{
+    key: number;
+    kind: "more" | "tab" | "text";
+    button?: HTMLElement;
+    tab?: number;
+    point?: { x: number; y: number };
+  } | null>(null);
   /** The pane whose tabs are being listed to pick from. */
   let listing = $state<number | null>(null);
   /** Ctrl+K went down; the next key says what for. */
@@ -1020,9 +1026,13 @@
     editor?.focus();
   }
 
-  /** Ctrl+F, Ctrl+H: opens the bar on the selected text, if any. */
-  async function startFind(replace: boolean) {
-    const seed = editor?.findSeed();
+  /**
+   * Ctrl+F, Ctrl+H: opens the bar on the selected text, if any. With `orWord`
+   * (Ctrl+F2, Change All Occurrences), on the word at the caret if nothing is
+   * selected: there is one caret only, so changing all of them is a Replace All.
+   */
+  async function startFind(replace: boolean, orWord = false) {
+    const seed = editor?.findSeed(orWord);
     if (seed) needle = seed;
     if (replace) replacing = true;
     else if (!findOpen) replacing = false;
@@ -1144,11 +1154,7 @@
             key: "P",
             shortcut: "Ctrl+V",
             enabled: open,
-            run: () =>
-              inEditor(async (target) => {
-                const text = await api.readClipboard();
-                if (text) target.paste(text);
-              }),
+            run: () => inEditor(pasteClipboard),
           },
           "separator",
           { label: t("menu.selectAll"), key: "A", shortcut: "Ctrl+A", enabled: open, run: () => inEditor((target) => target.selectAll()) },
@@ -1172,6 +1178,7 @@
           { label: t("menu.findSelection"), key: "S", shortcut: "Ctrl+F3", enabled: open, run: () => findAgain(false, true) },
           "separator",
           { label: t("menu.replace"), key: "R", shortcut: "Ctrl+H", enabled: open, run: () => startFind(true) },
+          { label: t("textMenu.changeAll"), key: "C", shortcut: "Ctrl+F2", enabled: open, run: () => startFind(true, true) },
           "separator",
           { label: t("menu.goto"), key: "G", shortcut: "Ctrl+G", enabled: open, run: openGoto },
         ],
@@ -1180,12 +1187,15 @@
         label: t("menu.view"),
         key: "V",
         items: [
+          { label: t("menu.palette"), key: "C", shortcut: "Ctrl+Shift+P", run: openPalette },
+          "separator",
           { label: t("menu.explorer"), key: "E", shortcut: "Ctrl+B", checked: sidebarOpen, run: () => (sidebarOpen = !sidebarOpen) },
           "separator",
           { label: t("menu.lineNumbers"), key: "N", checked: settings.lineNumbers, run: () => (settings.lineNumbers = !settings.lineNumbers) },
           { label: t("menu.highlightLine"), key: "H", checked: settings.highlightLine, run: () => (settings.highlightLine = !settings.highlightLine) },
           { label: t("menu.syntax"), key: "S", checked: settings.syntaxHighlight, run: () => (settings.syntaxHighlight = !settings.syntaxHighlight) },
           { label: t("menu.fieldShading"), key: "F", checked: settings.fieldShading, run: () => (settings.fieldShading = !settings.fieldShading) },
+          { label: t("menu.rainbow"), key: "R", checked: settings.rainbowColumns, run: toggleRainbow },
           "separator",
           {
             label: t("menu.editorLayout"),
@@ -1236,7 +1246,7 @@
 
   function toggleMoreMenu(key: number, button: HTMLElement) {
     if (paneMenu?.button === button) closePaneMenu();
-    else paneMenu = { key, button };
+    else paneMenu = { key, kind: "more", button };
   }
 
   function closePaneMenu() {
@@ -1263,20 +1273,20 @@
       { label: t("tabMenu.close"), shortcut: "Ctrl+W", run: () => closeTab(id, panes.indexOf(pane)) },
       { label: t("tabMenu.closeOthers"), shortcut: "Ctrl+Alt+T", enabled: others.length > 0, run: () => closeOthers(pane, id) },
       { label: t("tabMenu.closeRight"), enabled: toRight.length > 0, run: () => closeToRight(pane, id) },
-      { label: t("more.closeSaved"), shortcut: "Ctrl+K U", run: () => closeSaved(pane) },
-      { label: t("more.closeAll"), shortcut: "Ctrl+K W", run: () => closeAll(pane) },
+      { label: t("more.closeSaved"), shortcut: "Ctrl+K U", palette: false, run: () => closeSaved(pane) },
+      { label: t("more.closeAll"), shortcut: "Ctrl+K W", palette: false, run: () => closeAll(pane) },
       "separator",
       { label: t("tabMenu.keepOpen"), shortcut: "Ctrl+K Enter", enabled: pane.previewId === id, run: () => keepOpen(id) },
       { label: t(pinned ? "tabMenu.unpin" : "tabMenu.pin"), shortcut: "Ctrl+K Shift+Enter", run: () => togglePin(id, pane) },
       "separator",
-      { label: t("tabMenu.splitRight"), run: showing(() => split("right")) },
+      { label: t("tabMenu.splitRight"), palette: false, run: showing(() => split("right")) },
       {
         label: t("tabMenu.splitMove"),
         items: [
-          { label: t("menu.splitUp"), run: showing(() => split("top")) },
-          { label: t("menu.splitDown"), run: showing(() => split("bottom")) },
-          { label: t("menu.splitLeft"), run: showing(() => split("left")) },
-          { label: t("menu.splitRight"), run: showing(() => split("right")) },
+          { label: t("menu.splitUp"), palette: false, run: showing(() => split("top")) },
+          { label: t("menu.splitDown"), palette: false, run: showing(() => split("bottom")) },
+          { label: t("menu.splitLeft"), palette: false, run: showing(() => split("left")) },
+          { label: t("menu.splitRight"), palette: false, run: showing(() => split("right")) },
           "separator",
           { label: t("tabMenu.moveUp"), enabled: canMove("top"), run: () => moveTabToSide(id, pane, "top") },
           { label: t("tabMenu.moveDown"), enabled: canMove("bottom"), run: () => moveTabToSide(id, pane, "bottom") },
@@ -1285,15 +1295,13 @@
         ],
       },
       "separator",
-      { label: t("tabMenu.moveToNewWindow"), run: showing(() => toNewWindow(true)) },
-      { label: t("tabMenu.copyToNewWindow"), shortcut: "Ctrl+K O", run: showing(() => toNewWindow(false)) },
+      { label: t("tabMenu.moveToNewWindow"), palette: false, run: showing(() => toNewWindow(true)) },
+      { label: t("tabMenu.copyToNewWindow"), shortcut: "Ctrl+K O", palette: false, run: showing(() => toNewWindow(false)) },
     ];
   }
 
-  let paneMenuItems = $derived.by<DropEntry[]>(() => {
-    const pane = panes.find((one) => one.key === paneMenu?.key);
-    if (!pane) return [];
-    if (paneMenu?.tab !== undefined) return tabMenuItems(pane, paneMenu.tab);
+  /** The more-actions menu of a pane. */
+  function moreItemsFor(pane: Pane): DropEntry[] {
     return [
       { label: t("more.showOpen"), run: () => (listing = pane.key) },
       "separator",
@@ -1306,7 +1314,86 @@
       "separator",
       { label: t("more.configure"), run: () => openSettings("editor") },
     ];
+  }
+
+  /** The text's own menu. */
+  function textMenuItems(): DropEntry[] {
+    return [
+      { label: t("textMenu.changeAll"), shortcut: "Ctrl+F2", palette: false, run: () => startFind(true, true) },
+      "separator",
+      { label: t("menu.cut"), shortcut: "Ctrl+X", palette: false, run: () => inEditor((target) => target.copySelection(true)) },
+      { label: t("menu.copy"), shortcut: "Ctrl+C", palette: false, run: () => inEditor((target) => target.copySelection(false)) },
+      { label: t("menu.paste"), shortcut: "Ctrl+V", palette: false, run: pasteClipboard },
+      "separator",
+      { label: t("menu.palette"), shortcut: "Ctrl+Shift+P", palette: false, run: openPalette },
+      "separator",
+      { label: t("menu.rainbow"), checked: settings.rainbowColumns, palette: false, run: toggleRainbow },
+    ];
+  }
+
+  let paneMenuItems = $derived.by<DropEntry[]>(() => {
+    const pane = panes.find((one) => one.key === paneMenu?.key);
+    if (!pane || !paneMenu) return [];
+    if (paneMenu.kind === "tab") return tabMenuItems(pane, paneMenu.tab!);
+    if (paneMenu.kind === "text") return textMenuItems();
+    return moreItemsFor(pane);
   });
+
+  // ---- The command palette ---------------------------------------------------
+
+  let paletteOpen = $state(false);
+
+  interface Command extends PickerItem {
+    run: () => void;
+  }
+
+  /**
+   * Everything the menus can do now, by name: the menu bar's, then the pane's
+   * and its tab's, without what is there already.
+   */
+  let commands = $derived.by<Command[]>(() => {
+    if (!paletteOpen) return [];
+    const list: Command[] = [];
+    const walk = (path: string[], entries: (MenuEntry | DropEntry)[]) => {
+      for (const entry of entries) {
+        if (entry === "separator" || ("enabled" in entry && entry.enabled === false) || ("palette" in entry && entry.palette === false)) continue;
+        const name = [...path, entry.label].join(": ");
+        if ("items" in entry) walk([...path, entry.label], entry.items);
+        else list.push({ key: name, name, shortcut: entry.shortcut, mark: entry.checked ? "✓" : undefined, run: entry.run });
+      }
+    };
+    for (const menu of menus) walk([menu.label], menu.items);
+    const pane = panes[focused];
+    walk([t("palette.pane")], moreItemsFor(pane));
+    if (pane.activeId !== null) walk([t("palette.tab")], tabMenuItems(pane, pane.activeId));
+    return list;
+  });
+
+  function openPalette() {
+    encodingOpen = false;
+    gotoOpen = false;
+    paletteOpen = true;
+  }
+
+  function closePalette() {
+    paletteOpen = false;
+    editor?.focus();
+  }
+
+  function runCommand(key: number | string) {
+    const command = commands.find((one) => one.key === key);
+    closePalette();
+    command?.run();
+  }
+
+  function toggleRainbow() {
+    settings.rainbowColumns = !settings.rainbowColumns;
+  }
+
+  async function pasteClipboard() {
+    const text = await api.readClipboard();
+    if (text) editor?.paste(text);
+  }
 
   function pickListed(id: number) {
     const at = panes.findIndex((pane) => pane.key === listing);
@@ -1353,7 +1440,7 @@
   function onkeyup(e: KeyboardEvent) {
     if (e.code !== "AltLeft" || !altAlone) return;
     altAlone = false;
-    if (prompt || about || settingsOpen || encodingOpen) return;
+    if (prompt || about || settingsOpen || encodingOpen || paletteOpen || listing !== null) return;
     e.preventDefault();
     menuBar?.toggleKeyboard();
   }
@@ -1386,7 +1473,9 @@
       chord = true;
       chordFrom = document.activeElement as HTMLElement | null;
       chordFrom?.blur();
-    } else if (mod && key === "o") chooseFile();
+    } else if ((mod && e.shiftKey && e.code === "KeyP") || e.key === "F1") openPalette();
+    else if (mod && e.key === "F2" && active) startFind(true, true);
+    else if (mod && key === "o") chooseFile();
     else if (mod && key === "n") newFile();
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
     else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
@@ -1618,7 +1707,7 @@
               }}
               onkeep={keepOpen}
               onunpin={(id) => togglePin(id, pane)}
-              oncontext={(id, x, y) => (paneMenu = { key: pane.key, tab: id, point: { x, y } })}
+              oncontext={(id, x, y) => (paneMenu = { key: pane.key, kind: "tab", tab: id, point: { x, y } })}
               locked={pane.locked}
               onsplit={(down) => split(down ? "bottom" : "right")}
               onunlock={() => toggleLock(pane)}
@@ -1654,6 +1743,7 @@
                       lines={tab.status?.lines ?? 0}
                       {highlight}
                       oncaret={(c) => (pane.carets[id] = c)}
+                      oncontext={(x, y) => (paneMenu = { key: pane.key, kind: "text", point: { x, y } })}
                       onedit={(result) => edited(id, pane, result)}
                       onerror={(message) => (notice = message)}
                     />
@@ -1720,6 +1810,9 @@
       <span>{t("status.chord")}</span>
     {:else if active}
       <span>{position}</span>
+      {#if activeCaret?.field}
+        <span class="field">{t("status.field", { n: activeCaret.field })}</span>
+      {/if}
       <span>{size(active.state.len)}</span>
       {#if saving?.id === active.doc.id}
         <span>{t("status.saving", { percent: active.state.len ? Math.floor((saving.written / active.state.len) * 100) : 0 })}</span>
@@ -1760,8 +1853,20 @@
   {#if listing !== null}
     {@const pane = panes.find((one) => one.key === listing)}
     {#if pane}
-      <OpenEditors tabs={tabItems(pane)} active={pane.activeId} onpick={pickListed} onclose={closeListing} />
+      <Picker
+        items={tabItems(pane).map((tab) => ({ key: tab.id, name: tab.name, detail: tab.path ?? "", mark: tab.dirty ? "●" : undefined }))}
+        selected={pane.activeId}
+        label={t("more.showOpen")}
+        placeholder={t("openEditors.filter")}
+        none={t("openEditors.none")}
+        onpick={(key) => pickListed(key as number)}
+        onclose={closeListing}
+      />
     {/if}
+  {/if}
+
+  {#if paletteOpen}
+    <Picker items={commands} label={t("menu.palette")} placeholder={t("palette.filter")} none={t("palette.none")} onpick={runCommand} onclose={closePalette} />
   {/if}
 
   {#if settingsOpen && !prompt}

@@ -41,6 +41,8 @@
     ["Ctrl+K Enter", t("shortcut.keepOpen")],
     ["Ctrl+K Shift+Enter", t("shortcut.pin")],
     ["Ctrl+K O", t("shortcut.copyToWindow")],
+    ["Ctrl+Shift+P, F1", t("shortcut.palette")],
+    ["Ctrl+F2", t("shortcut.changeAll")],
     ["Ctrl+Tab, Ctrl+Shift+Tab", t("shortcut.nextTab")],
     ["Ctrl+B", t("shortcut.explorer")],
     ["Ctrl+,", t("shortcut.settings")],
@@ -169,6 +171,7 @@
         <p class="hint">{t("settings.tabSizeHint")}</p>
         {@render check(t("settings.syntaxHighlight"), settings.syntaxHighlight, (on) => (settings.syntaxHighlight = on))}
         {@render check(t("settings.fieldShading"), settings.fieldShading, (on) => (settings.fieldShading = on))}
+        {@render check(t("settings.rainbowColumns"), settings.rainbowColumns, (on) => (settings.rainbowColumns = on))}
       {:else if category === "files"}
         <label class="field">
           <span>{t("settings.newFileEncoding")}</span>

@@ -5,6 +5,8 @@
     enabled?: boolean;
     /** Set for an on/off item. */
     checked?: boolean;
+    /** False: the command palette has it from elsewhere. */
+    palette?: false;
     run: () => void;
   }
 
