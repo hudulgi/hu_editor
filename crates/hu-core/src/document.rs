@@ -215,6 +215,11 @@ impl Document {
         self.path.read().unwrap().clone()
     }
 
+    /// The file was renamed or moved: it is at `path` now, and saves there.
+    pub fn moved_to(&self, path: PathBuf) {
+        *self.path.write().unwrap() = Some(path);
+    }
+
     pub fn len(&self) -> u64 {
         self.state.read().unwrap().pieces.len()
     }

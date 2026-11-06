@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 
 /** Runs in the page, in place of Tauri. Native dialogs answer from a queue. */
 function tauriInPage({ bridge, settingsPath, launchPath, label }) {
-  const e2e = { dialogAnswers: [], dialogCalls: [], listeners: {}, destroyed: 0, title: "" };
+  const e2e = { dialogAnswers: [], dialogCalls: [], messages: [], messageAnswers: [], listeners: {}, destroyed: 0, title: "" };
   window.__e2e = e2e;
   // Events reach every window, the one that sent them too.
   const deliver = (event, payload) => {
@@ -45,6 +45,12 @@ function tauriInPage({ bridge, settingsPath, launchPath, label }) {
       if (cmd === "plugin:dialog|save" || cmd === "plugin:dialog|open") {
         e2e.dialogCalls.push(args.options.defaultPath ?? null);
         return e2e.dialogAnswers.shift() ?? null;
+      }
+      if (cmd === "plugin:dialog|message") {
+        // A question with buttons of its own: answered "ok" or, by default, "cancel".
+        e2e.messages.push({ message: args.message, title: args.title, kind: args.kind, buttons: args.buttons });
+        const [ok, cancel] = args.buttons?.OkCancelCustom ?? ["Ok", "Cancel"];
+        return e2e.messageAnswers.shift() === "ok" ? ok : cancel;
       }
       if (cmd === "plugin:window|set_title") e2e.title = args.value;
       if (cmd === "plugin:window|destroy") e2e.destroyed++;
@@ -281,6 +287,17 @@ export class App {
   /** The next native file dialog answers `path`, or is cancelled for null. */
   answerDialog = (path) => this.page.evaluate((path) => window.__e2e.dialogAnswers.push(path), path);
   dialogCalls = () => this.page.evaluate(() => window.__e2e.dialogCalls);
+  /** The next native question is answered `ok` or `cancel`. */
+  answerMessage = (answer) => this.page.evaluate((answer) => window.__e2e.messageAnswers.push(answer), answer);
+  /** The native questions asked so far: message, title, kind, buttons. */
+  messages = () => this.page.evaluate(() => window.__e2e.messages);
+
+  /** What the file manager and terminals were asked to show, for all scenarios so far: `[command, path]`. */
+  launched = () =>
+    this.page.evaluate(async (bridge) => {
+      const response = await fetch(bridge, { method: "POST", body: JSON.stringify({ cmd: "test_launched", args: {} }) });
+      return (await response.json()).ok;
+    }, this.session.bridge);
 
   /** How many documents the backend holds, for all scenarios so far. */
   heldDocuments = () =>

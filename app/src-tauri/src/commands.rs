@@ -68,6 +68,44 @@ impl Docs {
             .cloned()
             .ok_or_else(|| format!("document {id} is not open"))
     }
+
+    /// The open documents that were `from` or in it save under `to` from now on.
+    fn follow(&self, from: &Path, to: &Path) -> Vec<MovedDoc> {
+        let open = self.open.lock().unwrap();
+        let mut moved = Vec::new();
+        for (&id, one) in open.iter() {
+            let Some(new) = one.doc.path().and_then(|path| dir::moved(&path, from, to)) else {
+                continue;
+            };
+            one.doc.moved_to(new.clone());
+            moved.push(MovedDoc {
+                id,
+                name: file_name(&new),
+                path: new.display().to_string(),
+            });
+        }
+        moved
+    }
+}
+
+/// An open document whose file was renamed or moved.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedDoc {
+    id: u32,
+    path: String,
+    name: String,
+}
+
+/// What a paste did, up to where it may have stopped.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pasted {
+    /// Where each pasted file or folder is now.
+    to: Vec<String>,
+    /// Open documents that moved with them.
+    docs: Vec<MovedDoc>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -112,6 +150,137 @@ async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn create_file(path: PathBuf) -> Result<(), String> {
+    blocking(move || dir::create_file(&path).map_err(|e| at_path(&path, &e))).await
+}
+
+#[tauri::command]
+pub async fn create_dir(path: PathBuf) -> Result<(), String> {
+    blocking(move || dir::create_dir(&path).map_err(|e| at_path(&path, &e))).await
+}
+
+/// Renames a file or folder; documents open from it save under the new name.
+#[tauri::command]
+pub async fn rename_path(
+    from: PathBuf,
+    to: PathBuf,
+    docs: State<'_, Docs>,
+) -> Result<Vec<MovedDoc>, String> {
+    let (old, new) = (from.clone(), to.clone());
+    blocking(move || dir::rename(&old, &new).map_err(|e| at_path(&old, &e))).await?;
+    Ok(docs.follow(&from, &to))
+}
+
+/// Copies (or with `cut`, moves) each of `paths` into the folder `into`,
+/// stopping at the first that fails.
+#[tauri::command]
+pub async fn paste(
+    paths: Vec<PathBuf>,
+    into: PathBuf,
+    cut: bool,
+    docs: State<'_, Docs>,
+) -> Result<Pasted, String> {
+    let (done, error) = blocking(move || {
+        let mut done = Vec::new();
+        for from in paths {
+            let pasted = if cut {
+                dir::move_into(&from, &into)
+            } else {
+                dir::copy_into(&from, &into)
+            };
+            match pasted {
+                Ok(to) => done.push((from, to)),
+                Err(e) => return Ok((done, Some(at_path(&from, &e)))),
+            }
+        }
+        Ok((done, None))
+    })
+    .await?;
+    let docs = if cut {
+        done.iter()
+            .flat_map(|(from, to)| docs.follow(from, to))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let to = done
+        .iter()
+        .map(|(_, to)| to.display().to_string())
+        .collect();
+    Ok(Pasted { to, docs, error })
+}
+
+/// Moves a file or folder to the Recycle Bin (the Trash).
+#[tauri::command]
+pub async fn delete_path(path: PathBuf) -> Result<(), String> {
+    blocking(move || {
+        #[allow(unused_mut)]
+        let mut trash = trash::TrashContext::new();
+        // Asking the Finder would need a permission, and make its sound.
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            trash.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        trash
+            .delete(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    })
+    .await
+}
+
+/// Shows the file or folder selected in File Explorer (the Finder).
+#[tauri::command]
+pub fn reveal_path(path: PathBuf) -> Result<(), String> {
+    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Opens the system's terminal in `dir`.
+#[tauri::command]
+pub fn open_terminal(dir: PathBuf) -> Result<(), String> {
+    terminal(&dir).map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// Windows Terminal where it is installed, the console otherwise.
+#[cfg(windows)]
+fn terminal(dir: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NEW_CONSOLE: u32 = 0x10;
+    if Command::new("wt.exe").arg("-d").arg(dir).spawn().is_ok() {
+        return Ok(());
+    }
+    Command::new("cmd.exe")
+        .current_dir(dir)
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .map(drop)
+}
+
+#[cfg(not(windows))]
+fn terminal(dir: &Path) -> std::io::Result<()> {
+    use std::process::Command;
+    let mut command = if cfg!(target_os = "macos") {
+        let mut open = Command::new("open");
+        open.args(["-a", "Terminal"]).arg(dir);
+        open
+    } else {
+        let mut emulator = Command::new("x-terminal-emulator");
+        emulator.current_dir(dir);
+        emulator
+    };
+    let mut child = command.spawn()?;
+    // Reaped when it exits, so as not to leave a zombie.
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn write_clipboard(text: String, app: AppHandle) -> Result<(), String> {
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
 /// File passed on the command line ("Open with" on Windows).

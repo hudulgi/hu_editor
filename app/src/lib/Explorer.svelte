@@ -3,12 +3,15 @@
   // volumes outside Windows). Folders are listed when first expanded and
   // the tree is flattened into rows, so keyboard navigation is a list walk.
   // Opening a file reveals it, the way UltraEdit's explorer follows the
-  // active file.
+  // active file. A right click opens a menu after VS Code's: new files and
+  // folders, cut, copy and paste, rename, delete to the Recycle Bin.
 
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import * as api from "./api";
-  import { baseName, formatSize, isWindows, samePath } from "./format";
+  import DropMenu, { type DropEntry } from "./DropMenu.svelte";
+  import { baseName, dirName, formatSize, isWindows, joinPath, movedPath, relativePath, samePath } from "./format";
   import { describeError, t, type MessageKey } from "./i18n";
   import { settings } from "./settings.svelte";
   import { detectLang, langBadge } from "./syntax";
@@ -18,14 +21,53 @@
     active: string | null;
     /** `preview`: picked with a single click, not meant to stay yet. */
     onopen: (path: string, preview?: boolean) => void;
+    /** Ctrl+Enter: in the pane beside. */
+    onopenside: (path: string) => void;
+    /** Open documents whose files were renamed or moved. */
+    onmoved: (docs: api.MovedDoc[]) => void;
+    /** Something was deleted: open files may be gone from the disk. */
+    ondeleted: () => void;
+    onerror: (message: string) => void;
   }
 
-  let { active, onopen }: Props = $props();
+  let { active, onopen, onopenside, onmoved, ondeleted, onerror }: Props = $props();
 
+  /** A folder as the tree has it: its row, and the root that row is under. */
+  interface Folder {
+    key: string;
+    path: string;
+    base: string;
+  }
+
+  type EntryRow = {
+    kind: "entry";
+    key: string;
+    entry: api.DirEntry;
+    depth: number;
+    /** The key of the root it is under. */
+    base: string;
+    root?: api.Root;
+    /** The folder it is in; none for a root. */
+    parent?: Folder;
+  };
   type Row =
     | { kind: "group"; key: string; label: string }
-    | { kind: "entry"; key: string; entry: api.DirEntry; depth: number; root?: api.Root }
-    | { kind: "note"; key: string; text: string; depth: number };
+    | EntryRow
+    | { kind: "note"; key: string; text: string; depth: number }
+    | { kind: "input"; key: string; depth: number; isDir: boolean };
+
+  /** A name being typed: for a new file or folder in `key`'s folder, or to rename the row `key`. */
+  interface Editing {
+    kind: "newFile" | "newDir" | "rename";
+    key: string;
+    base: string;
+    /** The folder it goes in. */
+    folder: string;
+    /** What is renamed. */
+    from: string | null;
+    value: string;
+    error: string | null;
+  }
 
   const windows = isWindows;
   const GROUPS: readonly (readonly [api.Root["group"], MessageKey])[] = [
@@ -54,6 +96,13 @@
   let tree = $state<HTMLDivElement>();
   let addressInput = $state<HTMLInputElement>();
   let reveals = 0;
+  let menu = $state<{ items: DropEntry[]; point: { x: number; y: number } } | null>(null);
+  /** What Cut or Copy took, for Paste. */
+  let clip = $state<{ path: string; cut: boolean } | null>(null);
+  let pasting = $state(false);
+  let editing = $state<Editing | null>(null);
+  let editInput = $state<HTMLInputElement>();
+  let committing = false;
 
   const rootKey = (root: api.Root) => `${root.group}:${root.path}`;
 
@@ -85,17 +134,21 @@
 
   let rows = $derived.by(() => {
     const out: Row[] = [];
-    const walk = (base: string, path: string, depth: number) => {
+    const walk = (base: string, folderKey: string, path: string, depth: number) => {
       const list = listed.get(path);
       const note = (text: string) => out.push({ kind: "note", key: `${base}|${path}\n`, text, depth });
+      // A new file or folder is named at the top of its folder.
+      const naming = editing !== null && editing.kind !== "rename" && editing.key === folderKey;
+      if (naming) out.push({ kind: "input", key: `${folderKey}\n+`, depth, isDir: editing!.kind === "newDir" });
       if (list === undefined) note(t("explorer.loading"));
       else if (typeof list === "string") note(list);
-      else if (list.length === 0) note(t("explorer.empty"));
-      else
+      else if (list.length === 0) {
+        if (!naming) note(t("explorer.empty"));
+      } else
         for (const entry of list) {
           const key = `${base}|${entry.path}`;
-          out.push({ kind: "entry", key, entry, depth });
-          if (entry.isDir && expanded.has(key)) walk(base, entry.path, depth + 1);
+          out.push({ kind: "entry", key, entry, depth, base, parent: { key: folderKey, path, base } });
+          if (entry.isDir && expanded.has(key)) walk(base, key, entry.path, depth + 1);
         }
     };
     for (const [group, labelKey] of GROUPS) {
@@ -107,8 +160,8 @@
         const quickName = QUICK_NAMES[root.kind];
         const name = quickName ? t(quickName) : root.name;
         const entry = { name, path: root.path, isDir: true, size: 0 };
-        out.push({ kind: "entry", key, entry, depth: 0, root });
-        if (expanded.has(key)) walk(key, root.path, 1);
+        out.push({ kind: "entry", key, entry, depth: 0, root, base: key });
+        if (expanded.has(key)) walk(key, key, root.path, 1);
       }
     }
     return out;
@@ -196,13 +249,14 @@
     return true;
   }
 
-  /** Re-lists the expanded folders; collapsed ones are re-listed when expanded again. */
+  /**
+   * Re-lists the expanded folders, a renamed one under its new name too;
+   * collapsed ones are re-listed when expanded again.
+   */
   export function refresh() {
     const open = new Set(expanded.values());
-    for (const path of [...listed.keys()]) {
-      if (open.has(path)) load(path);
-      else listed.delete(path);
-    }
+    for (const path of [...listed.keys()]) if (!open.has(path)) listed.delete(path);
+    return Promise.all([...open].map(load));
   }
 
   async function go() {
@@ -228,22 +282,274 @@
     e.preventDefault();
   }
 
+  const entryRows = () => rows.filter((r): r is EntryRow => r.kind === "entry");
+  const selectedRow = () => entryRows().find((r) => r.key === selected) ?? null;
+
+  /** The folder a row stands for: itself, or the one a file is in. */
+  const folderOf = (row: EntryRow): Folder | null =>
+    row.entry.isDir ? { key: row.key, path: row.entry.path, base: row.base } : (row.parent ?? null);
+
   async function onkeydown(e: KeyboardEvent) {
-    const entries = rows.filter((r) => r.kind === "entry");
+    // Not the keys typed into a name.
+    if (e.target !== tree) return;
+    const entries = entryRows();
     const i = entries.findIndex((r) => r.key === selected);
-    const row = entries[i];
-    const pick = (r: (typeof entries)[number] | undefined) => r && select(r.key, r.entry.path);
+    const row: EntryRow | undefined = entries[i];
+    const pick = (r: EntryRow | undefined) => r && select(r.key, r.entry.path);
+    const mod = e.ctrlKey || e.metaKey;
+    const plain = !e.shiftKey && !e.altKey;
+    // Drives and quick-access folders stay as they are.
+    const movable = row && !row.root;
+    const folder = row ? folderOf(row) : null;
     if (e.key === "ArrowDown") pick(entries[Math.min(entries.length - 1, i + 1)]);
     else if (e.key === "ArrowUp") pick(entries[Math.max(0, i - 1)]);
+    else if (mod && e.key === "Enter" && row && !row.entry.isDir) onopenside(row.entry.path);
     else if (e.key === "Enter" && row) activate(row);
     else if (e.key === "ArrowRight" && row?.entry.isDir) {
       if (!expanded.has(row.key)) toggle(row.key, row.entry.path);
     } else if (e.key === "ArrowLeft" && row) {
       if (row.entry.isDir && expanded.has(row.key)) toggle(row.key, row.entry.path);
       else pick(entries.slice(0, i).findLast((r) => r.depth < row.depth));
+    } else if (e.key === "F2" && movable) startRename(row);
+    else if ((e.key === "Delete" || (e.metaKey && e.key === "Backspace")) && movable) remove(row);
+    else if (mod && plain && (e.code === "KeyX" || e.code === "KeyC") && movable) clip = { path: row.entry.path, cut: e.code === "KeyX" };
+    else if (mod && plain && e.code === "KeyV" && folder) pasteInto(folder);
+    else if (e.shiftKey && e.altKey && !mod && e.code === "KeyC" && row) copyPath(row.entry.path);
+    else if (e.shiftKey && e.altKey && !mod && e.code === "KeyR" && row) showInFileManager(row.entry.path);
+    else if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) && row) {
+      const box = document.getElementById(rowId(row.key))?.getBoundingClientRect();
+      if (box) openMenu(row, box.left + 16, box.bottom);
     } else return;
     e.preventDefault();
+    // Handled here: not a shortcut of the app's too (Shift+F10 is F10's).
+    e.stopPropagation();
     await scrollToSelected("nearest");
+  }
+
+  // ---- The menu ---------------------------------------------------------------
+
+  const REVEAL: MessageKey = isWindows
+    ? "explorer.revealWindows"
+    : navigator.userAgent.includes("Mac")
+      ? "explorer.revealMac"
+      : "explorer.revealOther";
+
+  /** The folder of the file in the editor, which relative paths start from, as an `*INCLUDE` reads them. */
+  const relativeTo = (path: string) => (active ? relativePath(dirName(active), path) : null);
+
+  /** The menu for a row, or with none for the empty space below them, which stands for the selected row's folder. */
+  function menuItems(row: EntryRow | null): DropEntry[] {
+    const selectedOne = selectedRow();
+    const folder = row ? folderOf(row) : selectedOne && folderOf(selectedOne);
+    const path = row?.entry.path ?? folder?.path ?? null;
+    const on = path !== null;
+    const movable = !!row && !row.root;
+    const newItems: DropEntry[] = [
+      { label: t("explorer.newFile"), enabled: !!folder, run: () => folder && startNew("newFile", folder) },
+      { label: t("explorer.newFolder"), enabled: !!folder, run: () => folder && startNew("newDir", folder) },
+    ];
+    const outside: DropEntry[] = [
+      { label: t(REVEAL), shortcut: "Shift+Alt+R", enabled: on, run: () => path && showInFileManager(path) },
+      { label: t("explorer.terminal"), enabled: !!folder, run: () => folder && terminal(folder.path) },
+    ];
+    const paste: DropEntry = {
+      label: t("menu.paste"),
+      shortcut: "Ctrl+V",
+      enabled: !!folder && clip !== null && !pasting,
+      run: () => folder && pasteInto(folder),
+    };
+    const clipItems: DropEntry[] = [
+      { label: t("menu.cut"), shortcut: "Ctrl+X", enabled: movable, run: () => row && (clip = { path: row.entry.path, cut: true }) },
+      { label: t("menu.copy"), shortcut: "Ctrl+C", enabled: movable, run: () => row && (clip = { path: row.entry.path, cut: false }) },
+    ];
+    const paths: DropEntry[] = [
+      { label: t("explorer.copyPath"), shortcut: "Shift+Alt+C", enabled: on, run: () => path && copyPath(path) },
+      {
+        label: t("explorer.copyRelativePath"),
+        enabled: path !== null && relativeTo(path) !== null,
+        run: () => path && copyPath(relativeTo(path) ?? path),
+      },
+    ];
+    const change: DropEntry[] = [
+      { label: t("explorer.rename"), shortcut: "F2", enabled: movable, run: () => row && startRename(row) },
+      { label: t("explorer.delete"), shortcut: "Delete", enabled: movable, run: () => row && remove(row) },
+    ];
+    if (!row) return [...newItems, ...outside, "separator", paste, "separator", ...paths];
+    if (row.entry.isDir) return [...newItems, ...outside, "separator", ...clipItems, paste, "separator", ...paths, "separator", ...change];
+    const side: DropEntry = { label: t("explorer.openToSide"), shortcut: "Ctrl+Enter", run: () => onopenside(row.entry.path) };
+    return [side, ...outside, "separator", ...clipItems, "separator", ...paths, "separator", ...change];
+  }
+
+  function openMenu(row: EntryRow | null, x: number, y: number) {
+    if (row) select(row.key, row.entry.path);
+    menu = { items: menuItems(row), point: { x, y } };
+  }
+
+  function closeMenu() {
+    menu = null;
+    if (!editing) tree?.focus();
+  }
+
+  function rowMenu(e: MouseEvent, row: EntryRow) {
+    e.preventDefault();
+    e.stopPropagation();
+    openMenu(row, e.clientX, e.clientY);
+  }
+
+  function emptyMenu(e: MouseEvent) {
+    e.preventDefault();
+    openMenu(null, e.clientX, e.clientY);
+  }
+
+  // ---- What the menu does -------------------------------------------------------
+
+  const failed = (e: unknown) => onerror(describeError(e));
+
+  const copyPath = (path: string) => api.writeClipboard(path).catch(failed);
+  const showInFileManager = (path: string) => api.revealPath(path).catch(failed);
+  const terminal = (dir: string) => api.openTerminal(dir).catch(failed);
+
+  async function startNew(kind: "newFile" | "newDir", folder: Folder) {
+    await expand(folder.key, folder.path);
+    editing = { kind, key: folder.key, base: folder.base, folder: folder.path, from: null, value: "", error: null };
+    await focusName(null);
+  }
+
+  function startRename(row: EntryRow) {
+    const { name, path, isDir } = row.entry;
+    editing = { kind: "rename", key: row.key, base: row.base, folder: dirName(path), from: path, value: name, error: null };
+    // The name without its extension, as VS Code selects it.
+    const dot = name.lastIndexOf(".");
+    focusName(isDir || dot <= 0 ? null : dot);
+  }
+
+  async function focusName(selectTo: number | null) {
+    await tick();
+    if (!editInput) return;
+    editInput.focus();
+    if (selectTo === null) editInput.select();
+    else editInput.setSelectionRange(0, selectTo);
+    editInput.scrollIntoView({ block: "nearest" });
+  }
+
+  /** What is wrong with the name typed, as it is typed. */
+  function check() {
+    if (!editing) return;
+    const name = editing.value.trim();
+    const list = listed.get(editing.folder);
+    const from = editing.from;
+    const taken = Array.isArray(list) && list.some((e) => samePath(e.name, name) && !(from && samePath(e.path, from)));
+    editing.error = /[\\/]/.test(name) ? t("explorer.slash") : taken ? t("explorer.exists", { name }) : null;
+  }
+
+  /** Makes the file or folder, or renames it. Leaving the name (`blurred`) gives it up if it cannot be. */
+  async function commit(blurred = false) {
+    const edit = editing;
+    if (!edit || committing) return;
+    const name = edit.value.trim();
+    if (!name || (edit.from && name === baseName(edit.from))) return cancelEdit(!blurred);
+    check();
+    if (edit.error) return blurred ? cancelEdit(false) : undefined;
+    committing = true;
+    const path = joinPath(edit.folder, name);
+    try {
+      if (edit.from) {
+        const moved = await api.renamePath(edit.from, path);
+        follow(edit.from, path);
+        if (moved.length) onmoved(moved);
+      } else if (edit.kind === "newFile") await api.createFile(path);
+      else await api.createDir(path);
+    } catch (e) {
+      if (blurred) {
+        editing = null;
+        failed(e);
+      } else edit.error = describeError(e);
+      return;
+    } finally {
+      committing = false;
+    }
+    editing = null;
+    await refresh();
+    select(`${edit.base}|${path}`, path);
+    // A new file is to be written in.
+    if (edit.kind === "newFile") onopen(path);
+    else if (!blurred) tree?.focus();
+    await scrollToSelected("nearest");
+  }
+
+  function cancelEdit(focus = true) {
+    editing = null;
+    if (focus) tree?.focus();
+  }
+
+  function nameKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") commit();
+    else if (e.key === "Escape") cancelEdit();
+    else return;
+    e.preventDefault();
+  }
+
+  /** After `from` was renamed or moved to `to`: the tree stays open where it was. */
+  function follow(from: string, to: string) {
+    for (const [key, path] of [...expanded]) {
+      const moved = movedPath(path, from, to);
+      if (moved === null || !key.includes("|")) continue;
+      expanded.delete(key);
+      expanded.set(key.slice(0, key.length - path.length) + moved, moved);
+    }
+    const clipped = clip && movedPath(clip.path, from, to);
+    if (clip && clipped) clip.path = clipped;
+  }
+
+  async function pasteInto(folder: Folder) {
+    if (!clip || pasting) return;
+    const { path, cut } = clip;
+    pasting = true;
+    try {
+      const done = await api.paste([path], folder.path, cut);
+      if (cut && done.to.length) {
+        follow(path, done.to[0]);
+        clip = null;
+      }
+      if (done.docs.length) onmoved(done.docs);
+      if (done.error) failed(done.error);
+      await expand(folder.key, folder.path);
+      await refresh();
+      if (done.to.length) {
+        select(`${folder.base}|${done.to[0]}`, done.to[0]);
+        await scrollToSelected("nearest");
+      }
+    } catch (e) {
+      failed(e);
+    } finally {
+      pasting = false;
+    }
+  }
+
+  async function remove(row: EntryRow) {
+    const { name, path, isDir } = row.entry;
+    const question = t(isDir ? "explorer.deleteFolder" : "explorer.deleteFile", { name });
+    const ok = await confirm(`${question}\n\n${t(isWindows ? "explorer.restoreWindows" : "explorer.restoreTrash")}`, {
+      title: t("explorer.delete"),
+      kind: "warning",
+      okLabel: t(isWindows ? "explorer.toRecycleBin" : "explorer.toTrash"),
+      cancelLabel: t("prompt.cancel"),
+    });
+    if (ok) {
+      const at = entryRows().findIndex((r) => r.key === row.key);
+      try {
+        await api.deletePath(path);
+        ondeleted();
+      } catch (e) {
+        failed(e);
+      }
+      await refresh();
+      // The row that takes its place.
+      const entries = entryRows();
+      const next = entries[Math.min(at, entries.length - 1)];
+      if (next) select(next.key, next.entry.path);
+    }
+    tree?.focus();
   }
 
   // The setting changes what the open folders list.
@@ -268,6 +574,9 @@
 <aside class="explorer">
   <header>
     <span class="title">{t("explorer.title")}</span>
+    {#if pasting}
+      <span class="busy">{t("explorer.pasting")}</span>
+    {/if}
     <button
       class="icon"
       title={t("explorer.showOpenFile")}
@@ -314,6 +623,7 @@
     aria-activedescendant={selected === null ? undefined : rowId(selected)}
     bind:this={tree}
     {onkeydown}
+    oncontextmenu={emptyMenu}
   >
     {#each rows as row (row.key)}
       {#if row.kind === "group"}
@@ -327,6 +637,7 @@
           class:selected={row.key === selected}
           class:active={active !== null && samePath(entry.path, active)}
           class:hidden={entry.hidden}
+          class:cut={clip?.cut && samePath(clip.path, entry.path)}
           id={rowId(row.key)}
           role="treeitem"
           aria-selected={row.key === selected}
@@ -335,6 +646,7 @@
           style:padding-left="{6 + row.depth * 14}px"
           onclick={() => activate(row)}
           ondblclick={() => row.kind === "entry" && !row.entry.isDir && onopen(row.entry.path)}
+          oncontextmenu={(e) => rowMenu(e, row)}
         >
           <span class="glyph">
             {#if entry.isDir}
@@ -365,10 +677,23 @@
               {/if}
             </svg>
           {/if}
-          <span class="name">{entry.name}</span>
-          {#if !entry.isDir && (!entry.hidden || entry.size > 0)}
-            <span class="size">{formatSize(entry.size)}</span>
+          {#if editing?.kind === "rename" && editing.key === row.key}
+            {@render nameInput()}
+          {:else}
+            <span class="name">{entry.name}</span>
+            {#if !entry.isDir && (!entry.hidden || entry.size > 0)}
+              <span class="size">{formatSize(entry.size)}</span>
+            {/if}
           {/if}
+        </div>
+      {:else if row.kind === "input"}
+        <div class="row naming" style:padding-left="{6 + row.depth * 14}px">
+          <span class="glyph">
+            {#if row.isDir}
+              <svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg>
+            {/if}
+          </span>
+          {@render nameInput()}
         </div>
       {:else}
         <div class="row note" style:padding-left="{28 + row.depth * 14}px">{row.text}</div>
@@ -376,6 +701,33 @@
     {/each}
   </div>
 </aside>
+
+{#snippet nameInput()}
+  {#if editing}
+    <span class="name-edit">
+      <input
+        bind:this={editInput}
+        bind:value={editing.value}
+        class:wrong={editing.error}
+        spellcheck="false"
+        aria-label={t(editing.kind === "newDir" ? "explorer.newFolder" : editing.kind === "newFile" ? "explorer.newFile" : "explorer.rename")}
+        oninput={check}
+        onkeydown={nameKeydown}
+        onblur={() => commit(true)}
+        onclick={(e) => e.stopPropagation()}
+        ondblclick={(e) => e.stopPropagation()}
+        oncontextmenu={(e) => e.stopPropagation()}
+      />
+      {#if editing.error}
+        <span class="name-error">{editing.error}</span>
+      {/if}
+    </span>
+  {/if}
+{/snippet}
+
+{#if menu}
+  <DropMenu items={menu.items} point={menu.point} onclose={closeMenu} />
+{/if}
 
 <style>
   .explorer {
@@ -483,6 +835,45 @@
   }
   .row.hidden .name {
     opacity: 0.6;
+  }
+  .row.cut {
+    opacity: 0.5;
+  }
+  .busy {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .name-edit {
+    flex: 1;
+    min-width: 0;
+  }
+  .row:has(> .name-edit) {
+    position: relative;
+  }
+  .name-edit input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 20px;
+    padding: 0 4px;
+    font: inherit;
+  }
+  .name-edit input.wrong {
+    outline: 1px solid #be1100;
+  }
+  /* Over the rows below, as VS Code shows it; as wide as the tree, since a deep
+     folder leaves its name little room. */
+  .name-error {
+    position: absolute;
+    top: 100%;
+    left: 8px;
+    right: 8px;
+    z-index: 1;
+    padding: 4px 6px;
+    background: #5a1d1d;
+    border: 1px solid #be1100;
+    color: var(--fg);
+    font-size: 12px;
+    white-space: normal;
   }
   .glyph {
     display: grid;

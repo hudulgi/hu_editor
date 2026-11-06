@@ -641,7 +641,8 @@
     | { kind: "edited"; id: number; change: api.Change; state: api.DocState }
     | { kind: "saved"; id: number; state: api.DocState; path: string | null; name: string; lang: Lang }
     | { kind: "encoding"; id: number; encoding: api.Encoding; chosen: boolean }
-    | { kind: "replaced"; id: number; loaded: Loaded; goto: number | null };
+    | { kind: "replaced"; id: number; loaded: Loaded; goto: number | null }
+    | { kind: "moved"; id: number; path: string; name: string; lang: Lang };
 
   /** What a new window shows first. */
   interface WindowStart extends Loaded {
@@ -665,6 +666,9 @@
     } else if (news.kind === "saved") {
       Object.assign(tab.doc, { path: news.path, name: news.name });
       Object.assign(tab, { state: news.state, lang: news.lang, changedOnDisk: false });
+    } else if (news.kind === "moved") {
+      Object.assign(tab.doc, { path: news.path, name: news.name });
+      tab.lang = news.lang;
     } else if (news.kind === "encoding") {
       tab.doc.encoding = news.encoding;
       tab.chosenEncoding = news.chosen;
@@ -910,6 +914,40 @@
       if (!opened) return;
     }
     if (reveal) explorer?.reveal(path, false);
+  }
+
+  /** Ctrl+Enter in the explorer: in the pane to the right of this one, or a new one there. */
+  async function openToSide(path: string) {
+    const here = panes[focused];
+    const right = neighbor(layout, here.key, "right");
+    const beside = panes.find((pane) => pane.key === right);
+    const target = beside && !beside.locked ? beside : addPane(here, "right");
+    const at = panes.indexOf(target);
+    const open = tabOfPath(path);
+    if (open) addView(open.doc.id, at);
+    else {
+      focused = at;
+      await openPath(path, false);
+    }
+  }
+
+  /** The explorer renamed or moved files open here: their tabs follow, here and in the other windows. */
+  async function followMoves(moved: api.MovedDoc[]) {
+    for (const { id, path, name } of moved) {
+      const tab = tabOf(id);
+      if (!tab) continue;
+      Object.assign(tab.doc, { path, name });
+      tab.lang = await langOf(id, name);
+      if (tab.chosenEncoding) rememberEncoding(path, tab.doc.encoding);
+      if (sharedDocs.has(id)) tell({ kind: "moved", id, path, name, lang: tab.lang });
+    }
+  }
+
+  /** Marks the tabs whose files changed or went from the disk. */
+  async function checkDisk() {
+    for (const tab of tabs) {
+      if (tab.doc.path !== null) tab.changedOnDisk = await api.diskChanged(tab.doc.id).catch(() => false);
+    }
   }
 
   let untitled = 0;
@@ -1502,9 +1540,7 @@
 
   async function onfocus() {
     explorer?.refresh();
-    for (const tab of tabs) {
-      if (tab.doc.path !== null) tab.changedOnDisk = await api.diskChanged(tab.doc.id).catch(() => false);
-    }
+    await checkDisk();
   }
 
   // Sidebar resizing.
@@ -1665,6 +1701,10 @@
         bind:this={explorer}
         active={active?.doc.path ?? null}
         onopen={(path, preview) => openPath(path, false, preview)}
+        onopenside={openToSide}
+        onmoved={followMoves}
+        ondeleted={checkDisk}
+        onerror={(message) => (notice = message)}
       />
     </div>
     <div

@@ -46,6 +46,14 @@ pub enum Problem {
     NotIndexed {
         lines: u64,
     },
+    /// A file or folder of that name is in the way, and is not to be replaced.
+    Exists {
+        name: String,
+    },
+    /// A folder cannot be copied or moved into itself or a folder inside it.
+    IntoItself {
+        name: String,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -87,6 +95,10 @@ impl fmt::Display for Problem {
             Problem::NeedsFileName => write!(f, "a new document needs a file name: use Save As"),
             Problem::NotIndexed { lines } => {
                 write!(f, "line index has only reached line {lines} so far")
+            }
+            Problem::Exists { name } => write!(f, "\"{name}\" is already there"),
+            Problem::IntoItself { name } => {
+                write!(f, "\"{name}\" cannot go into itself or a folder inside it")
             }
         }
     }

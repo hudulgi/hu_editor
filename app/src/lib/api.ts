@@ -163,6 +163,37 @@ export const copy = (id: number, start: number, end: number) => invoke<void>("co
 /** The text on the clipboard, for the Paste menu item; Ctrl+V brings its own. */
 export const readClipboard = () => invoke<string>("read_clipboard");
 
+export const writeClipboard = (text: string) => invoke<void>("write_clipboard", { text });
+
+// ---- The explorer's changes: nothing already there is ever replaced ----------
+
+/** An open document whose file was renamed or moved; it saves there now. */
+export interface MovedDoc {
+  id: number;
+  path: string;
+  name: string;
+}
+
+/** What a paste did, up to where it may have stopped. */
+export interface Pasted {
+  /** Where each pasted file or folder is now. */
+  to: string[];
+  /** Open documents that moved with them. */
+  docs: MovedDoc[];
+  error: string | null;
+}
+
+export const createFile = (path: string) => invoke<void>("create_file", { path });
+export const createDir = (path: string) => invoke<void>("create_dir", { path });
+export const renamePath = (from: string, to: string) => invoke<MovedDoc[]>("rename_path", { from, to });
+/** Copies, or with `cut` moves, into the folder `into`; a copy takes a free name. */
+export const paste = (paths: string[], into: string, cut: boolean) => invoke<Pasted>("paste", { paths, into, cut });
+/** To the Recycle Bin (the Trash). */
+export const deletePath = (path: string) => invoke<void>("delete_path", { path });
+/** Shows it selected in File Explorer (the Finder). */
+export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+export const openTerminal = (dir: string) => invoke<void>("open_terminal", { dir });
+
 /** Replaces display columns `[left, right)` of the box's lines with `texts` (one for all, or one per line). */
 export const editBox = (
   id: number,

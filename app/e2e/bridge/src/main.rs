@@ -4,7 +4,8 @@
 //!
 //! Differences from the app: progress is not reported, a search cannot be
 //! cancelled, the clipboard is a string here, and the settings file's path
-//! comes with the request.
+//! comes with the request. A delete is for good, not to the trash, and the
+//! file manager and terminal asked for are only noted.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -30,6 +31,8 @@ struct Bridge {
     window_starts: Mutex<HashMap<String, Value>>,
     next_window: AtomicU32,
     clipboard: Mutex<String>,
+    /// What the file manager or a terminal was asked to show.
+    launched: Mutex<Vec<Value>>,
 }
 
 fn main() {
@@ -131,6 +134,20 @@ impl Bridge {
         info
     }
 
+    /// As in the app: the open documents that were `from` or in it save under `to`.
+    fn follow(&self, from: &Path, to: &Path) -> Vec<Value> {
+        let docs = self.docs.lock().unwrap();
+        let mut moved = Vec::new();
+        for (&id, doc) in docs.iter() {
+            let Some(new) = doc.path().and_then(|path| dir::moved(&path, from, to)) else {
+                continue;
+            };
+            doc.moved_to(new.clone());
+            moved.push(json!({ "id": id, "path": new, "name": file_name(&new) }));
+        }
+        moved
+    }
+
     fn dispatch(&self, cmd: &str, args: &Value) -> Result<Value, String> {
         let never = AtomicBool::new(false);
         let doc = || self.doc(args);
@@ -148,6 +165,58 @@ impl Bridge {
                 Ok(_) => json!("file"),
                 Err(_) => Value::Null,
             },
+            "create_file" => {
+                dir::create_file(&arg::<PathBuf>(args, "path")?).map_err(problem)?;
+                Value::Null
+            }
+            "create_dir" => {
+                dir::create_dir(&arg::<PathBuf>(args, "path")?).map_err(problem)?;
+                Value::Null
+            }
+            "rename_path" => {
+                let (from, to): (PathBuf, PathBuf) = (arg(args, "from")?, arg(args, "to")?);
+                dir::rename(&from, &to).map_err(problem)?;
+                json!(self.follow(&from, &to))
+            }
+            "paste" => {
+                let paths: Vec<PathBuf> = arg(args, "paths")?;
+                let into: PathBuf = arg(args, "into")?;
+                let cut: bool = arg(args, "cut")?;
+                let (mut to, mut docs, mut error) = (Vec::new(), Vec::new(), None);
+                for from in paths {
+                    let pasted = if cut {
+                        dir::move_into(&from, &into)
+                    } else {
+                        dir::copy_into(&from, &into)
+                    };
+                    match pasted {
+                        Ok(at) => {
+                            if cut {
+                                docs.extend(self.follow(&from, &at));
+                            }
+                            to.push(at);
+                        }
+                        Err(e) => {
+                            error = Some(problem(e));
+                            break;
+                        }
+                    }
+                }
+                json!({ "to": to, "docs": docs, "error": error })
+            }
+            "delete_path" => {
+                dir::remove(&arg::<PathBuf>(args, "path")?).map_err(problem)?;
+                Value::Null
+            }
+            "reveal_path" | "open_terminal" => {
+                let path: PathBuf = arg(args, if cmd == "reveal_path" { "path" } else { "dir" })?;
+                self.launched.lock().unwrap().push(json!([cmd, path]));
+                Value::Null
+            }
+            "write_clipboard" => {
+                *self.clipboard.lock().unwrap() = arg(args, "text")?;
+                Value::Null
+            }
             "open_document" => {
                 let path: PathBuf = arg(args, "path")?;
                 let doc = Document::open_as(&path, arg(args, "encoding")?, arg(args, "fallback")?);
@@ -327,6 +396,8 @@ impl Bridge {
             "test_clipboard" => json!(*self.clipboard.lock().unwrap()),
             // Only for the scenarios: how many documents the app still holds.
             "test_open_documents" => json!(self.docs.lock().unwrap().len()),
+            // Only for the scenarios: what the file manager and terminals were asked to show.
+            "test_launched" => json!(*self.launched.lock().unwrap()),
             _ => return Err(format!("unknown command {cmd}")),
         })
     }
