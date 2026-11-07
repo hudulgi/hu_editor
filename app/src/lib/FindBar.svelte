@@ -371,7 +371,7 @@
      scrolled clear (see the editor's `select`). */
   .findbar {
     position: absolute;
-    top: 0;
+    top: 8px;
     right: 18px;
     z-index: 10;
     display: flex;
@@ -382,8 +382,7 @@
     padding: 4px 6px 4px 3px;
     background: var(--panel);
     border: 1px solid #454545;
-    border-top: none;
-    border-radius: 0 0 6px 6px;
+    border-radius: 8px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
     font-size: 13px;
   }

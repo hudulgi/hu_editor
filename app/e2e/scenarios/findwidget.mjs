@@ -74,8 +74,8 @@ export default async function (t) {
   await page.keyboard.type("GRID");
   await until("the matches counted, none selected", status, "? of 80");
   const placed = await rects();
-  check("over the text, at the top right of the pane", [
-    Math.abs(placed.bar.top - placed.editors.top) < 1,
+  check("over the text, at the top right of the pane, clear of its top", [
+    Math.round(placed.bar.top - placed.editors.top) === 8,
     placed.bar.right < placed.editors.right - 14,
     placed.bar.left > placed.text.left,
   ], [true, true, true]);
