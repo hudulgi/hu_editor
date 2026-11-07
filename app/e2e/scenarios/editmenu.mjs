@@ -1,6 +1,6 @@
-// The Edit menu's items from VS Code: Find and Replace there too, Find and
-// Replace in Files in a search view beside the explorer, and toggling comments
-// the way each language writes them.
+// The Edit menu's items from VS Code: toggling comments the way each language
+// writes them; and Find and Replace in Files, in the Search menu as UltraEdit
+// keeps them, in a search view beside the explorer.
 
 export default async function (t) {
   const { until, check } = t;
@@ -46,17 +46,24 @@ export default async function (t) {
     "Cut|Ctrl+X",
     "Copy|Ctrl+C",
     "Paste|Ctrl+V",
-    "Find…|Ctrl+F",
-    "Replace…|Ctrl+H",
-    "Find in Files|Ctrl+Shift+F",
-    "Replace in Files|Ctrl+Shift+H",
     "Toggle Line Comment|Ctrl+/",
     "-Toggle Block Comment|Shift+Alt+A",
     "Select All|Ctrl+A",
     "Column Mode|Alt+C",
   ]);
-  await page.click(`${PANEL} .label:text-matches('^Replace…$')`);
-  await until("replace from the edit menu", () => page.locator(".findbar input[placeholder=Replace]").count(), 1);
+  await page.hover(".menubar .title:text-matches('^Search$')");
+  await until("the search menu", () => page.textContent(".menubar .title.open"), "Search");
+  check("the search menu: all the finding", await items(), [
+    "Find…|Ctrl+F",
+    "Replace…|Ctrl+H",
+    "Find Next|F3",
+    "Find Previous|Shift+F3",
+    "Find Selection|Ctrl+F3",
+    "Change All Occurrences|Ctrl+F2",
+    "Find in Files|Ctrl+Shift+F",
+    "Replace in Files|Ctrl+Shift+H",
+    "Go to Line…|Ctrl+G",
+  ]);
   await page.keyboard.press("Escape");
 
   // ---- Toggle Line Comment ---------------------------------------------------------------------
@@ -230,14 +237,23 @@ export default async function (t) {
     "잘라내기(T)",
     "복사(C)",
     "붙여넣기(P)",
-    "찾기(F)…",
-    "바꾸기(E)…",
-    "파일에서 찾기(I)",
-    "파일에서 바꾸기(N)",
     "줄 주석 설정/해제(O)",
     "블록 주석 설정/해제(B)",
     "모두 선택(A)",
     "컬럼 모드(L)",
+  ]);
+  await ko.hover(".menubar .title:text-matches('^찾기')");
+  await until("its search menu", () => ko.textContent(".menubar .title.open"), "찾기(S)");
+  check("the search menu in Korean", await ko.$$eval(`${PANEL} .label`, (els) => els.map((e) => e.textContent.trim())), [
+    "찾기(F)…",
+    "바꾸기(R)…",
+    "다음 찾기(N)",
+    "이전 찾기(P)",
+    "선택 항목 찾기(S)",
+    "모든 항목 변경(C)",
+    "파일에서 찾기(I)",
+    "파일에서 바꾸기(E)",
+    "줄 이동(G)…",
   ]);
   await ko.keyboard.press("Escape");
   await ko.keyboard.press("Control+Shift+f");

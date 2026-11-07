@@ -60,10 +60,10 @@ export default async function (t) {
   check("separators", await page.locator(`${PANEL} .separator`).count(), 6);
   await page.hover(title("Edit"));
   await until("hovering another title switches", openMenu, "Edit");
-  check("no document: only the files to search", await available(), ["Find in Files", "Replace in Files"]);
+  check("no document: nothing to edit", await available(), []);
   await page.hover(title("Search"));
   await until("the search menu", openMenu, "Search");
-  check("no document: nothing to search", await available(), []);
+  check("no document: only the files to search", await available(), ["Find in Files", "Replace in Files"]);
   await page.hover(title("View"));
   await until("the view menu", openMenu, "View");
   check("the view menu shows what is on", await items(), [
