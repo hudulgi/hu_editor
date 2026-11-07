@@ -317,3 +317,74 @@ export function find(
   channel.onmessage = onProgress;
   return invoke<FindOutcome>("find", { id, query, anchor, caret, backward, onProgress: channel });
 }
+
+/** Toggle Line Comment with `marker`; `atStart` at each line's start, as a deck wants it. */
+export const toggleLineComment = (id: number, marker: string, atStart: boolean, anchor: number, caret: number) =>
+  invoke<EditResult | null>("toggle_line_comment", { id, marker, atStart, anchor, caret });
+
+/** Toggle Block Comment between `open` and `close`. */
+export const toggleBlockComment = (id: number, open: string, close: string, anchor: number, caret: number) =>
+  invoke<EditResult | null>("toggle_block_comment", { id, open, close, anchor, caret });
+
+// ---- Find in Files ------------------------------------------------------------
+
+/** A match, with its line for the list. */
+export interface FileHit {
+  /** From 0. */
+  line: number;
+  /** In bytes, in the file (in the document, for one open). */
+  start: number;
+  end: number;
+  /** The line, or around the match on a long one, without the indent. */
+  preview: string;
+  /** The match in the preview. */
+  from: number;
+  to: number;
+  /** The preview leaves out the start of the line. */
+  cut: boolean;
+}
+
+export interface FileMatches {
+  path: string;
+  hits: FileHit[];
+}
+
+export interface Searched {
+  files: number;
+  matches: number;
+  /** It stopped at the most it shows. */
+  limited: boolean;
+  cancelled: boolean;
+}
+
+/** Searches the files under `folder`, each file's matches coming to `onFound` as they are found. */
+export function searchFiles(
+  folder: string,
+  query: Query,
+  include: string,
+  exclude: string,
+  fallback: Encoding,
+  onFound: (found: FileMatches) => void,
+  onProgress: (files: number) => void,
+) {
+  const found = new Channel<FileMatches>();
+  found.onmessage = onFound;
+  const progress = new Channel<number>();
+  progress.onmessage = onProgress;
+  return invoke<Searched>("search_files", { folder, query, include, exclude, fallback, onFound: found, onProgress: progress });
+}
+
+export const cancelSearchFiles = () => invoke<void>("cancel_search_files");
+
+/** What Replace in Files did to one file. */
+export interface FileReplaced {
+  path: string;
+  count: number;
+  error: string | null;
+  /** A file open in the editor is replaced there, unsaved, with this change. */
+  doc: number | null;
+  result: EditResult | null;
+}
+
+export const replaceInFiles = (paths: string[], query: Query, replacement: string, preserveCase: boolean, fallback: Encoding) =>
+  invoke<FileReplaced[]>("replace_in_files", { paths, query, replacement, preserveCase, fallback });

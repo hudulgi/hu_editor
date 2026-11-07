@@ -913,6 +913,22 @@
     );
   }
 
+  /** Runs a change the core makes from the selection (Toggle Comment), and takes on the selection it leaves. */
+  export function editSelection(edit: (anchor: number, caret: number) => Promise<api.EditResult | null>) {
+    return new Promise<void>((resolve) =>
+      enqueue(async () => {
+        box = null;
+        try {
+          const result = await edit(anchor, caret);
+          if (result) await applied(result);
+        } catch (e) {
+          onerror?.(describeError(e));
+        }
+        resolve();
+      }),
+    );
+  }
+
   /** Shows the result of a change made elsewhere (Replace All), keeping the place. */
   export function applyResult(result: api.EditResult) {
     onedit?.(result);

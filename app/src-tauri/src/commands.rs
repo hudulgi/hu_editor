@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hu_core::files::{self, FileMatches, FileSearch, Globs, Searched, Source};
 use hu_core::{
     BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindResult,
     IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, settings,
@@ -33,6 +34,10 @@ struct OpenDoc {
     /// How many windows show it; it closes with the last.
     windows: AtomicU32,
 }
+
+/// Cancels the running Find in Files; a new one replaces it.
+#[derive(Default)]
+pub struct FileSearches(Mutex<Arc<AtomicBool>>);
 
 /// What each window opened by `open_window` shows first, until it asks.
 #[derive(Default)]
@@ -70,6 +75,14 @@ impl Docs {
             .get(&id)
             .cloned()
             .ok_or_else(|| format!("document {id} is not open"))
+    }
+
+    /// The open document of the file at `path`, if any.
+    fn of_path(&self, path: &Path) -> Option<(u32, Arc<OpenDoc>)> {
+        let open = self.open.lock().unwrap();
+        open.iter()
+            .find(|(_, one)| one.doc.path().is_some_and(|p| p == path))
+            .map(|(&id, one)| (id, one.clone()))
     }
 
     /// The open documents that were `from` or in it save under `to` from now on.
@@ -819,4 +832,170 @@ pub async fn cancel_find(id: u32, docs: State<'_, Docs>) -> Result<(), String> {
         slot.lock().unwrap().store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Toggle Line Comment with `marker`, at each line's start for a deck.
+#[tauri::command]
+pub async fn toggle_line_comment(
+    id: u32,
+    marker: String,
+    at_start: bool,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .toggle_line_comment(&marker, at_start, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Toggle Block Comment between `open` and `close`.
+#[tauri::command]
+pub async fn toggle_block_comment(
+    id: u32,
+    open: String,
+    close: String,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<EditResult>, String> {
+    let doc = docs.get(id)?;
+    blocking(move || {
+        doc.doc
+            .toggle_block_comment(&open, &close, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Find in Files under `folder`, each file's matches streamed to
+/// `on_found` as they come and the files searched to `on_progress`. A file
+/// open here is searched as it is open, unsaved changes included.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn search_files(
+    folder: PathBuf,
+    mut query: Query,
+    include: String,
+    exclude: String,
+    fallback: Encoding,
+    on_found: Channel<FileMatches>,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+    searches: State<'_, FileSearches>,
+) -> Result<Searched, String> {
+    query.scope = None;
+    let cancel = replace_cancel(&searches.0);
+    let open: Vec<(PathBuf, Arc<OpenDoc>)> = {
+        let open = docs.open.lock().unwrap();
+        open.values()
+            .filter_map(|one| one.doc.path().map(|p| (p, one.clone())))
+            .collect()
+    };
+    blocking(move || {
+        let include = Globs::new(&include).map_err(|e| ipc_message(&e.into()))?;
+        let exclude = Globs::new(&exclude).map_err(|e| ipc_message(&e.into()))?;
+        let search = FileSearch {
+            folder: &folder,
+            query: &query,
+            include: &include,
+            exclude: &exclude,
+            fallback,
+        };
+        let source = |path: &Path| match open.iter().find(|(p, _)| p == path) {
+            Some((_, one)) => Source::Open(Box::new(one.doc.text()), one.doc.encoding()),
+            None => Source::Disk,
+        };
+        let mut progress = throttled(on_progress);
+        files::search_files(
+            &search,
+            &source,
+            &cancel,
+            &mut |found| {
+                let _ = on_found.send(found);
+            },
+            &mut progress,
+        )
+        .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn cancel_search_files(searches: State<'_, FileSearches>) {
+    searches.0.lock().unwrap().store(true, Ordering::Relaxed);
+}
+
+/// What Replace in Files did to one file.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReplaced {
+    path: String,
+    count: usize,
+    error: Option<String>,
+    /// A file open in the editor is replaced there, unsaved, with this change.
+    doc: Option<u32>,
+    result: Option<EditResult>,
+}
+
+/// Replace in Files: a file open in the editor is replaced there, as one
+/// undo step left unsaved; any other is replaced and saved.
+#[tauri::command]
+pub async fn replace_in_files(
+    paths: Vec<PathBuf>,
+    mut query: Query,
+    replacement: String,
+    preserve_case: bool,
+    fallback: Encoding,
+    docs: State<'_, Docs>,
+) -> Result<Vec<FileReplaced>, String> {
+    query.scope = None;
+    let open: Vec<Option<(u32, Arc<OpenDoc>)>> = paths.iter().map(|p| docs.of_path(p)).collect();
+    blocking(move || {
+        let never = AtomicBool::new(false);
+        Ok(paths
+            .into_iter()
+            .zip(open)
+            .map(|(path, open)| {
+                let mut done = FileReplaced {
+                    path: path.display().to_string(),
+                    count: 0,
+                    error: None,
+                    doc: None,
+                    result: None,
+                };
+                let replaced = match open {
+                    Some((id, one)) => one
+                        .doc
+                        .replace_all(
+                            &query,
+                            &replacement,
+                            preserve_case,
+                            (0, 0),
+                            &never,
+                            &mut |_| {},
+                        )
+                        .map(|r| {
+                            let (count, result) = r.unwrap_or((0, None));
+                            done.doc = Some(id);
+                            done.result = result;
+                            count
+                        }),
+                    None => {
+                        files::replace_in_file(&path, &query, &replacement, preserve_case, fallback)
+                    }
+                };
+                match replaced {
+                    Ok(count) => done.count = count,
+                    Err(e) => done.error = Some(at_path(&path, &e)),
+                }
+                done
+            })
+            .collect())
+    })
+    .await
 }

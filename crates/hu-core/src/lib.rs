@@ -12,6 +12,7 @@ mod decode;
 pub mod dialect;
 pub mod dir;
 pub mod document;
+pub mod files;
 mod history;
 pub mod line_index;
 mod original;

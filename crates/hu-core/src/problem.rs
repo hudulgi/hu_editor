@@ -62,6 +62,14 @@ pub enum Problem {
     RegexLineBreak,
     /// A regular expression with more than ASCII, for a text not in UTF-8.
     RegexNotAscii,
+    /// Files to include or exclude, as a glob that makes no sense.
+    BadGlob {
+        glob: String,
+    },
+    /// Toggle Line Comment over more lines than it takes.
+    TooManyLines {
+        limit: usize,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -113,6 +121,8 @@ impl fmt::Display for Problem {
                 f,
                 "a regular expression is matched within a line: it cannot find line breaks"
             ),
+            Problem::BadGlob { glob } => write!(f, "\"{glob}\" is not a usable list of globs"),
+            Problem::TooManyLines { limit } => write!(f, "more than {limit} lines"),
             Problem::RegexNotAscii => write!(
                 f,
                 "a regular expression for a file not in UTF-8 can only have ASCII characters"

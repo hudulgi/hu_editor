@@ -868,6 +868,116 @@ fn regexes_in_a_cp949_file() {
     );
 }
 
+fn commented(
+    doc: &Document,
+    marker: &str,
+    at_start: bool,
+    selection: (u64, u64),
+) -> (String, (u64, u64)) {
+    let result = doc
+        .toggle_line_comment(marker, at_start, selection)
+        .unwrap()
+        .unwrap();
+    (all_text(doc), (result.anchor, result.caret))
+}
+
+#[test]
+fn line_comments_go_on_and_come_off() {
+    let (_file, doc) = open(b"*Node\n1, 0.\n\n2, 1.\n*Element\n");
+    // Lines 1 to 4, the selection ending at the start of line 5.
+    let (text, selection) = commented(&doc, "**", true, (0, 19));
+    assert_eq!(
+        text, "** *Node\n** 1, 0.\n\n** 2, 1.\n*Element\n",
+        "not the blank line"
+    );
+    assert_eq!(selection, (0, 28), "on the same lines");
+    let (text, selection) = commented(&doc, "**", true, (3, 28));
+    assert_eq!(
+        text, "*Node\n1, 0.\n\n2, 1.\n*Element\n",
+        "all of them were: off again"
+    );
+    assert_eq!(selection, (0, 19));
+    // A caret alone: its line, and the caret stays on its character.
+    let (text, selection) = commented(&doc, "**", true, (8, 8));
+    assert_eq!(text, "*Node\n** 1, 0.\n\n2, 1.\n*Element\n");
+    assert_eq!(selection, (11, 11));
+    // One of two not commented: both get it.
+    let (text, _) = commented(&doc, "**", true, (6, 21));
+    assert_eq!(text, "*Node\n** ** 1, 0.\n\n** 2, 1.\n*Element\n");
+    for _ in 0..4 {
+        doc.undo().unwrap();
+    }
+    assert_eq!(
+        all_text(&doc),
+        "*Node\n1, 0.\n\n2, 1.\n*Element\n",
+        "one undo step each"
+    );
+
+    // Code: at the smallest indent, and off with or without the space.
+    let (_file, doc) = open(b"fn f() {\n    let a;\n  //b\n}\n");
+    let (text, _) = commented(&doc, "//", false, (9, 25));
+    assert_eq!(text, "fn f() {\n  //   let a;\n  // //b\n}\n");
+    let (text, _) = commented(&doc, "//", false, (9, 31));
+    assert_eq!(text, "fn f() {\n    let a;\n  //b\n}\n");
+    let (text, _) = commented(&doc, "//", false, (23, 23));
+    assert_eq!(
+        text, "fn f() {\n    let a;\n  b\n}\n",
+        "off without a space after it"
+    );
+    // A deck's comment goes at the line's start, indent or not.
+    let (_file, doc) = open(b"  GRID 1\n");
+    assert_eq!(commented(&doc, "$", true, (0, 0)).0, "$   GRID 1\n");
+    assert_eq!(commented(&doc, "$", true, (0, 0)).0, "  GRID 1\n");
+    // A CRLF file keeps its line breaks; an empty one gets a comment too.
+    let (_file, doc) = open(b"a\r\n\r\nb");
+    let (text, _) = commented(&doc, "$", true, (0, 8));
+    assert_eq!(text, "$ a\r\n\r\n$ b");
+    let (text, _) = commented(&doc, "$", true, (5, 5));
+    assert_eq!(text, "$ a\r\n$ \r\n$ b");
+}
+
+#[test]
+fn block_comments_wrap_and_unwrap() {
+    let (_file, doc) = open(b"x = 1 + 2;\n");
+    let block = |selection| {
+        let result = doc
+            .toggle_block_comment("/*", "*/", selection)
+            .unwrap()
+            .unwrap();
+        (all_text(&doc), (result.anchor, result.caret))
+    };
+    assert_eq!(
+        block((4, 9)),
+        ("x = /* 1 + 2 */;\n".into(), (7, 12)),
+        "the text stays selected"
+    );
+    assert_eq!(
+        block((4, 15)),
+        ("x = 1 + 2;\n".into(), (4, 9)),
+        "selected with the markers: out"
+    );
+    assert_eq!(block((9, 4)), ("x = /* 1 + 2 */;\n".into(), (12, 7)));
+    assert_eq!(
+        block((7, 12)),
+        ("x = 1 + 2;\n".into(), (4, 9)),
+        "between them: out too"
+    );
+    assert_eq!(
+        block((4, 4)),
+        ("x = /*  */1 + 2;\n".into(), (7, 7)),
+        "no selection: in between"
+    );
+    doc.undo().unwrap();
+    let (_file, doc) = open(b"<a>b</a>\n");
+    let result = doc
+        .toggle_block_comment("<!--", "-->", (0, 8))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (all_text(&doc), result.anchor, result.caret),
+        ("<!-- <a>b</a> -->\n".into(), 5, 13)
+    );
+}
 #[test]
 fn a_new_document_is_saved_as_then_saved() {
     let doc = Document::untitled(Encoding::Utf8, Eol::platform());

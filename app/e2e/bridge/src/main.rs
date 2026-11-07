@@ -4,7 +4,8 @@
 //!
 //! Differences from the app: progress is not reported, a search cannot be
 //! cancelled, the clipboard is a string here, and the settings file's path
-//! comes with the request. A delete is for good, not to the trash, and the
+//! comes with the request. What the app streams through a channel comes all
+//! at once, in `__channels` beside the answer, for the page to hand on. A delete is for good, not to the trash, and the
 //! file manager and terminal asked for are only noted.
 
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use hu_core::files::{self, FileSearch, Globs, Source};
 use hu_core::{
     BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir, ipc_message,
     settings,
@@ -402,7 +404,102 @@ impl Bridge {
                 let replaced = doc()?.replacement_for(&query, &replacement, keep_case, selection);
                 to_json(replaced.map_err(problem)?)?
             }
-            "cancel_find" => Value::Null,
+            "cancel_find" | "cancel_search_files" => Value::Null,
+            "toggle_line_comment" => {
+                let marker: String = arg(args, "marker")?;
+                let before = (arg(args, "anchor")?, arg(args, "caret")?);
+                let done = doc()?.toggle_line_comment(&marker, arg(args, "atStart")?, before);
+                to_json(done.map_err(problem)?)?
+            }
+            "toggle_block_comment" => {
+                let (open, close): (String, String) = (arg(args, "open")?, arg(args, "close")?);
+                let before = (arg(args, "anchor")?, arg(args, "caret")?);
+                to_json(
+                    doc()?
+                        .toggle_block_comment(&open, &close, before)
+                        .map_err(problem)?,
+                )?
+            }
+            "search_files" => {
+                let folder: PathBuf = arg(args, "folder")?;
+                let mut query: Query = arg(args, "query")?;
+                query.scope = None;
+                let include =
+                    Globs::new(&arg::<String>(args, "include")?).map_err(|e| problem(e.into()))?;
+                let exclude =
+                    Globs::new(&arg::<String>(args, "exclude")?).map_err(|e| problem(e.into()))?;
+                let search = FileSearch {
+                    folder: &folder,
+                    query: &query,
+                    include: &include,
+                    exclude: &exclude,
+                    fallback: arg(args, "fallback")?,
+                };
+                let open: Vec<(PathBuf, Arc<Document>)> = {
+                    let docs = self.docs.lock().unwrap();
+                    docs.values()
+                        .filter_map(|d| d.path().map(|p| (p, d.clone())))
+                        .collect()
+                };
+                let source = |path: &Path| match open.iter().find(|(p, _)| p == path) {
+                    Some((_, doc)) => Source::Open(Box::new(doc.text()), doc.encoding()),
+                    None => Source::Disk,
+                };
+                let mut found = Vec::new();
+                let done = files::search_files(
+                    &search,
+                    &source,
+                    &never,
+                    &mut |m| found.push(m),
+                    &mut |_| {},
+                )
+                .map_err(problem)?;
+                json!({ "__channels": { "onFound": to_json(found)? }, "value": to_json(done)? })
+            }
+            "replace_in_files" => {
+                let paths: Vec<PathBuf> = arg(args, "paths")?;
+                let mut query: Query = arg(args, "query")?;
+                query.scope = None;
+                let replacement: String = arg(args, "replacement")?;
+                let keep_case: bool = arg(args, "preserveCase")?;
+                let fallback: Encoding = arg(args, "fallback")?;
+                let mut out = Vec::new();
+                for path in paths {
+                    let open = {
+                        let docs = self.docs.lock().unwrap();
+                        docs.iter()
+                            .find(|(_, d)| d.path().is_some_and(|p| p == path))
+                            .map(|(&id, d)| (id, d.clone()))
+                    };
+                    let (mut doc_id, mut result) = (None, None);
+                    let replaced = match open {
+                        Some((id, doc)) => doc
+                            .replace_all(
+                                &query,
+                                &replacement,
+                                keep_case,
+                                (0, 0),
+                                &never,
+                                &mut |_| {},
+                            )
+                            .map(|r| {
+                                let (count, edit) = r.unwrap_or((0, None));
+                                doc_id = Some(id);
+                                result = edit;
+                                count
+                            }),
+                        None => {
+                            files::replace_in_file(&path, &query, &replacement, keep_case, fallback)
+                        }
+                    };
+                    let (count, error) = match replaced {
+                        Ok(count) => (count, None),
+                        Err(e) => (0, Some(problem(e))),
+                    };
+                    out.push(json!({ "path": path, "count": count, "error": error, "doc": doc_id, "result": to_json(result)? }));
+                }
+                json!(out)
+            }
             "read_clipboard" => json!(*self.clipboard.lock().unwrap()),
             // Only for the scenarios: what `copy` and `copy_box` put on the clipboard.
             "test_clipboard" => json!(*self.clipboard.lock().unwrap()),

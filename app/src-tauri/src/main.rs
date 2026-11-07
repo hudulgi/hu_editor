@@ -9,6 +9,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Docs::default())
         .manage(commands::WindowStarts::default())
+        .manage(commands::FileSearches::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
             commands::read_clipboard,
@@ -53,6 +54,11 @@ fn main() {
             commands::matches_in,
             commands::replacement_for,
             commands::cancel_find,
+            commands::toggle_line_comment,
+            commands::toggle_block_comment,
+            commands::search_files,
+            commands::cancel_search_files,
+            commands::replace_in_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

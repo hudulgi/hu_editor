@@ -60,7 +60,7 @@ export default async function (t) {
   check("separators", await page.locator(`${PANEL} .separator`).count(), 6);
   await page.hover(title("Edit"));
   await until("hovering another title switches", openMenu, "Edit");
-  check("no document: nothing to edit", await available(), []);
+  check("no document: only the files to search", await available(), ["Find in Files", "Replace in Files"]);
   await page.hover(title("Search"));
   await until("the search menu", openMenu, "Search");
   check("no document: nothing to search", await available(), []);
@@ -274,7 +274,7 @@ export default async function (t) {
   await app.menu("View", "Field Shading");
   await app.menu("View", "Explorer");
   await until("explorer off", () => page.locator(".sidebar.hidden").count(), 1);
-  check("the text takes its place", (await page.locator(".panes").boundingBox()).x, 0);
+  check("the text takes its place, beside the activity bar", (await page.locator(".panes").boundingBox()).x, 48);
   await page.click(title("View"));
   check("it shows off", (await items())[1], "Explorer|Ctrl+B");
   await page.click(label("Explorer"));

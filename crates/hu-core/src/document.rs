@@ -26,7 +26,7 @@ use crate::problem::Problem;
 use crate::query::{Count, MatchCount, Matcher, Query, Replacement};
 use crate::search::{FindResult, Step};
 use crate::source::FileSource;
-use crate::text::{BoxRows, Text, View, ViewTarget};
+use crate::text::{BoxRows, MAX_BOX_LINES, Text, View, ViewTarget};
 
 /// Larger selections are not copied to the clipboard.
 pub const MAX_COPY: u64 = 256 << 20;
@@ -664,6 +664,185 @@ impl Document {
         Err(Problem::KeptChanging.into())
     }
 
+    /// Toggle Line Comment, as VS Code does it: the lines the selection
+    /// touches get `marker` and a space, at the smallest indent of those that
+    /// are not blank or, `at_start`, at their start, as a deck wants it; or,
+    /// if all of those start with `marker` already, lose it and a space after
+    /// it. A selection ending at the start of a line leaves that line out.
+    /// One undo step, and the selection stays on its text.
+    pub fn toggle_line_comment(
+        &self,
+        marker: &str,
+        at_start: bool,
+        before: (u64, u64),
+    ) -> io::Result<Option<EditResult>> {
+        let marker = self.encoding().encode(marker).into_owned();
+        let mut insert = marker.clone();
+        insert.push(b' ');
+        for _ in 0..3 {
+            let (text, _, version) = self.snapshot();
+            let (start, end) = (before.0.min(before.1), before.0.max(before.1));
+            let first = text.line_start(start)?;
+            let last = if end > start && end > first && text.line_start(end)? == end {
+                end - 1
+            } else {
+                end
+            };
+            let mut lines = Vec::new();
+            let mut at = first;
+            loop {
+                let (content_end, next) = text.line_bounds(at)?;
+                lines.push((at, content_end));
+                if lines.len() > MAX_BOX_LINES {
+                    return Err(Problem::TooManyLines {
+                        limit: MAX_BOX_LINES,
+                    }
+                    .into());
+                }
+                match next {
+                    Some(next) if next <= last => at = next,
+                    _ => break,
+                }
+            }
+            let span = text.read_range(first, lines[lines.len() - 1].1)?;
+            let content = |&(a, b): &(u64, u64)| &span[(a - first) as usize..(b - first) as usize];
+            let lead = |line: &[u8]| {
+                if at_start {
+                    0
+                } else {
+                    line.iter()
+                        .take_while(|&&b| b == b' ' || b == b'\t')
+                        .count()
+                }
+            };
+            let blank = |line: &[u8]| line.iter().all(|b| b" \t\r".contains(b));
+            let filled: Vec<_> = lines
+                .iter()
+                .filter(|l| !blank(content(l)))
+                .copied()
+                .collect();
+            let targets = if filled.is_empty() {
+                lines.clone()
+            } else {
+                filled
+            };
+            let commented = targets.iter().all(|l| {
+                let line = content(l);
+                line[lead(line)..].starts_with(&marker)
+            });
+            let mut edits = Vec::with_capacity(targets.len());
+            if commented {
+                for l in &targets {
+                    let line = content(l);
+                    let at = lead(line);
+                    let n = marker.len() + usize::from(line.get(at + marker.len()) == Some(&b' '));
+                    let from = l.0 + at as u64;
+                    edits.push((from, from + n as u64, None));
+                }
+            } else {
+                let column = targets.iter().map(|l| lead(content(l))).min().unwrap_or(0);
+                let piece = self.added_piece(&insert);
+                for l in &targets {
+                    edits.push((
+                        l.0 + column.min(content(l).len()) as u64,
+                        l.0 + column.min(content(l).len()) as u64,
+                        piece,
+                    ));
+                }
+            }
+            let mut state = self.state.write().unwrap();
+            if state.version == version {
+                return Ok(self
+                    .apply(&mut state, &edits, EditKind::Other, before)
+                    .map(|result| keep_selection(result, &edits, before, false)));
+            }
+        }
+        Err(Problem::KeptChanging.into())
+    }
+
+    /// Toggle Block Comment, as VS Code does it: the selection goes between
+    /// `open` and `close` with a space inside each, or comes out of them if it
+    /// is between them already; without a selection, the caret goes between
+    /// them. The selection stays on its text.
+    pub fn toggle_block_comment(
+        &self,
+        open: &str,
+        close: &str,
+        before: (u64, u64),
+    ) -> io::Result<Option<EditResult>> {
+        let (open, close) = (
+            self.encoding().encode(open).into_owned(),
+            self.encoding().encode(close).into_owned(),
+        );
+        for _ in 0..3 {
+            let (text, _, version) = self.snapshot();
+            let (start, end) = (before.0.min(before.1), before.0.max(before.1));
+            let edge = (open.len() + close.len() + 2) as u64;
+            let head = text.read_range(start, (start + edge).min(end))?;
+            let tail = text.read_range(end.saturating_sub(edge).max(start), end)?;
+            let space = |b: &u8| b" \t".contains(b);
+            let lead = head.iter().take_while(|b| space(b)).count();
+            let trail = tail.iter().rev().take_while(|b| space(b)).count();
+            let wrapped = end - start >= (lead + open.len() + close.len() + trail) as u64
+                && head[lead..].starts_with(&open)
+                && tail[..tail.len() - trail].ends_with(&close);
+            // Or the markers are just outside it, as Toggle Block Comment left them.
+            let outside = text.read_range(start.saturating_sub(open.len() as u64 + 1), start)?;
+            let after = text.read_range(end, (end + close.len() as u64 + 1).min(text.len()))?;
+            let opened = outside
+                .strip_suffix(b" ")
+                .unwrap_or(&outside)
+                .ends_with(&open);
+            let closed = after
+                .strip_prefix(b" ")
+                .unwrap_or(&after)
+                .starts_with(&close);
+            let mut edits = Vec::new();
+            let mut caret = None;
+            if start != end && !wrapped && opened && closed {
+                let n = open.len() + usize::from(outside.ends_with(b" "));
+                let m = close.len() + usize::from(after.starts_with(b" "));
+                edits.push((start - n as u64, start, None));
+                edits.push((end, end + m as u64, None));
+            } else if start == end {
+                let mut both = open.clone();
+                both.extend_from_slice(b"  ");
+                both.extend_from_slice(&close);
+                edits.push((start, start, self.added_piece(&both)));
+                caret = Some(start + open.len() as u64 + 1);
+            } else if wrapped {
+                let a = start + lead as u64;
+                let n = open.len() + usize::from(head.get(lead + open.len()) == Some(&b' '));
+                let b = end - trail as u64;
+                let inner = &tail[..tail.len() - trail - close.len()];
+                let m = close.len() + usize::from(inner.last() == Some(&b' '));
+                edits.push((a, a + n as u64, None));
+                edits.push((b - m as u64, b, None));
+            } else {
+                let mut opening = open.clone();
+                opening.push(b' ');
+                let mut closing = vec![b' '];
+                closing.extend_from_slice(&close);
+                edits.push((start, start, self.added_piece(&opening)));
+                edits.push((end, end, self.added_piece(&closing)));
+            }
+            let mut state = self.state.write().unwrap();
+            if state.version == version {
+                return Ok(self
+                    .apply(&mut state, &edits, EditKind::Other, before)
+                    .map(|result| match caret {
+                        Some(caret) => EditResult {
+                            anchor: caret,
+                            caret,
+                            ..result
+                        },
+                        None => keep_selection(result, &edits, before, true),
+                    }));
+            }
+        }
+        Err(Problem::KeptChanging.into())
+    }
+
     fn replacement(
         &self,
         replacement: &str,
@@ -841,6 +1020,39 @@ impl Document {
 impl Drop for Document {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The selection `before` moved past `edits`, sorted and apart: a place
+/// inside a removal goes to its start. Text put in at the selection's start
+/// goes inside it, unless `around` (a block comment's opening goes before
+/// the text, its closing after it); an empty selection moves past it.
+fn keep_selection(
+    result: EditResult,
+    edits: &[(u64, u64, Option<Piece>)],
+    (anchor, caret): (u64, u64),
+    around: bool,
+) -> EditResult {
+    let empty = anchor == caret;
+    let moved = |at: u64, is_start: bool| {
+        // Whether text put in right here comes before it.
+        let past_insert = empty || is_start == around;
+        let mut out = at as i64;
+        for &(start, end, piece) in edits {
+            let added = piece.map_or(0, |p| p.len) as i64;
+            if at > end || (at == end && (start < end || past_insert)) {
+                out += added - (end - start) as i64;
+            } else if at > start {
+                out -= (at - start) as i64;
+            }
+        }
+        out as u64
+    };
+    let forward = anchor <= caret;
+    EditResult {
+        anchor: moved(anchor, forward),
+        caret: moved(caret, !forward),
+        ..result
     }
 }
 

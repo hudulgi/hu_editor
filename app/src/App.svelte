@@ -7,11 +7,13 @@
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import { baseName, dirName, formatNumber as fmt, formatSize as size, isWindows, joinPath, parentName, samePath } from "./lib/format";
+  import { commentsOf } from "./lib/languages";
   import { dependsOnContent, detectLang, langLabel, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import { ENCODING_LABEL } from "./lib/encodings";
   import EncodingMenu from "./lib/EncodingMenu.svelte";
   import Explorer from "./lib/Explorer.svelte";
+  import SearchView from "./lib/SearchView.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import DropMenu, { type DropEntry } from "./lib/DropMenu.svelte";
   import { describeError, t } from "./lib/i18n";
@@ -103,6 +105,7 @@
   let menuBar = $state<ReturnType<typeof MenuBar>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
+  let searchView = $state<ReturnType<typeof SearchView>>();
   let findOpen = $state(false);
   let replacing = $state(false);
   // Outlives the bar, so that F3 can go on and Ctrl+F shows it again.
@@ -144,6 +147,9 @@
   // Sidebar layout survives restarts.
   const saved = (key: string) => localStorage.getItem(`hu.${key}`);
   let sidebarOpen = $state(saved("sidebarOpen") !== "false");
+  /** What the sidebar shows, picked in the activity bar beside it. */
+  let sideView = $state<"explorer" | "search">(saved("sideView") === "search" ? "search" : "explorer");
+  $effect(() => localStorage.setItem("hu.sideView", sideView));
   let sidebarWidth = $state(Number(saved("sidebarWidth")) || 280);
 
   $effect(() => localStorage.setItem("hu.sidebarOpen", String(sidebarOpen)));
@@ -1039,6 +1045,7 @@
     const path = await openDialog({ multiple: false, directory: true });
     if (typeof path !== "string") return;
     sidebarOpen = true;
+    sideView = "explorer";
     await tick();
     await explorer?.reveal(path, true);
   }
@@ -1147,6 +1154,56 @@
   function toggleAutoSave() {
     settings.autoSave = !settings.autoSave;
     for (const tab of tabs) if (tab.state.dirty) autoSaveSoon(tab.doc.id);
+  }
+
+  // ---- Edit menu: comments, Find in Files ----------------------------------------
+
+  /** Toggle Line Comment (Ctrl+/) or Toggle Block Comment (Shift+Alt+A), as the language writes them. */
+  function toggleComment(block: boolean) {
+    const tab = active;
+    const target = editor;
+    if (!tab || !target) return;
+    const comments = commentsOf(tab.lang);
+    const pair = comments.block;
+    const marker = comments.line;
+    if (block && pair) target.editSelection((anchor, caret) => api.toggleBlockComment(tab.doc.id, pair[0], pair[1], anchor, caret));
+    else if (!block && marker) target.editSelection((anchor, caret) => api.toggleLineComment(tab.doc.id, marker, comments.atStart, anchor, caret));
+  }
+
+  /** The activity bar: a click on the view showing hides the sidebar, as in VS Code. */
+  function pickSideView(view: "explorer" | "search") {
+    if (sidebarOpen && sideView === view) sidebarOpen = false;
+    else {
+      sidebarOpen = true;
+      sideView = view;
+    }
+  }
+
+  /** Find in Files (Ctrl+Shift+F), Replace in Files (Ctrl+Shift+H): the search view, with the selected text. */
+  async function showSearch(replace: boolean) {
+    const seed = editor?.findSeed(false) ?? null;
+    sidebarOpen = true;
+    sideView = "search";
+    await tick();
+    searchView?.focus(replace, seed);
+  }
+
+  /** A match picked in the search view: its file, with it selected. */
+  async function openMatch(path: string, start: number, end: number) {
+    await openPath(path, false);
+    await tick();
+    const tab = tabOfPath(path);
+    if (tab) panes[focused].editors[tab.doc.id]?.select(start, end);
+  }
+
+  /** Replace in Files changed documents open here or in another window: their views follow. */
+  function replacedIn(done: api.FileReplaced[]) {
+    for (const { doc: id, result } of done) {
+      if (id === null || !result) continue;
+      const view = panes.find((pane) => pane.editors[id])?.editors[id];
+      if (view) view.applyResult(result);
+      else tell({ kind: "edited", id, change: result.change, state: result.state });
+    }
   }
 
   const QUIT = "hu://quit";
@@ -1335,6 +1392,9 @@
   }
 
   /** The Edit menu works on the editor, wherever the keyboard was. */
+  /** The keyboard is in the text, where the comment keys work. */
+  const inText = () => !!editor && !!document.activeElement?.closest(".editor");
+
   function inEditor(command: (target: NonNullable<typeof editor>) => unknown) {
     if (!editor) return;
     editor.focus();
@@ -1434,6 +1494,15 @@
             enabled: open,
             run: () => inEditor(pasteClipboard),
           },
+          "separator",
+          { label: t("menu.find"), key: "F", shortcut: "Ctrl+F", enabled: open, run: () => startFind(false) },
+          { label: t("menu.replace"), key: "E", shortcut: "Ctrl+H", enabled: open, run: () => startFind(true) },
+          "separator",
+          { label: t("menu.findInFiles"), key: "I", shortcut: "Ctrl+Shift+F", run: () => showSearch(false) },
+          { label: t("menu.replaceInFiles"), key: "N", shortcut: "Ctrl+Shift+H", run: () => showSearch(true) },
+          "separator",
+          { label: t("menu.lineComment"), key: "O", shortcut: "Ctrl+/", enabled: !!tab && !!commentsOf(tab.lang).line, run: () => toggleComment(false) },
+          { label: t("menu.blockComment"), key: "B", shortcut: "Shift+Alt+A", enabled: !!tab && !!commentsOf(tab.lang).block, run: () => toggleComment(true) },
           "separator",
           { label: t("menu.selectAll"), key: "A", shortcut: "Ctrl+A", enabled: open, run: () => inEditor((target) => target.selectAll()) },
           {
@@ -1772,6 +1841,11 @@
     else if (e.ctrlKey && e.key === "Tab") cycle(e.shiftKey ? -1 : 1);
     else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) cycle(e.key === "PageDown" ? 1 : -1);
     else if (mod && key === "b") sidebarOpen = !sidebarOpen;
+    else if (mod && e.shiftKey && !e.altKey && e.code === "KeyF") showSearch(false);
+    else if (mod && e.shiftKey && !e.altKey && e.code === "KeyH") showSearch(true);
+    else if (mod && e.shiftKey && !e.altKey && e.code === "KeyE") pickSideView("explorer");
+    else if (mod && !e.shiftKey && !e.altKey && e.code === "Slash" && inText()) toggleComment(false);
+    else if (e.shiftKey && e.altKey && !mod && e.code === "KeyA" && inText()) toggleComment(true);
     else if (mod && (key === "f" || key === "h") && active) startFind(key === "h");
     else if (mod && key === "g" && active) openGoto();
     else if (e.key === "F3" && active) findAgain(e.shiftKey, mod);
@@ -1947,7 +2021,36 @@
   {/if}
 
   <div class="workbench">
+    <nav class="activity" aria-label={t("activity.label")}>
+      <button
+        class:on={sidebarOpen && sideView === "explorer"}
+        title={t("activity.explorer")}
+        aria-label={t("activity.explorer")}
+        aria-pressed={sidebarOpen && sideView === "explorer"}
+        onclick={() => pickSideView("explorer")}
+      >
+        <svg viewBox="0 0 24 24"><path d="M14.5 2.5h-8v15h11v-12zM14.5 2.5v3h3M6.5 6.5h-3v15h11v-4" /></svg>
+      </button>
+      <button
+        class:on={sidebarOpen && sideView === "search"}
+        title={t("activity.search")}
+        aria-label={t("activity.search")}
+        aria-pressed={sidebarOpen && sideView === "search"}
+        onclick={() => pickSideView("search")}
+      >
+        <svg viewBox="0 0 24 24"><circle cx="13.5" cy="9.5" r="6" /><path d="M9.2 13.8L3 20" /></svg>
+      </button>
+    </nav>
     <div class="sidebar" class:hidden={!sidebarOpen} style:width="{sidebarWidth}px">
+      <div class="view" class:hidden={sideView !== "search"}>
+        <SearchView
+          bind:this={searchView}
+          near={active?.doc.path ? dirName(active.doc.path) : null}
+          onopen={openMatch}
+          onreplaced={replacedIn}
+        />
+      </div>
+      <div class="view" class:hidden={sideView !== "explorer"}>
       <Explorer
         bind:this={explorer}
         active={active?.doc.path ?? null}
@@ -1957,6 +2060,7 @@
         ondeleted={checkDisk}
         onerror={(message) => (notice = message)}
       />
+      </div>
     </div>
     <div
       class="sash"
@@ -2280,6 +2384,43 @@
   .sidebar {
     flex: none;
     min-width: 0;
+  }
+  .view {
+    height: 100%;
+  }
+  /* VS Code's activity bar: which view the sidebar shows. */
+  .activity {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    width: 48px;
+    background: #333333;
+  }
+  .activity button {
+    display: grid;
+    place-items: center;
+    height: 48px;
+    padding: 0;
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: #858585;
+  }
+  .activity button:hover,
+  .activity button.on {
+    color: #fff;
+  }
+  .activity button.on {
+    border-left-color: #fff;
+  }
+  .activity svg {
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
   }
   /* Reaches 2px over the sidebar to be easy to grab. The rest is a little space between
      the sidebar and the text, with a line on each side of it. */

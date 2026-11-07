@@ -751,3 +751,40 @@ export function scanLine(lang: CodeLang, line: string, state: LineState): { toke
   const next = SCANNERS[lang](line, state, out);
   return { tokens: out.list.length ? out.list : [{ text: line, cls: null }], state: next };
 }
+
+/** What Toggle Line Comment and Toggle Block Comment write, as VS Code has them. */
+export interface Comments {
+  line: string | null;
+  block: [string, string] | null;
+  /** A line comment goes at the line's start, not after its indent: a solver reads it from column 1. */
+  atStart: boolean;
+}
+
+const C_LIKE: [string, string] = ["/*", "*/"];
+const MARKUP: [string, string] = ["<!--", "-->"];
+const COMMENTS: Partial<Record<string, [string | null, [string, string] | null]>> = {
+  python: ["#", ['"""', '"""']],
+  shell: ["#", null],
+  batch: ["REM", null],
+  powershell: ["#", ["<#", "#>"]],
+  java: ["//", C_LIKE],
+  c: ["//", C_LIKE],
+  javascript: ["//", C_LIKE],
+  rust: ["//", C_LIKE],
+  go: ["//", C_LIKE],
+  fortran: ["!", null],
+  fortranFixed: ["!", null],
+  toml: ["#", null],
+  yaml: ["#", null],
+  json: ["//", C_LIKE],
+  ini: [";", null],
+  xml: [null, MARKUP],
+  markdown: [null, MARKUP],
+};
+
+export function commentsOf(lang: string): Comments {
+  if (lang === "abaqus") return { line: "**", block: null, atStart: true };
+  if (lang === "nastran") return { line: "$", block: null, atStart: true };
+  const [line, block] = COMMENTS[lang] ?? [null, null];
+  return { line, block, atStart: false };
+}

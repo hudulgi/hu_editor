@@ -71,6 +71,13 @@ function tauriInPage({ bridge, settingsPath, launchPath, label }) {
       const answer = await response.json();
       if ("err" in answer) throw answer.err;
       if (cmd === "open_window") window.__e2eOpenWindow(answer.ok);
+      // What the app would have streamed, handed to the channels it was for.
+      if (answer.ok?.__channels) {
+        for (const [name, messages] of Object.entries(answer.ok.__channels)) {
+          messages.forEach((message, index) => window[`_${args[name].id}`]({ index, message }));
+        }
+        return answer.ok.value;
+      }
       return answer.ok;
     },
   };

@@ -373,7 +373,7 @@ fn into_itself(path: &Path) -> io::Error {
 }
 
 #[cfg(windows)]
-fn is_hidden(meta: &Metadata) -> bool {
+pub(crate) fn is_hidden(meta: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
@@ -382,14 +382,14 @@ fn is_hidden(meta: &Metadata) -> bool {
 
 /// Finder hides system folders such as `/usr` and `/private` with a flag.
 #[cfg(target_os = "macos")]
-fn is_hidden(meta: &Metadata) -> bool {
+pub(crate) fn is_hidden(meta: &Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
     const UF_HIDDEN: u32 = 0x8000;
     meta.st_flags() & UF_HIDDEN != 0
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn is_hidden(_meta: &Metadata) -> bool {
+pub(crate) fn is_hidden(_meta: &Metadata) -> bool {
     false
 }
 
