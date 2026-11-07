@@ -23,11 +23,13 @@
     /** Said when nothing matches. */
     none: string;
     label: string;
+    /** An item made of what is typed, after the ones it matches: New File…'s file name. */
+    typed?: (text: string) => PickerItem | null;
     onpick: (key: number | string) => void;
     onclose: () => void;
   }
 
-  let { items, selected: first = null, placeholder, none, label, onpick, onclose }: Props = $props();
+  let { items, selected: first = null, placeholder, none, label, typed, onpick, onclose }: Props = $props();
 
   let filter = $state("");
   let list = $state<HTMLElement>();
@@ -35,12 +37,15 @@
 
   let shown = $derived.by(() => {
     const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return items;
     // Every word somewhere in it, in any order.
-    return items.filter((item) => {
-      const text = `${item.name} ${item.detail ?? ""}`.toLowerCase();
-      return words.every((word) => text.includes(word));
-    });
+    const matching = words.length
+      ? items.filter((item) => {
+          const text = `${item.name} ${item.detail ?? ""}`.toLowerCase();
+          return words.every((word) => text.includes(word));
+        })
+      : items;
+    const extra = filter.trim() ? typed?.(filter.trim()) : null;
+    return extra ? [...matching, extra] : matching;
   });
 
   async function select(at: number) {

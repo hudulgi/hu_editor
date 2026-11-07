@@ -230,6 +230,8 @@
   function marked(label: string, key: string) {
     const dots = label.endsWith("…") ? "…" : "";
     const text = dots ? label.slice(0, -1) : label;
+    // A file's path, in Open Recent, has no letter.
+    if (!key) return { before: label, letter: "", after: "" };
     const atWord = text.search(new RegExp(`\\b${key}`, "i"));
     const at = atWord >= 0 ? atWord : text.toLowerCase().indexOf(key.toLowerCase());
     if (at < 0) return { before: `${text}(`, letter: key, after: `)${dots}` };

@@ -129,6 +129,7 @@
           </select>
         </label>
         {@render check(t("settings.restoreSession"), settings.restoreSession, (on) => (settings.restoreSession = on))}
+        {@render check(t("settings.autoSave"), settings.autoSave, (on) => (settings.autoSave = on))}
         {@render check(t("settings.showHidden"), settings.showHidden, (on) => (settings.showHidden = on))}
       {:else if category === "editor"}
         <label class="field">

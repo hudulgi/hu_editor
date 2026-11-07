@@ -6,7 +6,7 @@
   import { emit, listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
-  import { formatNumber as fmt, formatSize as size, isWindows, parentName, samePath } from "./lib/format";
+  import { baseName, dirName, formatNumber as fmt, formatSize as size, isWindows, joinPath, parentName, samePath } from "./lib/format";
   import { dependsOnContent, detectLang, langLabel, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import { ENCODING_LABEL } from "./lib/encodings";
@@ -431,6 +431,7 @@
   /** Takes a tab out of a pane, without asking; the document goes with its last tab here. */
   function closeView(id: number, pane: Pane) {
     const last = !panes.some((other) => other !== pane && other.ids.includes(id));
+    if (last) rememberClosed(id, pane);
     removeView(id, panes.indexOf(pane));
     if (last) {
       drop(id);
@@ -648,10 +649,14 @@
     | { kind: "replaced"; id: number; loaded: Loaded; goto: number | null }
     | { kind: "moved"; id: number; path: string; name: string; lang: Lang };
 
-  /** What a new window shows first. */
+  /** Where an editor is: its selection and its first line on screen. */
+  type Place = ReturnType<NonNullable<typeof editor>["place"]>;
+
+  /** What a new window shows first: a tab moved or copied there, or nothing (New Window). */
   interface WindowStart extends Loaded {
-    place: ReturnType<NonNullable<typeof editor>["place"]> | null;
+    place: Place | null;
   }
+  type EmptyStart = { empty: true };
 
   const DOC_NEWS = "hu://doc";
   const thisWindow = getCurrentWindow().label;
@@ -779,7 +784,7 @@
   async function saveTabAs(tab: Tab) {
     await flush(tab.doc.id);
     if (saving) return false;
-    const path = await saveDialog({ defaultPath: tab.doc.path ?? `${tab.doc.name}.inp`, filters: filters() });
+    const path = await saveDialog({ defaultPath: tab.doc.path ?? untitledName(tab), filters: filters() });
     if (!path) return false;
     return writing(tab, async (progress) => {
       const done = await api.saveAs(tab.doc.id, path, progress);
@@ -787,10 +792,14 @@
       tab.doc.path = done.path;
       tab.doc.name = done.name;
       tab.lang = await langOf(tab.doc.id, done.name);
+      noteRecent(done.path);
       if (tab.chosenEncoding) rememberEncoding(done.path, tab.doc.encoding);
       if (tab.doc.id === activeId) explorer?.reveal(done.path, false);
     });
   }
+
+  /** What a new document is first saved as: its name, with the extension of its solver. */
+  const untitledName = (tab: Tab) => `${tab.doc.name}${tab.lang === "nastran" ? ".bdf" : ".inp"}`;
 
   /** Runs a save with progress in the status bar; false if it failed. */
   async function writing(tab: Tab, work: (progress: (written: number) => void) => Promise<void>) {
@@ -858,7 +867,7 @@
       return;
     }
     const path =
-      tab.doc.path ?? (await saveDialog({ defaultPath: `${tab.doc.name}.inp`, filters: filters() }));
+      tab.doc.path ?? (await saveDialog({ defaultPath: untitledName(tab), filters: filters() }));
     if (!path) return;
     const line = activeCaret?.line ?? null;
     if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
@@ -918,6 +927,7 @@
       opening.delete(path);
       if (!opened) return;
     }
+    noteRecent(path);
     if (reveal) explorer?.reveal(path, false);
   }
 
@@ -957,25 +967,194 @@
 
   let untitled = 0;
 
-  /** A new, empty document in its own tab: Untitled-1, Untitled-2, … */
-  async function newFile() {
+  /** A new, empty document in its own tab: Untitled-1, Untitled-2, … `lang` from New File…. */
+  async function newFile(lang: Lang = "plain") {
     const encoding = settings.newFileEncoding;
     const doc = await api.newDocument(encoding, settings.newFileEol === "os" ? null : settings.newFileEol);
     add({
       doc: { ...doc, name: t("doc.untitled", { n: ++untitled }) },
-      lang: "plain",
+      lang,
       chosenEncoding: encoding !== "utf8",
     });
   }
 
-  /** Reopens a tab's file after it changed on disk; unsaved changes go. */
-  async function reload(tab: Tab) {
+  /** Reopens a tab's file after it changed on disk, at `line` if given; unsaved changes go. */
+  async function reload(tab: Tab, line: number | null = null) {
     if (!tab.doc.path) return;
     try {
-      await replaceDoc(tab, await load(tab.doc.path));
+      await replaceDoc(tab, await load(tab.doc.path), line);
     } catch (e) {
       notice = describeError(e);
     }
+  }
+
+  /** Revert File: back to what is on disk, at the same line; unsaved changes go, as in VS Code. */
+  async function revert(tab: Tab) {
+    await flush(tab.doc.id);
+    await reload(tab, tab === active ? (activeCaret?.line ?? null) : null);
+  }
+
+  // ---- File menu: new files and windows, recent files, saving all -------------
+
+  let newFileOpen = $state(false);
+
+  /** New File… picked: a document for a solver, or a file of the name typed. */
+  async function pickNewFile(key: number | string) {
+    newFileOpen = false;
+    const kind = String(key);
+    if (kind.startsWith("name:")) await createNamed(kind.slice(5));
+    else await newFile(kind as Lang);
+  }
+
+  function closeNewFile() {
+    newFileOpen = false;
+    editor?.focus();
+  }
+
+  /** The file is made on disk where the save dialog says, as VS Code does, and opens; nothing there is replaced. */
+  async function createNamed(name: string) {
+    const folder = active?.doc.path ? dirName(active.doc.path) : null;
+    const path = await saveDialog({ defaultPath: folder ? joinPath(folder, name) : name, filters: filters() });
+    if (!path) return editor?.focus();
+    try {
+      await api.createFile(path);
+    } catch (e) {
+      notice = describeError(e);
+      return;
+    }
+    await openPath(path);
+  }
+
+  /** New Window: one of its own, empty; its layout is not kept. */
+  async function newWindow() {
+    try {
+      await api.openWindow({ empty: true } satisfies EmptyStart);
+    } catch (e) {
+      notice = describeError(e);
+    }
+  }
+
+  /** Open Folder…: there is no workspace to open, so the explorer shows it, open. */
+  async function openFolder() {
+    const path = await openDialog({ multiple: false, directory: true });
+    if (typeof path !== "string") return;
+    sidebarOpen = true;
+    await tick();
+    await explorer?.reveal(path, true);
+  }
+
+  const RECENT = "hu.recent";
+  const MAX_RECENT = 50;
+  /** How many Open Recent shows; More… lists them all. */
+  const RECENT_SHOWN = 10;
+
+  function readRecent(): string[] {
+    try {
+      const list = JSON.parse(localStorage.getItem(RECENT) ?? "[]");
+      return Array.isArray(list) ? list.filter((one) => typeof one === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Files opened lately, the last first, shared by the windows. */
+  let recentFiles = $state(readRecent());
+
+  function setRecent(list: string[]) {
+    recentFiles = list;
+    localStorage.setItem(RECENT, JSON.stringify(list));
+  }
+
+  const noteRecent = (path: string) => setRecent([path, ...readRecent().filter((one) => !samePath(one, path))].slice(0, MAX_RECENT));
+
+  async function openRecent(path: string) {
+    if ((await api.pathKind(path)) !== "file") {
+      setRecent(readRecent().filter((one) => !samePath(one, path)));
+      notice = t("notice.recentGone", { path });
+      return;
+    }
+    await openPath(path);
+  }
+
+  let recentOpen = $state(false);
+
+  function closeRecent() {
+    recentOpen = false;
+    editor?.focus();
+  }
+
+  /** The files of the tabs closed last, the last at the end, for Ctrl+Shift+T. */
+  let closedEditors = $state.raw<{ path: string; place: Place | null }[]>([]);
+  const MAX_CLOSED = 30;
+
+  function rememberClosed(id: number, pane: Pane) {
+    const path = tabOf(id)?.doc.path;
+    if (!path) return;
+    closedEditors = [...closedEditors, { path, place: pane.editors[id]?.place() ?? null }].slice(-MAX_CLOSED);
+  }
+
+  /** Reopen Closed Editor: the last tab closed, where it was; one open again since is passed over. */
+  async function reopenClosed() {
+    while (closedEditors.length) {
+      const { path, place } = closedEditors[closedEditors.length - 1];
+      closedEditors = closedEditors.slice(0, -1);
+      if (tabOfPath(path) || (await api.pathKind(path)) !== "file") continue;
+      await openPath(path);
+      await tick();
+      const tab = tabOfPath(path);
+      if (tab && place) panes[focused].editors[tab.doc.id]?.goToPlace(place);
+      return;
+    }
+  }
+
+  /** Save All: every file with unsaved changes; a new one asks for its name, and cancelling stops. */
+  async function saveAll() {
+    for (const tab of [...tabs]) {
+      await flush(tab.doc.id);
+      if (!tab.state.dirty) continue;
+      if (tab.doc.path === null) activate(tab.doc.id);
+      if (!(await saveTab(tab))) return;
+    }
+  }
+
+  const AUTO_SAVE_DELAY = 1000;
+  const autoSaves = new Map<number, ReturnType<typeof setTimeout>>();
+
+  /** Auto Save: a file saves a second after its last edit here, as in VS Code. */
+  function autoSaveSoon(id: number) {
+    if (!settings.autoSave) return;
+    clearTimeout(autoSaves.get(id));
+    autoSaves.set(
+      id,
+      setTimeout(() => autoSave(id), AUTO_SAVE_DELAY),
+    );
+  }
+
+  async function autoSave(id: number) {
+    autoSaves.delete(id);
+    const tab = tabOf(id);
+    if (!settings.autoSave || !tab || tab.doc.path === null || !tab.state.dirty || tab.changedOnDisk) return;
+    // After the save under way.
+    if (saving) return autoSaveSoon(id);
+    // Never over a change made to the file elsewhere: the banner tells of it instead.
+    if (await api.diskChanged(id).catch(() => false)) {
+      tab.changedOnDisk = true;
+      return;
+    }
+    await saveTab(tab);
+  }
+
+  function toggleAutoSave() {
+    settings.autoSave = !settings.autoSave;
+    for (const tab of tabs) if (tab.state.dirty) autoSaveSoon(tab.doc.id);
+  }
+
+  const QUIT = "hu://quit";
+
+  /** Exit: every window closes, each asking about its own unsaved changes. */
+  function quit() {
+    emit(QUIT, { from: thisWindow });
+    getCurrentWindow().close();
   }
 
   function watchIndex(id: number) {
@@ -1005,6 +1184,7 @@
     for (const pane of panes) if (pane !== from) pane.editors[id]?.followEdit(result.change);
     followScope(id, result.change);
     refreshAfterEdit(id, result.state);
+    autoSaveSoon(id);
     if (sharedDocs.has(id)) tell({ kind: "edited", id, change: result.change, state: result.state });
   }
 
@@ -1178,8 +1358,25 @@
         label: t("menu.file"),
         key: "F",
         items: [
-          { label: t("menu.new"), key: "N", shortcut: "Ctrl+N", run: newFile },
+          { label: t("menu.new"), key: "N", shortcut: "Ctrl+N", run: () => newFile() },
+          { label: t("menu.newFileOf"), key: "F", run: () => (newFileOpen = true) },
+          { label: t("menu.newWindow"), key: "W", shortcut: "Ctrl+Shift+N", run: newWindow },
+          "separator",
           { label: t("menu.open"), key: "O", shortcut: "Ctrl+O", run: chooseFile },
+          { label: t("menu.openFolder"), key: "D", run: openFolder },
+          {
+            label: t("menu.openRecent"),
+            key: "R",
+            items: [
+              { label: t("menu.reopenClosed"), key: "R", shortcut: "Ctrl+Shift+T", enabled: closedEditors.length > 0, run: reopenClosed },
+              "separator",
+              ...recentFiles.slice(0, RECENT_SHOWN).map((path) => ({ label: path, key: "", run: () => openRecent(path) })),
+              ...(recentFiles.length ? ["separator" as const] : []),
+              { label: t("menu.moreRecent"), key: "M", shortcut: "Ctrl+R", enabled: recentFiles.length > 0, run: () => (recentOpen = true) },
+              "separator",
+              { label: t("menu.clearRecent"), key: "C", enabled: recentFiles.length > 0, run: () => setRecent([]) },
+            ],
+          },
           "separator",
           {
             label: t("menu.save"),
@@ -1195,12 +1392,18 @@
             enabled: open && !saving,
             run: () => tab && saveTabAs(tab),
           },
+          { label: t("menu.saveAll"), key: "L", shortcut: "Ctrl+K S", enabled: tabs.some((one) => one.state.dirty) && !saving, run: saveAll },
           { label: t("menu.encoding"), key: "E", enabled: open, run: () => (encodingOpen = true) },
           "separator",
+          { label: t("menu.autoSave"), key: "U", checked: settings.autoSave, run: toggleAutoSave },
+          "separator",
+          { label: t("menu.revert"), key: "V", enabled: !!tab?.doc.path, run: () => tab && revert(tab) },
           { label: t("menu.closeTab"), key: "C", shortcut: "Ctrl+W", enabled: open || splitted, run: closeTabOrPane },
+          { label: t("menu.closeWindow"), key: "I", shortcut: "Ctrl+Shift+W", run: () => getCurrentWindow().close() },
+          "separator",
           { label: t("menu.settings"), key: "T", shortcut: "Ctrl+,", run: () => openSettings() },
           "separator",
-          { label: t("menu.exit"), key: "X", shortcut: "Alt+F4", run: () => getCurrentWindow().close() },
+          { label: t("menu.exit"), key: "X", run: quit },
         ],
       },
       {
@@ -1490,6 +1693,7 @@
     if (e.code === "KeyW") closeAll(pane);
     else if (e.code === "KeyU") closeSaved(pane);
     else if (e.code === "KeyO") toNewWindow(false);
+    else if (e.code === "KeyS") saveAll();
     else if (e.key === "Enter" && pane.activeId !== null) {
       if (e.shiftKey) togglePin(pane.activeId, pane);
       else keepOpen(pane.activeId);
@@ -1551,7 +1755,11 @@
     } else if ((mod && e.shiftKey && e.code === "KeyP") || e.key === "F1") openPalette();
     else if (mod && e.key === "F2" && active) startFind(true, true);
     else if (mod && key === "o") chooseFile();
+    else if (mod && e.shiftKey && key === "n") newWindow();
     else if (mod && key === "n") newFile();
+    else if (mod && e.shiftKey && key === "w") getCurrentWindow().close();
+    else if (mod && e.shiftKey && key === "t") reopenClosed();
+    else if (mod && !e.shiftKey && key === "r") recentOpen = true;
     else if (mod && key === "s" && active) e.shiftKey ? saveTabAs(active) : saveTab(active);
     else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
     else if (mod && e.altKey && e.code === "KeyT" && active) closeOthers(panes[focused], active.doc.id);
@@ -1659,8 +1867,8 @@
 
   /** Reopens the files of the last session, then the one passed on the command line. */
   async function restore() {
-    const start = await api.windowStart<WindowStart>();
-    if (start) return startWith(start);
+    const start = await api.windowStart<WindowStart | EmptyStart>();
+    if (start) return "empty" in start ? undefined : startWith(start);
     const session = (settings.restoreSession ? JSON.parse(localStorage.getItem("hu.session") ?? "null") : null) as Session | null;
     if (session) await restoreSession(session);
 
@@ -1698,6 +1906,9 @@
     listen<DocNews & { from: string }>(DOC_NEWS, ({ payload }) => {
       if (payload.from !== thisWindow) heard(payload);
     }).then((u) => unlisten.push(u));
+    listen<{ from: string }>(QUIT, ({ payload }) => {
+      if (payload.from !== thisWindow) getCurrentWindow().close();
+    }).then((u) => unlisten.push(u));
     restore();
     return () => {
       unlisten.forEach((u) => u());
@@ -1710,6 +1921,7 @@
   {onkeydown}
   {onkeyup}
   {onfocus}
+  onstorage={(e) => e.key === RECENT && (recentFiles = readRecent())}
   onkeydowncapture={(e) => (altAlone = e.code === "AltLeft")}
   onmousedowncapture={() => {
     altAlone = false;
@@ -1952,6 +2164,36 @@
         onclose={closeListing}
       />
     {/if}
+  {/if}
+
+  {#if newFileOpen}
+    <Picker
+      items={[
+        { key: "plain", name: t("newFile.text") },
+        { key: "abaqus", name: t("newFile.abaqus"), detail: ".inp" },
+        { key: "nastran", name: t("newFile.nastran"), detail: ".bdf" },
+      ]}
+      label={t("menu.newFileOf")}
+      placeholder={t("newFile.filter")}
+      none={t("palette.none")}
+      typed={(name) => ({ key: `name:${name}`, name: t("newFile.create", { name }) })}
+      onpick={pickNewFile}
+      onclose={closeNewFile}
+    />
+  {/if}
+
+  {#if recentOpen}
+    <Picker
+      items={recentFiles.map((path) => ({ key: path, name: baseName(path), detail: dirName(path) }))}
+      label={t("menu.openRecent")}
+      placeholder={t("recent.filter")}
+      none={t("recent.none")}
+      onpick={(path) => {
+        recentOpen = false;
+        openRecent(String(path));
+      }}
+      onclose={closeRecent}
+    />
   {/if}
 
   {#if paletteOpen}

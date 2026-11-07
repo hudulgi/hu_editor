@@ -20,6 +20,8 @@ export interface Settings {
   highlightLine: boolean;
   /** A file picked in the explorer takes the place of the last one, until it is edited or kept. */
   previewEditors: boolean;
+  /** A file saves a second after its last edit. */
+  autoSave: boolean;
   /** The Tab key inserts spaces up to the next multiple of `tabSize`; otherwise a tab character. */
   tabSpaces: boolean;
   tabSize: number;
@@ -49,6 +51,7 @@ function defaults(): Settings {
     lineNumbers: true,
     highlightLine: true,
     previewEditors: true,
+    autoSave: false,
     tabSpaces: true,
     tabSize: 8,
     syntaxHighlight: true,

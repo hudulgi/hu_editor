@@ -40,16 +40,24 @@ export default async function (t) {
   await page.click(title("File"));
   await until("a click opens", openMenu, "File");
   check("the file menu", await items(), [
-    "New|Ctrl+N",
+    "New Text File|Ctrl+N",
+    "New File…|",
+    "New Window|Ctrl+Shift+N",
     "Open…|Ctrl+O",
+    "Open Folder…|",
+    "Open Recent|›",
     "-Save|Ctrl+S",
     "-Save As…|Ctrl+Shift+S",
+    "-Save All|Ctrl+K S",
     "-Encoding…|",
+    "Auto Save|",
+    "-Revert File|",
     "-Close Tab|Ctrl+W",
+    "Close Window|Ctrl+Shift+W",
     "Settings…|Ctrl+,",
-    "Exit|Alt+F4",
+    "Exit|",
   ]);
-  check("separators", await page.locator(`${PANEL} .separator`).count(), 3);
+  check("separators", await page.locator(`${PANEL} .separator`).count(), 6);
   await page.hover(title("Edit"));
   await until("hovering another title switches", openMenu, "Edit");
   check("no document: nothing to edit", await available(), []);
@@ -82,14 +90,30 @@ export default async function (t) {
 
   // ---- File ----------------------------------------------------------------
 
-  await app.menu("File", "New");
+  await app.menu("File", "New Text File");
   await until("new", app.tabs, ["*Untitled-1"]);
   await until("the keyboard is in the editor", focusIn, "editor");
   await page.keyboard.type("hello");
   await until("typing after a menu", async () => (await app.lines())[0], "hello");
 
   await page.click(title("File"));
-  await until("save is available now", available, ["New", "Open…", "Save", "Save As…", "Encoding…", "Close Tab", "Settings…", "Exit"]);
+  await until("save is available now", available, [
+    "New Text File",
+    "New File…",
+    "New Window",
+    "Open…",
+    "Open Folder…",
+    "Open Recent",
+    "Save",
+    "Save As…",
+    "Save All",
+    "Encoding…",
+    "Auto Save",
+    "Close Tab",
+    "Close Window",
+    "Settings…",
+    "Exit",
+  ]);
   await page.mouse.click(700, 400);
   await closed();
   await app.answerDialog(t.path("new.txt"));
@@ -290,22 +314,24 @@ export default async function (t) {
 
   await clickAt(0, 0);
   await press("Alt+f");
-  await until("alt+f opens with the first item", async () => [await openMenu(), await focusIn()], ["File", "item New"]);
+  await until("alt+f opens with the first item", async () => [await openMenu(), await focusIn()], ["File", "item New Text File"]);
   await app.shot("menu-file");
   await press("ArrowDown");
-  await until("down", focusIn, "item Open…");
+  await until("down", focusIn, "item New File…");
+  await press("ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown");
+  await until("down to Open Recent", focusIn, "item Open Recent");
   await press("ArrowDown");
   await until("down skips what is unavailable", focusIn, "item Save As…");
   await press("ArrowUp");
-  await until("up skips it too", focusIn, "item Open…");
+  await until("up skips it too", focusIn, "item Open Recent");
   await press("End");
   await until("end", focusIn, "item Exit");
   await press("ArrowDown");
-  await until("down wraps", focusIn, "item New");
+  await until("down wraps", focusIn, "item New Text File");
   await press("ArrowUp");
   await until("up wraps", focusIn, "item Exit");
   await press("Home");
-  await until("home", focusIn, "item New");
+  await until("home", focusIn, "item New Text File");
   await press("ArrowRight");
   await until("right opens the next menu", async () => [await openMenu(), await focusIn()], ["Edit", `item ${(await available())[0]}`]);
   await press("ArrowLeft", "ArrowLeft");
@@ -447,7 +473,24 @@ export default async function (t) {
   check(
     "korean items",
     await kp.$$eval(`${PANEL} .label`, (els) => els.map((e) => e.textContent.trim())),
-    ["새 파일(N)", "열기(O)…", "저장(S)", "다른 이름으로 저장(A)…", "인코딩(E)…", "탭 닫기(C)", "설정(T)…", "끝내기(X)"],
+    [
+      "새 텍스트 파일(N)",
+      "새 파일(F)…",
+      "새 창(W)",
+      "열기(O)…",
+      "폴더 열기(D)…",
+      "최근 항목 열기(R)",
+      "저장(S)",
+      "다른 이름으로 저장(A)…",
+      "모두 저장(L)",
+      "인코딩(E)…",
+      "자동 저장(U)",
+      "파일 되돌리기(V)",
+      "탭 닫기(C)",
+      "창 닫기(I)",
+      "설정(T)…",
+      "끝내기(X)",
+    ],
   );
   await korean.shot("menu-korean");
   await kp.keyboard.press("n");
@@ -458,7 +501,7 @@ export default async function (t) {
   check(
     "the marked letters",
     await page.$$eval(`${PANEL} .label`, (els) => els.map((e) => `${e.querySelector("u").previousSibling?.textContent ?? ""}[${e.querySelector("u").textContent}]`)),
-    ["[N]", "[O]", "[S]", "Save [A]", "[E]", "[C]", "Se[t]", "E[x]"],
+    ["[N]", "New [F]", "New [W]", "[O]", "Open Fol[d]", "Open [R]", "[S]", "Save [A]", "Save A[l]", "[E]", "A[u]", "Re[v]", "[C]", "Close W[i]", "Se[t]", "E[x]"],
   );
   await page.keyboard.press("Escape");
 }
