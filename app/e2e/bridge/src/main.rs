@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use hu_core::files::{self, FileSearch, Globs, Source};
 use hu_core::{
-    BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir, ipc_message,
-    settings,
+    BlockKind, BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir,
+    ipc_message, settings,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -405,6 +405,26 @@ impl Bridge {
                 to_json(replaced.map_err(problem)?)?
             }
             "cancel_find" | "cancel_search_files" => Value::Null,
+            "move_lines" | "copy_lines" => {
+                let up: bool = arg(args, "up")?;
+                let before = (arg(args, "anchor")?, arg(args, "caret")?);
+                let doc = doc()?;
+                let done = if cmd == "move_lines" {
+                    doc.move_lines(up, before)
+                } else {
+                    doc.copy_lines(up, before)
+                };
+                to_json(done.map_err(problem)?)?
+            }
+            "duplicate_selection" => {
+                let before = (arg(args, "anchor")?, arg(args, "caret")?);
+                to_json(doc()?.duplicate_selection(before).map_err(problem)?)?
+            }
+            "block_around" => {
+                let kind: BlockKind = arg(args, "kind")?;
+                let selection = (arg(args, "anchor")?, arg(args, "caret")?);
+                to_json(doc()?.block_around(kind, selection).map_err(problem)?)?
+            }
             "toggle_line_comment" => {
                 let marker: String = arg(args, "marker")?;
                 let before = (arg(args, "anchor")?, arg(args, "caret")?);

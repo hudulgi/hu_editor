@@ -59,6 +59,10 @@ fn main() {
             commands::search_files,
             commands::cancel_search_files,
             commands::replace_in_files,
+            commands::move_lines,
+            commands::copy_lines,
+            commands::duplicate_selection,
+            commands::block_around,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

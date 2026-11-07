@@ -49,8 +49,12 @@
   let openAt = $state<number | null>(null);
   /** The open submenu, by its place in the open menu. */
   let subAt = $state<number | null>(null);
-  /** Moved to stay inside the window. */
-  let subFit = $state({ left: 0, up: 0 });
+  /**
+   * Moved to stay inside the window: to the menu's left, as the OS's are,
+   * where the right has no room; on the roomier side where neither has, moved
+   * over the menu by no more than it must be.
+   */
+  let subFit = $state({ flip: false, dx: 0, up: 0 });
   let subPanel = $state<HTMLElement>();
   let subTimer: ReturnType<typeof setTimeout> | undefined;
   let cameFrom: HTMLElement | null = null;
@@ -90,10 +94,15 @@
     clearTimeout(subTimer);
     if (subAt !== at) {
       subAt = at;
-      subFit = { left: 0, up: 0 };
+      subFit = { flip: false, dx: 0, up: 0 };
       await tick();
       const box = subPanel!.getBoundingClientRect();
-      subFit = { left: Math.max(0, box.right - innerWidth + 4), up: Math.max(0, box.bottom - innerHeight + 4) };
+      const menu = subPanel!.parentElement!.getBoundingClientRect();
+      const right = innerWidth - 4 - box.left;
+      const left = menu.left - 2 - 4;
+      const flip = box.width > right && left > right;
+      const dx = flip ? Math.max(0, box.width - left) : -Math.max(0, box.width - right);
+      subFit = { flip, dx, up: Math.max(0, box.bottom - innerHeight + 4) };
     }
     if (takeKeyboard) {
       await tick();
@@ -313,10 +322,10 @@
                 {#if subAt === j}
                   <div
                     class="panel sub"
+                    class:flip={subFit.flip}
                     role="menu"
                     tabindex="-1"
-                    style:margin-left="{-subFit.left}px"
-                    style:margin-top="{-subFit.up}px"
+                    style:translate="{subFit.dx}px {-subFit.up}px"
                     bind:this={subPanel}
                     onmousemove={() => clearTimeout(subTimer)}
                   >
@@ -382,6 +391,12 @@
   .panel.sub {
     top: -5px;
     left: calc(100% + 2px);
+  }
+  .panel.sub.flip {
+    left: auto;
+    right: calc(100% + 2px);
+  }
+  .panel.sub {
     max-height: calc(100vh - 8px);
     box-sizing: border-box;
     overflow-y: auto;

@@ -151,6 +151,36 @@ export function fieldAt(lang: Lang, line: string, col: number): number | null {
   return large ? Math.min(6, 2 + Math.floor((col - 8) / 16)) : Math.min(10, 2 + Math.floor((col - 8) / 8));
 }
 
+/**
+ * The field column `col` is in, as `fieldAt` counts them, without the spaces
+ * around it: for Expand Selection. Null where a line has no fields, or the
+ * field is empty.
+ */
+export function fieldRange(lang: Lang, line: string, col: number): [number, number] | null {
+  const commas = (): [number, number] => {
+    const end = line.indexOf(",", col);
+    return [line.lastIndexOf(",", col - 1) + 1, end < 0 ? line.length : end];
+  };
+  let range: [number, number];
+  if (lang === "csv" || lang === "tsv") {
+    const fields = separatedFields(line, lang === "csv" ? "," : "\t");
+    const field = fields.find((f) => col <= f.end) ?? fields[fields.length - 1];
+    range = [field.start, field.end];
+  } else if (lang === "abaqus") range = commas();
+  else if (lang !== "nastran" || line.startsWith("$") || NASTRAN_CONTROL.test(line)) return null;
+  else if (line.includes(",")) range = commas();
+  else if (col < 8) range = [0, 8];
+  else {
+    const width = line.slice(0, 8).trimEnd().endsWith("*") ? 16 : 8;
+    const start = 8 + Math.floor((col - 8) / width) * width;
+    range = [start, start + width];
+  }
+  let [a, b] = [range[0], Math.min(range[1], line.length)];
+  while (a < b && /\s/.test(line[a])) a++;
+  while (b > a && /\s/.test(line[b - 1])) b--;
+  return a < b ? [a, b] : null;
+}
+
 /** A highlighted range of a line, in UTF-16 indices, and its class. */
 export type Mark = [start: number, end: number, cls: string];
 

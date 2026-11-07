@@ -978,6 +978,138 @@ fn block_comments_wrap_and_unwrap() {
         ("<!-- <a>b</a> -->\n".into(), 5, 13)
     );
 }
+fn lines_after(result: Option<EditResult>, doc: &Document) -> (String, (u64, u64)) {
+    let result = result.expect("an edit");
+    (all_text(doc), (result.anchor, result.caret))
+}
+
+#[test]
+fn lines_move_up_and_down_with_the_selection() {
+    let (_file, doc) = open(b"a\nbb\nccc\n");
+    assert_eq!(
+        lines_after(doc.move_lines(true, (3, 4)).unwrap(), &doc),
+        ("bb\na\nccc\n".into(), (1, 2)),
+        "on the same b"
+    );
+    assert!(
+        doc.move_lines(true, (0, 1)).unwrap().is_none(),
+        "at the top"
+    );
+    // Two lines, the selection ending at the start of the line after them.
+    assert_eq!(
+        lines_after(doc.move_lines(false, (0, 5)).unwrap(), &doc),
+        ("ccc\nbb\na\n".into(), (4, 9))
+    );
+    assert!(
+        doc.move_lines(false, (4, 9)).unwrap().is_none(),
+        "at the bottom"
+    );
+    for _ in 0..2 {
+        doc.undo().unwrap();
+    }
+    assert_eq!(all_text(&doc), "a\nbb\nccc\n", "one undo step each");
+    // The last line without a break: the breaks stay where they were.
+    let (_file, doc) = open(b"a\r\nbb");
+    assert_eq!(
+        lines_after(doc.move_lines(true, (5, 5)).unwrap(), &doc),
+        ("bb\r\na".into(), (2, 2)),
+        "after bb still"
+    );
+    assert_eq!(
+        lines_after(doc.move_lines(false, (0, 2)).unwrap(), &doc),
+        ("a\r\nbb".into(), (3, 5))
+    );
+}
+
+#[test]
+fn lines_and_selections_are_copied() {
+    let (_file, doc) = open(b"a\nbb\n");
+    assert_eq!(
+        lines_after(doc.copy_lines(false, (3, 4)).unwrap(), &doc),
+        ("a\nbb\nbb\n".into(), (6, 7)),
+        "onto the copy below"
+    );
+    assert_eq!(
+        lines_after(doc.copy_lines(true, (0, 0)).unwrap(), &doc),
+        ("a\na\nbb\nbb\n".into(), (0, 0)),
+        "on the copy above"
+    );
+    let (_file, doc) = open(b"x\nlast");
+    assert_eq!(
+        lines_after(doc.copy_lines(false, (4, 4)).unwrap(), &doc),
+        ("x\nlast\nlast".into(), (9, 9)),
+        "a break for the last line"
+    );
+    assert_eq!(
+        lines_after(doc.copy_lines(true, (9, 9)).unwrap(), &doc),
+        ("x\nlast\nlast\nlast".into(), (9, 9))
+    );
+    let (_file, doc) = open(b"GRID 1 2\n");
+    assert_eq!(
+        lines_after(doc.duplicate_selection((5, 6)).unwrap(), &doc),
+        ("GRID 11 2\n".into(), (6, 7)),
+        "the copy selected"
+    );
+    assert_eq!(
+        lines_after(doc.duplicate_selection((7, 6)).unwrap(), &doc),
+        ("GRID 111 2\n".into(), (8, 7))
+    );
+    assert_eq!(
+        lines_after(doc.duplicate_selection((2, 2)).unwrap(), &doc),
+        ("GRID 111 2\nGRID 111 2\n".into(), (13, 13)),
+        "no selection: the line"
+    );
+}
+
+#[test]
+fn blocks_are_keywords_cards_and_paragraphs() {
+    let deck = "*Heading\n** c\n*Node\n1, 0.\n** c\n2, 1.\n*Element\n1, 1, 2\n";
+    let (_file, doc) = open(deck.as_bytes());
+    let block = |kind, at: usize| {
+        let (a, b) = doc.block_around(kind, (at as u64, at as u64)).unwrap();
+        deck[a as usize..b as usize].to_string()
+    };
+    assert_eq!(
+        block(BlockKind::Abaqus, deck.find("0.").unwrap()),
+        "*Node\n1, 0.\n** c\n2, 1.\n",
+        "comments inside too"
+    );
+    assert_eq!(
+        block(BlockKind::Abaqus, deck.find("*Node").unwrap()),
+        "*Node\n1, 0.\n** c\n2, 1.\n"
+    );
+    assert_eq!(
+        block(BlockKind::Abaqus, deck.find("1, 1").unwrap()),
+        "*Element\n1, 1, 2\n",
+        "to the end"
+    );
+    let bulk = "GRID    1\nCQUAD4  1       1\n+       5\n        6\nGRID*   2\n*       3\n";
+    let (_file, doc) = open(bulk.as_bytes());
+    let card = |at: usize| {
+        let (a, b) = doc
+            .block_around(BlockKind::Nastran, (at as u64, at as u64))
+            .unwrap();
+        bulk[a as usize..b as usize].to_string()
+    };
+    assert_eq!(
+        card(bulk.find("5").unwrap()),
+        "CQUAD4  1       1\n+       5\n        6\n",
+        "with its continuations"
+    );
+    assert_eq!(card(bulk.find("3").unwrap()), "GRID*   2\n*       3\n");
+    let prose = "one\ntwo\n\nthree\r\nfour\r\n\r\nfive";
+    let (_file, doc) = open(prose.as_bytes());
+    let paragraph = |at: usize| {
+        let (a, b) = doc
+            .block_around(BlockKind::Paragraph, (at as u64, at as u64))
+            .unwrap();
+        prose[a as usize..b as usize].to_string()
+    };
+    assert_eq!(paragraph(prose.find("two").unwrap()), "one\ntwo\n");
+    assert_eq!(paragraph(prose.find("four").unwrap()), "three\r\nfour\r\n");
+    assert_eq!(paragraph(prose.find("five").unwrap()), "five");
+}
+
 #[test]
 fn a_new_document_is_saved_as_then_saved() {
     let doc = Document::untitled(Encoding::Utf8, Eol::platform());

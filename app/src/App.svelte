@@ -1497,8 +1497,26 @@
           "separator",
           { label: t("menu.lineComment"), key: "O", shortcut: "Ctrl+/", enabled: !!tab && !!commentsOf(tab.lang).line, run: () => toggleComment(false) },
           { label: t("menu.blockComment"), key: "B", shortcut: "Shift+Alt+A", enabled: !!tab && !!commentsOf(tab.lang).block, run: () => toggleComment(true) },
-          "separator",
+        ],
+      },
+      {
+        label: t("menu.selection"),
+        // Not C, W, R, P or L: Alt+ those is column mode and the find bar's toggles.
+        key: "T",
+        items: [
           { label: t("menu.selectAll"), key: "A", shortcut: "Ctrl+A", enabled: open, run: () => inEditor((target) => target.selectAll()) },
+          { label: t("menu.expandSelection"), key: "E", shortcut: "Ctrl+Shift+Alt+→", enabled: open, run: () => inEditor((target) => target.expandSelection()) },
+          { label: t("menu.shrinkSelection"), key: "S", shortcut: "Ctrl+Shift+Alt+←", enabled: open, run: () => inEditor((target) => target.shrinkSelection()) },
+          "separator",
+          { label: t("menu.copyLineUp"), key: "C", shortcut: "Ctrl+Shift+Alt+↑", enabled: open, run: () => inEditor((target) => target.copyLines(true)) },
+          { label: t("menu.copyLineDown"), key: "D", shortcut: "Ctrl+Shift+Alt+↓", enabled: open, run: () => inEditor((target) => target.copyLines(false)) },
+          { label: t("menu.moveLineUp"), key: "M", shortcut: "Alt+↑", enabled: open, run: () => inEditor((target) => target.moveLines(true)) },
+          { label: t("menu.moveLineDown"), key: "O", shortcut: "Alt+↓", enabled: open, run: () => inEditor((target) => target.moveLines(false)) },
+          { label: t("menu.duplicate"), key: "U", shortcut: "Ctrl+D", enabled: open, run: () => inEditor((target) => target.duplicate()) },
+          "separator",
+          { label: t("menu.cursorAbove"), key: "B", shortcut: "Ctrl+Alt+↑", enabled: open, run: () => inEditor((target) => target.addCursor(-1)) },
+          { label: t("menu.cursorBelow"), key: "W", shortcut: "Ctrl+Alt+↓", enabled: open, run: () => inEditor((target) => target.addCursor(1)) },
+          "separator",
           {
             label: t("menu.columnMode"),
             key: "L",

@@ -27,7 +27,9 @@ pub mod text;
 
 pub use decode::Encoding;
 pub use dialect::Dialect;
-pub use document::{Change, DocState, Document, EditResult, Eol, MAX_COPY, MAX_MARKS, MAX_REPLACE};
+pub use document::{
+    BlockKind, Change, DocState, Document, EditResult, Eol, MAX_COPY, MAX_MARKS, MAX_REPLACE,
+};
 pub use history::EditKind;
 pub use line_index::IndexStatus;
 pub use problem::{Problem, ipc_message};

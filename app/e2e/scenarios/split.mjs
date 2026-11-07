@@ -606,7 +606,7 @@ export default async function (t) {
 
   const korean = await t.launch({ settings: { language: "ko" } });
   await korean.page.waitForSelector(".empty");
-  await korean.page.click(".menubar .title >> nth=3");
+  await korean.page.click(".menubar .title >> nth=4");
   check(
     "korean menu",
     (await korean.page.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent.trim()))).slice(7),

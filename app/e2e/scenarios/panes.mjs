@@ -126,7 +126,7 @@ export default async function (t) {
 
   // In Korean, as the words of VS Code's menu.
   const korean = await t.launch({ settings: { language: "ko" } });
-  await korean.page.click(".menubar .title >> nth=3");
+  await korean.page.click(".menubar .title >> nth=4");
   await korean.page.click(".menubar .panel .label >> text=편집기 레이아웃");
   await korean.page.waitForSelector(SUB);
   check(

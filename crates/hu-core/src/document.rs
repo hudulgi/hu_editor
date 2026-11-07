@@ -1091,5 +1091,9 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.hu-save"))
 }
 
+mod lines;
+
+pub use lines::BlockKind;
+
 #[cfg(test)]
 mod tests;

@@ -30,7 +30,7 @@
   import { fontStack, lineHeight, settings } from "./settings.svelte";
   import { dependsOnLinesAbove, isCodeLang } from "./languages";
   import { LineStates } from "./lineStates";
-  import { applyMarks, fieldAt, findMatches, tokenizeLines, type Lang, type Mark } from "./syntax";
+  import { applyMarks, fieldAt, fieldRange, findMatches, tokenizeLines, type Lang, type Mark } from "./syntax";
 
   interface Props {
     doc: api.DocInfo;
@@ -559,10 +559,31 @@
     queue = queue.then(task).catch((e) => onerror?.(describeError(e)));
   }
 
+  /** The Selection menu's keys, VS Code's, with Ctrl added where its own are the box's (Alt+Shift+arrows). */
+  function selectionKey(e: KeyboardEvent, mod: boolean): (() => unknown) | null {
+    const vertical = e.key === "ArrowUp" || e.key === "ArrowDown";
+    const up = e.key === "ArrowUp";
+    if (vertical && e.altKey && !mod && !e.shiftKey) return () => moveLines(up);
+    if (vertical && e.altKey && mod && e.shiftKey) return () => copyLines(up);
+    if (vertical && e.altKey && mod && !e.shiftKey) return () => addCursor(up ? -1 : 1);
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && e.altKey && mod && e.shiftKey) {
+      return e.key === "ArrowRight" ? expandSelection : shrinkSelection;
+    }
+    if (mod && !e.altKey && !e.shiftKey && e.code === "KeyD") return duplicate;
+    return null;
+  }
+
   function onkeydown(e: KeyboardEvent) {
     // While composing, the IME owns the keys.
     if (e.isComposing || e.keyCode === 229) return;
     const mod = e.ctrlKey || e.metaKey;
+    const selecting = selectionKey(e, mod);
+    if (selecting) {
+      e.preventDefault();
+      e.stopPropagation();
+      selecting();
+      return;
+    }
     // Ctrl+Alt belongs to the app, or is AltGr typing a character.
     if (mod && e.altKey) return;
     // Alt+C toggles column mode; `code`, since Option+C types ç on a Mac.
@@ -927,6 +948,108 @@
         resolve();
       }),
     );
+  }
+
+  // ---- The Selection menu ---------------------------------------------------
+
+  /** A change the core makes from the selection, run in turn. */
+  function lineWork(edit: () => Promise<api.EditResult | null>) {
+    return new Promise<void>((resolve) =>
+      enqueue(async () => {
+        try {
+          const result = await edit();
+          if (result) await applied(result);
+        } finally {
+          resolve();
+        }
+      }),
+    );
+  }
+
+  /** Move Line Up or Down (Alt+↑/↓). */
+  export function moveLines(up: boolean) {
+    box = null;
+    return lineWork(() => api.moveLines(doc.id, up, anchor, caret));
+  }
+
+  /** Copy Line Up or Down (Ctrl+Shift+Alt+↑/↓). */
+  export function copyLines(up: boolean) {
+    box = null;
+    return lineWork(() => api.copyLines(doc.id, up, anchor, caret));
+  }
+
+  /** Duplicate Selection (Ctrl+D); without one, the line goes below. */
+  export function duplicate() {
+    box = null;
+    return lineWork(() => api.duplicateSelection(doc.id, anchor, caret));
+  }
+
+  /** Add Cursor Above or Below (Ctrl+Alt+↑/↓): carets in a column, which is a box of no width. */
+  export function addCursor(dy: number) {
+    enqueue(() => boxMove(0, dy));
+  }
+
+  /** What Shrink Selection goes back through: the selection before each expansion, and after it. */
+  let grown: { before: [number, number]; after: [number, number] }[] = [];
+
+  /** Expand Selection (Ctrl+Shift+Alt+→): word, field, the line's text, the line, the block, everything. */
+  export function expandSelection() {
+    enqueue(async () => {
+      box = null;
+      await revealCaret();
+      const next = await expansion(selStart, selEnd);
+      if (!next) return;
+      const last = grown.at(-1);
+      if (last && (last.after[0] !== anchor || last.after[1] !== caret)) grown = [];
+      grown.push({ before: [anchor, caret], after: next });
+      [anchor, caret] = next;
+      preferredCol = null;
+      await revealCaret();
+    });
+  }
+
+  /** Shrink Selection (Ctrl+Shift+Alt+←): back to what the last expansion grew from. */
+  export function shrinkSelection() {
+    enqueue(async () => {
+      const last = grown.pop();
+      if (!last || last.after[0] !== anchor || last.after[1] !== caret) {
+        grown = [];
+        return;
+      }
+      [anchor, caret] = last.before;
+      preferredCol = null;
+      await revealCaret();
+    });
+  }
+
+  /** The smallest step out from `[start, end)`: within its line, then the core's block, then all. */
+  async function expansion(start: number, end: number): Promise<[number, number] | null> {
+    if (!view) return null;
+    const steps: [number, number][] = [];
+    const row = rowOf(start);
+    if (row >= 0) {
+      const line = view.lines[row];
+      const at = (col: number) => offsetOf(line, col);
+      if (end <= line.offset + line.len) {
+        const [a, b] = [colOf(line, start), colOf(line, end)];
+        let [wa, wb] = [a, b];
+        while (wa > 0 && isWord(line.text[wa - 1])) wa--;
+        while (wb < line.text.length && isWord(line.text[wb])) wb++;
+        if (wa < wb && [...line.text.slice(wa, wb)].every(isWord)) steps.push([at(wa), at(wb)]);
+        const field = fieldRange(lang, line.text, a);
+        if (field && field[0] <= a && b <= field[1]) steps.push([at(field[0]), at(field[1])]);
+        steps.push([line.offset, line.offset + line.len]);
+      }
+      const next = view.lines[row + 1]?.offset;
+      if (next !== undefined) steps.push([line.offset, next]);
+    }
+    const wider = (step: [number, number]) => step[0] <= start && end <= step[1] && step[1] - step[0] > end - start;
+    const near = steps.filter(wider).sort((x, y) => x[1] - x[0] - (y[1] - y[0]))[0];
+    if (near) return near;
+    const kind = lang === "abaqus" || lang === "nastran" ? lang : "paragraph";
+    const block = await api.blockAround(doc.id, kind, start, end);
+    if (wider(block)) return block;
+    return start > 0 || end < view.len ? [0, view.len] : null;
   }
 
   /** Shows the result of a change made elsewhere (Replace All), keeping the place. */

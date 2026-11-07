@@ -388,3 +388,18 @@ export interface FileReplaced {
 
 export const replaceInFiles = (paths: string[], query: Query, replacement: string, preserveCase: boolean, fallback: Encoding) =>
   invoke<FileReplaced[]>("replace_in_files", { paths, query, replacement, preserveCase, fallback });
+
+// ---- The Selection menu's line work ---------------------------------------------
+
+/** Move Line Up or Down; null at the top or the bottom. */
+export const moveLines = (id: number, up: boolean, anchor: number, caret: number) =>
+  invoke<EditResult | null>("move_lines", { id, up, anchor, caret });
+/** Copy Line Up or Down. */
+export const copyLines = (id: number, up: boolean, anchor: number, caret: number) =>
+  invoke<EditResult | null>("copy_lines", { id, up, anchor, caret });
+/** Duplicate Selection; without one, the line. */
+export const duplicateSelection = (id: number, anchor: number, caret: number) =>
+  invoke<EditResult | null>("duplicate_selection", { id, anchor, caret });
+/** The block the selection's lines are in: a keyword's lines, a card's, or a paragraph. */
+export const blockAround = (id: number, kind: "abaqus" | "nastran" | "paragraph", anchor: number, caret: number) =>
+  invoke<[number, number]>("block_around", { id, kind, anchor, caret });

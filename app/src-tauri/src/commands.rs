@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use hu_core::files::{self, FileMatches, FileSearch, Globs, Searched, Source};
 use hu_core::{
-    BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindResult,
-    IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, settings,
+    BlockKind, BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol,
+    FindResult, IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, settings,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -996,6 +996,77 @@ pub async fn replace_in_files(
                 done
             })
             .collect())
+    })
+    .await
+}
+
+/// Move Line Up or Down; `None` at the top or the bottom.
+#[tauri::command]
+pub async fn move_lines(
+    id: u32,
+    up: bool,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .move_lines(up, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Copy Line Up or Down.
+#[tauri::command]
+pub async fn copy_lines(
+    id: u32,
+    up: bool,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .copy_lines(up, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Duplicate Selection; without one, the line.
+#[tauri::command]
+pub async fn duplicate_selection(
+    id: u32,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<EditResult>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .duplicate_selection((anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// The block the selection's lines are in, for Expand Selection.
+#[tauri::command]
+pub async fn block_around(
+    id: u32,
+    kind: BlockKind,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<(u64, u64), String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .block_around(kind, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
     })
     .await
 }

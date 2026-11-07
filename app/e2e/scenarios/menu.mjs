@@ -36,7 +36,7 @@ export default async function (t) {
 
   // ---- With nothing open ---------------------------------------------------
 
-  check("the menus", await page.$$eval(TITLE, (els) => els.map((e) => e.textContent)), ["File", "Edit", "Search", "View", "Help"]);
+  check("the menus", await page.$$eval(TITLE, (els) => els.map((e) => e.textContent)), ["File", "Edit", "Selection", "Search", "View", "Help"]);
   await page.click(title("File"));
   await until("a click opens", openMenu, "File");
   check("the file menu", await items(), [
@@ -176,11 +176,11 @@ export default async function (t) {
   await press("Control+z", "Control+z");
   await until("back to the original", app.lines, [...DECK.split("\n")]);
 
-  await app.menu("Edit", "Select All");
+  await app.menu("Selection", "Select All");
   await until("select all", app.position, `Ln 4, Col 1 (${DECK.length} selected)`);
-  await app.menu("Edit", "Column Mode");
+  await app.menu("Selection", "Column Mode");
   await until("column mode on", async () => (await app.status()).includes("COL"), true);
-  await page.click(title("Edit"));
+  await page.click(title("Selection"));
   check("it shows on", (await items()).at(-1), "✓Column Mode|Alt+C");
   await page.click(label("Column Mode"));
   await until("column mode off", async () => (await app.status()).includes("COL"), false);
@@ -468,7 +468,7 @@ export default async function (t) {
   const korean = await t.launch({ settings: { language: "ko" } });
   const kp = korean.page;
   await kp.waitForSelector(".empty");
-  check("korean titles", await kp.$$eval(TITLE, (els) => els.map((e) => e.textContent)), ["파일(F)", "편집(E)", "찾기(S)", "보기(V)", "도움말(H)"]);
+  check("korean titles", await kp.$$eval(TITLE, (els) => els.map((e) => e.textContent)), ["파일(F)", "편집(E)", "선택 영역(T)", "찾기(S)", "보기(V)", "도움말(H)"]);
   await kp.click(TITLE);
   check(
     "korean items",

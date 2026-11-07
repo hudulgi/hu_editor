@@ -48,8 +48,6 @@ export default async function (t) {
     "Paste|Ctrl+V",
     "Toggle Line Comment|Ctrl+/",
     "-Toggle Block Comment|Shift+Alt+A",
-    "Select All|Ctrl+A",
-    "Column Mode|Alt+C",
   ]);
   await page.hover(".menubar .title:text-matches('^Search$')");
   await until("the search menu", () => page.textContent(".menubar .title.open"), "Search");
@@ -239,8 +237,6 @@ export default async function (t) {
     "붙여넣기(P)",
     "줄 주석 설정/해제(O)",
     "블록 주석 설정/해제(B)",
-    "모두 선택(A)",
-    "컬럼 모드(L)",
   ]);
   await ko.hover(".menubar .title:text-matches('^찾기')");
   await until("its search menu", () => ko.textContent(".menubar .title.open"), "찾기(S)");
