@@ -54,6 +54,14 @@ pub enum Problem {
     IntoItself {
         name: String,
     },
+    /// A regular expression that does not parse, in the regex crate's words.
+    BadRegex {
+        message: String,
+    },
+    /// A regular expression asked for a line break: it is matched within a line.
+    RegexLineBreak,
+    /// A regular expression with more than ASCII, for a text not in UTF-8.
+    RegexNotAscii,
 }
 
 impl fmt::Display for Problem {
@@ -100,6 +108,15 @@ impl fmt::Display for Problem {
             Problem::IntoItself { name } => {
                 write!(f, "\"{name}\" cannot go into itself or a folder inside it")
             }
+            Problem::BadRegex { message } => write!(f, "invalid regular expression: {message}"),
+            Problem::RegexLineBreak => write!(
+                f,
+                "a regular expression is matched within a line: it cannot find line breaks"
+            ),
+            Problem::RegexNotAscii => write!(
+                f,
+                "a regular expression for a file not in UTF-8 can only have ASCII characters"
+            ),
         }
     }
 }

@@ -10,6 +10,8 @@ export interface DocState {
   dirty: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  /** Bumped by every change to the text. */
+  version: number;
 }
 
 export interface DocInfo {
@@ -141,6 +143,7 @@ export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", {
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });
 /** Which solver the document's content looks written for, if it says. */
 export const detectDialect = (id: number) => invoke<"abaqus" | "nastran" | null>("detect_dialect", { id });
+/** Stops the running search, replace or count. */
 export const cancelFind = (id: number) => invoke<void>("cancel_find", { id });
 
 export const view = (id: number, target: ViewTarget, rows: number) =>
@@ -217,11 +220,26 @@ export interface Matching {
   wholeWord: boolean;
 }
 
+/** What the find bar asks for. */
+export interface Query extends Matching {
+  needle: string;
+  /** The needle is a regular expression, matched within a line. */
+  regex: boolean;
+  /** Find in Selection: only matches inside `[start, end)`. */
+  scope: [number, number] | null;
+}
+
+export interface MatchCount {
+  total: number;
+  /** From 1; null if the selection is not one of them. */
+  index: number | null;
+}
+
 export function replaceAll(
   id: number,
-  needle: string,
+  query: Query,
   replacement: string,
-  matching: Matching,
+  preserveCase: boolean,
   anchor: number,
   caret: number,
   onProgress: (searched: number) => void,
@@ -230,14 +248,35 @@ export function replaceAll(
   channel.onmessage = onProgress;
   return invoke<ReplaceOutcome>("replace_all", {
     id,
-    needle,
+    query,
     replacement,
-    ...matching,
+    preserveCase,
     anchor,
     caret,
     onProgress: channel,
   });
 }
+
+/** How many matches there are and which one is selected; null if stopped by a newer count. */
+export function countMatches(id: number, query: Query, anchor: number, caret: number, onProgress: (read: number) => void) {
+  const channel = new Channel<number>();
+  channel.onmessage = onProgress;
+  return invoke<MatchCount | null>("count_matches", { id, query, anchor, caret, onProgress: channel });
+}
+
+/** Where the matches starting in `[from, to)` are, to mark them on screen. */
+export const matchesIn = (id: number, query: Query, from: number, to: number) =>
+  invoke<[number, number][]>("matches_in", { id, query, from, to });
+
+/** What the selection would be replaced with, if it is a match. */
+export const replacementFor = (
+  id: number,
+  query: Query,
+  replacement: string,
+  preserveCase: boolean,
+  anchor: number,
+  caret: number,
+) => invoke<string | null>("replacement_for", { id, query, replacement, preserveCase, anchor, caret });
 
 export interface SavedAs {
   path: string;
@@ -265,22 +304,16 @@ export function save(id: number, onProgress: (written: number) => void) {
   return invoke<DocState>("save", { id, onProgress: channel });
 }
 
+/** The next match after the selection, or the one before it `backward`, going round the end. */
 export function find(
   id: number,
-  needle: string,
-  from: number,
-  matching: Matching,
+  query: Query,
+  anchor: number,
+  caret: number,
   backward: boolean,
   onProgress: (searched: number) => void,
 ) {
   const channel = new Channel<number>();
   channel.onmessage = onProgress;
-  return invoke<FindOutcome>("find", {
-    id,
-    needle,
-    from,
-    ...matching,
-    backward,
-    onProgress: channel,
-  });
+  return invoke<FindOutcome>("find", { id, query, anchor, caret, backward, onProgress: channel });
 }

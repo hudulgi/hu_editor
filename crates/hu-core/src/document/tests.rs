@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::search::{FindOptions, FindResult, Matching};
+use crate::search::{FindOptions, FindResult};
 use crate::source::BLOCK_SIZE;
 use crate::text::BoxRows;
 
@@ -326,7 +326,7 @@ fn search_sees_edits() {
         &AtomicBool::new(false),
         &mut |_| {},
     );
-    assert_eq!(found.unwrap(), FindResult::Found(at));
+    assert_eq!(found.unwrap(), FindResult::Found(at, at + 6));
 }
 
 #[test]
@@ -556,22 +556,30 @@ fn box_paste_spreads_lines() {
     assert_eq!(last, 4);
 }
 
-fn naive_replace(model: &[u8], needle: &[u8], with: &[u8], matching: Matching) -> (Vec<u8>, usize) {
+fn query(needle: &str, case_sensitive: bool, whole_word: bool) -> Query {
+    Query {
+        needle: needle.into(),
+        case_sensitive,
+        whole_word,
+        ..Query::default()
+    }
+}
+
+fn naive_replace(model: &[u8], needle: &[u8], with: &[u8], query: &Query) -> (Vec<u8>, usize) {
     let word =
         |b: Option<&u8>| b.is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80);
     let (mut out, mut count, mut i) = (Vec::new(), 0, 0);
     while i < model.len() {
         let hit = model.len() - i >= needle.len() && {
             let window = &model[i..i + needle.len()];
-            let same = if matching.case_sensitive {
+            let same = if query.case_sensitive {
                 window == needle
             } else {
                 window.eq_ignore_ascii_case(needle)
             };
             // The needles here are words without digits.
             let end = i + needle.len();
-            same && !(matching.whole_word
-                && (i > 0 && word(model.get(i - 1)) || word(model.get(end))))
+            same && !(query.whole_word && (i > 0 && word(model.get(i - 1)) || word(model.get(end))))
         };
         if hit {
             out.extend_from_slice(with);
@@ -600,20 +608,17 @@ fn replace_all_matches_a_naive_replace() {
         );
     }
     let cancel = AtomicBool::new(false);
-    let matching = |case_sensitive, whole_word| Matching {
-        case_sensitive,
-        whole_word,
-    };
-    for (needle, with, matching) in [
-        ("*Element", "*ELEM", matching(true, false)),
-        ("x", "y", matching(true, true)),
-        ("*element", "", matching(false, false)),
-        ("0000", "0\n0", matching(true, false)),
+    for (with, query) in [
+        ("*ELEM", query("*Element", true, false)),
+        ("y", query("x", true, true)),
+        ("", query("*element", false, false)),
+        ("0\n0", query("0000", true, false)),
     ] {
+        let needle = query.needle.as_str();
         let (expected, count) =
-            naive_replace(&model, needle.as_bytes(), &stored(&doc, with), matching);
+            naive_replace(&model, needle.as_bytes(), &stored(&doc, with), &query);
         let (replaced, _) = doc
-            .replace_all(needle, with, matching, (0, 0), &cancel, &mut |_| {})
+            .replace_all(&query, with, false, (0, 0), &cancel, &mut |_| {})
             .unwrap()
             .unwrap();
         assert_eq!(replaced, count, "{needle:?}");
@@ -633,9 +638,9 @@ fn replace_all_without_matches_changes_nothing() {
     let (_file, doc) = open(b"*Heading\n");
     let result = doc
         .replace_all(
-            "missing",
+            &query("missing", false, false),
             "x",
-            Matching::default(),
+            false,
             (0, 0),
             &AtomicBool::new(false),
             &mut |_| {},
@@ -643,6 +648,224 @@ fn replace_all_without_matches_changes_nothing() {
         .unwrap();
     assert!(matches!(result, Some((0, None))));
     assert!(!doc.state().dirty);
+}
+
+fn regex(needle: &str) -> Query {
+    Query {
+        needle: needle.into(),
+        regex: true,
+        ..Query::default()
+    }
+}
+
+fn found(doc: &Document, query: &Query, selection: (u64, u64), backward: bool) -> FindResult {
+    doc.find(
+        query,
+        selection,
+        backward,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap()
+}
+
+#[test]
+fn find_goes_on_past_a_selected_match() {
+    let (_file, doc) = open(b"GRID GRID GRIDX\naaaa\n");
+    let grid = query("GRID", false, true);
+    assert_eq!(found(&doc, &grid, (0, 0), false), FindResult::Found(0, 4));
+    assert_eq!(found(&doc, &grid, (0, 4), false), FindResult::Found(5, 9));
+    assert_eq!(
+        found(&doc, &grid, (5, 9), false),
+        FindResult::Found(0, 4),
+        "round, past GRIDX"
+    );
+    assert_eq!(found(&doc, &grid, (5, 9), true), FindResult::Found(0, 4));
+    // A selection that is not a match: from the caret.
+    assert_eq!(found(&doc, &grid, (6, 1), false), FindResult::Found(5, 9));
+    // Overlapping ones are found going forward.
+    let aa = regex("aa");
+    assert_eq!(found(&doc, &aa, (16, 18), false), FindResult::Found(17, 19));
+    // An empty match is gone past too.
+    let starts = regex("^");
+    assert_eq!(
+        found(&doc, &starts, (0, 0), false),
+        FindResult::Found(16, 16)
+    );
+    assert_eq!(
+        found(&doc, &starts, (16, 16), false),
+        FindResult::Found(21, 21)
+    );
+    assert_eq!(
+        found(&doc, &Query::default(), (0, 0), false),
+        FindResult::NotFound
+    );
+}
+
+#[test]
+fn counts_are_kept_until_the_text_changes() {
+    let (_file, doc) = open(b"GRID 1\nGRID 2\nGRID 3\n");
+    let never = AtomicBool::new(false);
+    let count = |query: &Query, selection| {
+        let mut read = 0;
+        let counted = doc
+            .count(query, selection, &never, &mut |n| read = n)
+            .unwrap()
+            .unwrap();
+        (counted.total, counted.index, read)
+    };
+    let grid = query("grid", false, false);
+    let (total, index, read) = count(&grid, (7, 11));
+    assert_eq!((total, index), (3, Some(2)));
+    assert!(read > 0, "counted");
+    let (total, index, read) = count(&grid, (11, 7));
+    assert_eq!((total, index, read), (3, Some(2), 0), "kept");
+    assert_eq!(count(&grid, (8, 11)).1, None);
+    doc.edit(0, 0, "GRID 0\n", EditKind::Other, (0, 0));
+    let (total, index, read) = count(&grid, (7, 11));
+    assert_eq!((total, index), (4, Some(2)));
+    assert!(read > 0, "counted again");
+    let mut scoped = grid.clone();
+    scoped.scope = Some((7, 21));
+    assert_eq!(count(&scoped, (7, 11)).0, 2);
+    assert_eq!(count(&query("", false, false), (0, 0)).0, 0);
+    let cancelled = doc.count(&regex("x"), (0, 0), &AtomicBool::new(true), &mut |_| {});
+    assert!(cancelled.unwrap().is_none());
+}
+
+#[test]
+fn regex_replacements_take_groups_case_and_scope() {
+    let (_file, doc) = open(b"GRID 101 1\nGRID 102 1\n*Material, name=Steel\n** STEEL, steel\n");
+    let never = AtomicBool::new(false);
+    let replace = |query: &Query, with: &str, keep_case: bool| {
+        doc.replace_all(query, with, keep_case, (0, 0), &never, &mut |_| {})
+            .unwrap()
+            .unwrap()
+            .0
+    };
+    assert_eq!(replace(&regex(r"GRID (\d+)"), "NODE $1,", false), 2);
+    assert_eq!(
+        all_text(&doc),
+        "NODE 101, 1\nNODE 102, 1\n*Material, name=Steel\n** STEEL, steel\n"
+    );
+    assert_eq!(replace(&query("steel", false, false), "alu", true), 3);
+    assert_eq!(
+        all_text(&doc),
+        "NODE 101, 1\nNODE 102, 1\n*Material, name=Alu\n** ALU, alu\n"
+    );
+    // At every line start, in the first two lines only: an empty match at
+    // the end of a selection is not in it.
+    let mut starts = regex("^");
+    starts.scope = Some((0, 24));
+    assert_eq!(replace(&starts, "** ", false), 2);
+    assert_eq!(
+        all_text(&doc),
+        "** NODE 101, 1\n** NODE 102, 1\n*Material, name=Alu\n** ALU, alu\n"
+    );
+    assert_eq!(
+        replace(&regex(r",\s*$"), r"\t$$", false),
+        0,
+        "no comma at a line end"
+    );
+    assert_eq!(replace(&regex(r"(\d+), (\d)"), r"$2\t$$$1", false), 2);
+    assert_eq!(
+        all_text(&doc),
+        "** NODE 1\t$101\n** NODE 1\t$102\n*Material, name=Alu\n** ALU, alu\n"
+    );
+    // One undo step each.
+    for _ in 0..4 {
+        doc.undo().unwrap();
+    }
+    assert_eq!(
+        all_text(&doc),
+        "GRID 101 1\nGRID 102 1\n*Material, name=Steel\n** STEEL, steel\n"
+    );
+}
+
+#[test]
+fn the_selection_s_replacement_is_known_before_replacing() {
+    let (_file, doc) = open(b"GRID 101\n*Nset, nset=TOP\n");
+    let swap = regex(r"(\w+) (\d+)");
+    let one = |query: &Query, with: &str, keep_case, selection| {
+        doc.replacement_for(query, with, keep_case, selection)
+            .unwrap()
+    };
+    assert_eq!(
+        one(&swap, "$2 $1", false, (0, 8)).as_deref(),
+        Some("101 GRID")
+    );
+    assert_eq!(
+        one(&swap, "$2 $1", false, (8, 0)).as_deref(),
+        Some("101 GRID")
+    );
+    assert_eq!(one(&swap, "$2 $1", false, (0, 7)), None);
+    // Inside a scope only, and not the empty match at its end.
+    let mut starts = regex("^");
+    starts.scope = Some((9, 25));
+    assert_eq!(one(&starts, "** ", false, (9, 9)).as_deref(), Some("** "));
+    assert_eq!(one(&starts, "** ", false, (0, 0)), None);
+    assert_eq!(one(&starts, "** ", false, (25, 25)), None);
+    starts.scope = None;
+    assert_eq!(
+        one(&starts, "** ", false, (25, 25)).as_deref(),
+        Some("** "),
+        "at the end of the text it is one"
+    );
+    let nset = query("nset", false, true);
+    assert_eq!(
+        one(&nset, "elset", true, (16, 20)).as_deref(),
+        Some("elset")
+    );
+    assert_eq!(
+        one(&nset, "elset", true, (10, 14)).as_deref(),
+        Some("Elset")
+    );
+    assert_eq!(
+        one(&nset, "elset", false, (10, 14)).as_deref(),
+        Some("elset")
+    );
+    assert_eq!(one(&nset, "elset", true, (9, 14)), None);
+}
+
+#[test]
+fn matches_on_screen_are_found_from_a_line_start() {
+    let mut text = String::new();
+    for i in 0..20_000 {
+        text.push_str(&format!("{i}, 1, 2\n"));
+    }
+    let (_file, doc) = open(text.as_bytes());
+    let marks = doc.matches_in(&regex(r"^\d+"), 0, 20).unwrap();
+    assert_eq!(marks, [(0, 1), (8, 9), (16, 17)]);
+    let all = doc.matches_in(&regex(r"\d+"), 0, doc.len()).unwrap();
+    assert_eq!(all.len(), MAX_MARKS);
+    assert!(doc.matches_in(&regex(r"(x"), 0, 20).is_err());
+}
+
+#[test]
+fn regexes_in_a_cp949_file() {
+    let (bytes, _, _) = encoding_rs::EUC_KR.encode("** 강철 Steel\n*Material, name=STEEL\n");
+    let (_file, doc) = open(&bytes);
+    assert_eq!(doc.encoding(), Encoding::Cp949);
+    let never = AtomicBool::new(false);
+    let not_ascii = doc.replace_all(&regex("강철"), "x", false, (0, 0), &never, &mut |_| {});
+    assert!(not_ascii.is_err());
+    let replaced = doc
+        .replace_all(
+            &regex(r"(?i)steel"),
+            "알루미늄 alu",
+            true,
+            (0, 0),
+            &never,
+            &mut |_| {},
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(replaced.0, 2);
+    let all = doc.text().read_range(0, doc.len()).unwrap();
+    assert_eq!(
+        encoding_rs::EUC_KR.decode(&all).0,
+        "** 강철 알루미늄 alu\n*Material, name=알루미늄 ALU\n"
+    );
 }
 
 #[test]

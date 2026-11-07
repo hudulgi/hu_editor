@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hu_core::{
-    BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindOptions,
-    FindResult, IndexStatus, Matching, View, ViewTarget, dir, ipc_message, settings,
+    BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol, FindResult,
+    IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, settings,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -28,6 +28,8 @@ struct OpenDoc {
     doc: Document,
     /// Cancels the running search; a new search replaces it.
     find_cancel: Mutex<Arc<AtomicBool>>,
+    /// Cancels the running count of matches; a new count replaces it.
+    count_cancel: Mutex<Arc<AtomicBool>>,
     /// How many windows show it; it closes with the last.
     windows: AtomicU32,
 }
@@ -54,6 +56,7 @@ impl Docs {
         let open = OpenDoc {
             doc,
             find_cancel: Mutex::default(),
+            count_cancel: Mutex::default(),
             windows: AtomicU32::new(1),
         };
         self.open.lock().unwrap().insert(id, Arc::new(open));
@@ -365,13 +368,7 @@ pub async fn save_converted(
 ) -> Result<(), String> {
     let open = docs.get(id)?;
     blocking(move || {
-        let mut last = Instant::now();
-        let mut progress = |read| {
-            if last.elapsed() >= Duration::from_millis(100) {
-                last = Instant::now();
-                let _ = on_progress.send(read);
-            }
-        };
+        let mut progress = throttled(on_progress);
         open.doc
             .save_converted(&path, encoding, &AtomicBool::new(false), &mut progress)
             .map(|_| ())
@@ -420,10 +417,9 @@ pub fn close_document(id: u32, docs: State<'_, Docs>) {
     if open.windows.fetch_sub(1, Ordering::Relaxed) > 1 {
         return;
     }
-    open.find_cancel
-        .lock()
-        .unwrap()
-        .store(true, Ordering::Relaxed);
+    for slot in [&open.find_cancel, &open.count_cancel] {
+        slot.lock().unwrap().store(true, Ordering::Relaxed);
+    }
     documents.remove(&id);
 }
 
@@ -624,36 +620,24 @@ pub enum ReplaceOutcome {
 #[allow(clippy::too_many_arguments)]
 pub async fn replace_all(
     id: u32,
-    needle: String,
+    query: Query,
     replacement: String,
-    case_sensitive: bool,
-    whole_word: bool,
+    preserve_case: bool,
     anchor: u64,
     caret: u64,
     on_progress: Channel<u64>,
     docs: State<'_, Docs>,
 ) -> Result<ReplaceOutcome, String> {
     let open = docs.get(id)?;
-    let cancel = Arc::new(AtomicBool::new(false));
-    let previous = std::mem::replace(&mut *open.find_cancel.lock().unwrap(), cancel.clone());
-    previous.store(true, Ordering::Relaxed);
+    let cancel = replace_cancel(&open.find_cancel);
     blocking(move || {
-        let mut last = Instant::now();
-        let mut progress = |searched| {
-            if last.elapsed() >= Duration::from_millis(100) {
-                last = Instant::now();
-                let _ = on_progress.send(searched);
-            }
-        };
+        let mut progress = throttled(on_progress);
         let done = open
             .doc
             .replace_all(
-                &needle,
+                &query,
                 &replacement,
-                Matching {
-                    case_sensitive,
-                    whole_word,
-                },
+                preserve_case,
                 (anchor, caret),
                 &cancel,
                 &mut progress,
@@ -667,6 +651,25 @@ pub async fn replace_all(
     .await
 }
 
+/// A new flag in `slot`, the one it replaces set: the work it was for stops.
+fn replace_cancel(slot: &Mutex<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let previous = std::mem::replace(&mut *slot.lock().unwrap(), cancel.clone());
+    previous.store(true, Ordering::Relaxed);
+    cancel
+}
+
+/// Sends progress to the frontend ten times a second at most.
+fn throttled(channel: Channel<u64>) -> impl FnMut(u64) {
+    let mut last = Instant::now();
+    move |done| {
+        if last.elapsed() >= Duration::from_millis(100) {
+            last = Instant::now();
+            let _ = channel.send(done);
+        }
+    }
+}
+
 /// Streams the number of bytes written to `on_progress` while it runs.
 #[tauri::command]
 pub async fn save(
@@ -676,13 +679,7 @@ pub async fn save(
 ) -> Result<DocState, String> {
     let open = docs.get(id)?;
     blocking(move || {
-        let mut last = Instant::now();
-        let mut progress = |written| {
-            if last.elapsed() >= Duration::from_millis(100) {
-                last = Instant::now();
-                let _ = on_progress.send(written);
-            }
-        };
+        let mut progress = throttled(on_progress);
         open.doc
             .save(&AtomicBool::new(false), &mut progress)
             .map_err(|e| at_path(&open.doc.path().unwrap_or_default(), &e))?;
@@ -709,13 +706,7 @@ pub async fn save_as(
 ) -> Result<SavedAs, String> {
     let open = docs.get(id)?;
     blocking(move || {
-        let mut last = Instant::now();
-        let mut progress = |written| {
-            if last.elapsed() >= Duration::from_millis(100) {
-                last = Instant::now();
-                let _ = on_progress.send(written);
-            }
-        };
+        let mut progress = throttled(on_progress);
         open.doc
             .save_as(&path, &AtomicBool::new(false), &mut progress)
             .map_err(|e| at_path(&path, &e))?;
@@ -728,62 +719,104 @@ pub async fn save_as(
     .await
 }
 
-/// Streams the number of bytes searched to `on_progress` while it runs.
+/// The next match after the selection (the one before it `backward`),
+/// streaming the number of bytes searched to `on_progress`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn find(
     id: u32,
-    needle: String,
-    from: u64,
-    case_sensitive: bool,
-    whole_word: bool,
+    query: Query,
+    anchor: u64,
+    caret: u64,
     backward: bool,
     on_progress: Channel<u64>,
     docs: State<'_, Docs>,
 ) -> Result<FindOutcome, String> {
     let open = docs.get(id)?;
-    let cancel = Arc::new(AtomicBool::new(false));
-    let previous = std::mem::replace(&mut *open.find_cancel.lock().unwrap(), cancel.clone());
-    previous.store(true, Ordering::Relaxed);
-
-    let needle = open.doc.encoding().encode(&needle).into_owned();
-    let len = needle.len() as u64;
+    let cancel = replace_cancel(&open.find_cancel);
     let result = blocking(move || {
-        let options = FindOptions {
-            matching: Matching {
-                case_sensitive,
-                whole_word,
-            },
-            backward,
-            wrap: true,
-        };
-        let mut last = Instant::now();
-        let mut progress = |searched| {
-            if last.elapsed() >= Duration::from_millis(100) {
-                last = Instant::now();
-                let _ = on_progress.send(searched);
-            }
-        };
+        let mut progress = throttled(on_progress);
         open.doc
-            .text()
-            .find(&needle, from, &options, &cancel, &mut progress)
+            .find(&query, (anchor, caret), backward, &cancel, &mut progress)
             .map_err(|e| ipc_message(&e))
     })
     .await?;
-
     Ok(match result {
-        FindResult::Found(offset) => FindOutcome::Found { offset, len },
+        FindResult::Found(start, end) => FindOutcome::Found {
+            offset: start,
+            len: end - start,
+        },
         FindResult::NotFound => FindOutcome::NotFound,
         FindResult::Cancelled => FindOutcome::Cancelled,
     })
 }
 
+/// How many matches there are and which one is selected; `None` if a newer
+/// count or `cancel_find` stopped it. Streams the bytes read to `on_progress`.
+#[tauri::command]
+pub async fn count_matches(
+    id: u32,
+    query: Query,
+    anchor: u64,
+    caret: u64,
+    on_progress: Channel<u64>,
+    docs: State<'_, Docs>,
+) -> Result<Option<MatchCount>, String> {
+    let open = docs.get(id)?;
+    let cancel = replace_cancel(&open.count_cancel);
+    blocking(move || {
+        let mut progress = throttled(on_progress);
+        open.doc
+            .count(&query, (anchor, caret), &cancel, &mut progress)
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Where the matches starting in `[from, to)` are, to mark them on screen.
+#[tauri::command]
+pub async fn matches_in(
+    id: u32,
+    query: Query,
+    from: u64,
+    to: u64,
+    docs: State<'_, Docs>,
+) -> Result<Vec<(u64, u64)>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .matches_in(&query, from, to)
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// What the selection would be replaced with, if it is a match.
+#[tauri::command]
+pub async fn replacement_for(
+    id: u32,
+    query: Query,
+    replacement: String,
+    preserve_case: bool,
+    anchor: u64,
+    caret: u64,
+    docs: State<'_, Docs>,
+) -> Result<Option<String>, String> {
+    let open = docs.get(id)?;
+    blocking(move || {
+        open.doc
+            .replacement_for(&query, &replacement, preserve_case, (anchor, caret))
+            .map_err(|e| ipc_message(&e))
+    })
+    .await
+}
+
+/// Stops the running search, replace or count.
 #[tauri::command]
 pub async fn cancel_find(id: u32, docs: State<'_, Docs>) -> Result<(), String> {
-    docs.get(id)?
-        .find_cancel
-        .lock()
-        .unwrap()
-        .store(true, Ordering::Relaxed);
+    let open = docs.get(id)?;
+    for slot in [&open.find_cancel, &open.count_cancel] {
+        slot.lock().unwrap().store(true, Ordering::Relaxed);
+    }
     Ok(())
 }

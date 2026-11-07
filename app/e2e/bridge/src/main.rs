@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hu_core::{
-    BoxRows, Document, EditKind, Encoding, Eol, FindOptions, FindResult, Matching, ViewTarget, dir,
-    ipc_message, settings,
+    BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir, ipc_message,
+    settings,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -325,15 +325,12 @@ impl Bridge {
                 Value::Null
             }
             "replace_all" => {
-                let (needle, replacement): (String, String) =
-                    (arg(args, "needle")?, arg(args, "replacement")?);
+                let (query, replacement): (Query, String) =
+                    (arg(args, "query")?, arg(args, "replacement")?);
                 let before = (arg(args, "anchor")?, arg(args, "caret")?);
-                let matching = Matching {
-                    case_sensitive: arg(args, "caseSensitive")?,
-                    whole_word: arg(args, "wholeWord")?,
-                };
+                let keep_case = arg(args, "preserveCase")?;
                 let done = doc()?
-                    .replace_all(&needle, &replacement, matching, before, &never, &mut |_| {})
+                    .replace_all(&query, &replacement, keep_case, before, &never, &mut |_| {})
                     .map_err(problem)?;
                 match done {
                     Some((count, result)) => {
@@ -367,28 +364,43 @@ impl Bridge {
                 Value::Null
             }
             "find" => {
-                let doc = doc()?;
-                let needle: String = arg(args, "needle")?;
-                let needle = doc.encoding().encode(&needle).into_owned();
-                let options = FindOptions {
-                    matching: Matching {
-                        case_sensitive: arg(args, "caseSensitive")?,
-                        whole_word: arg(args, "wholeWord")?,
-                    },
-                    backward: arg(args, "backward")?,
-                    wrap: true,
-                };
-                let found = doc
-                    .text()
-                    .find(&needle, arg(args, "from")?, &options, &never, &mut |_| {})
+                let query: Query = arg(args, "query")?;
+                let selection = (arg(args, "anchor")?, arg(args, "caret")?);
+                let found = doc()?
+                    .find(
+                        &query,
+                        selection,
+                        arg(args, "backward")?,
+                        &never,
+                        &mut |_| {},
+                    )
                     .map_err(problem)?;
                 match found {
-                    FindResult::Found(offset) => {
-                        json!({ "kind": "found", "offset": offset, "len": needle.len() })
+                    FindResult::Found(start, end) => {
+                        json!({ "kind": "found", "offset": start, "len": end - start })
                     }
                     FindResult::NotFound => json!({ "kind": "notFound" }),
                     FindResult::Cancelled => json!({ "kind": "cancelled" }),
                 }
+            }
+            "count_matches" => {
+                let query: Query = arg(args, "query")?;
+                let selection = (arg(args, "anchor")?, arg(args, "caret")?);
+                let counted = doc()?.count(&query, selection, &never, &mut |_| {});
+                to_json(counted.map_err(problem)?)?
+            }
+            "matches_in" => {
+                let query: Query = arg(args, "query")?;
+                let marks = doc()?.matches_in(&query, arg(args, "from")?, arg(args, "to")?);
+                to_json(marks.map_err(problem)?)?
+            }
+            "replacement_for" => {
+                let (query, replacement): (Query, String) =
+                    (arg(args, "query")?, arg(args, "replacement")?);
+                let selection = (arg(args, "anchor")?, arg(args, "caret")?);
+                let keep_case = arg(args, "preserveCase")?;
+                let replaced = doc()?.replacement_for(&query, &replacement, keep_case, selection);
+                to_json(replaced.map_err(problem)?)?
             }
             "cancel_find" => Value::Null,
             "read_clipboard" => json!(*self.clipboard.lock().unwrap()),

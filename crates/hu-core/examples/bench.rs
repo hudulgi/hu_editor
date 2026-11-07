@@ -8,7 +8,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use hu_core::{Document, FindOptions, Matching, ViewTarget};
+use hu_core::{Document, FindOptions, Matching, Query, ViewTarget};
 
 const ROWS: usize = 60;
 
@@ -116,6 +116,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "  {result:?}, {:.2} GiB/s",
             gib(len) / elapsed.as_secs_f64()
         );
+    }
+
+    let never = AtomicBool::new(false);
+    let as_regex = Query {
+        needle: needle.clone(),
+        regex: true,
+        ..Query::default()
+    };
+    let started = Instant::now();
+    let result = doc.find(&as_regex, (0, 0), false, &never, &mut |_| {})?;
+    let elapsed = started.elapsed();
+    report(&format!("find regex {needle:?}"), elapsed);
+    println!(
+        "  {result:?}, {:.2} GiB/s",
+        gib(len) / elapsed.as_secs_f64()
+    );
+    for query in [
+        Query {
+            needle: needle.clone(),
+            ..Query::default()
+        },
+        Query {
+            needle: r"\d+\.\d*".into(),
+            regex: true,
+            ..Query::default()
+        },
+    ] {
+        let started = Instant::now();
+        let counted = doc.count(&query, (0, 0), &never, &mut |_| {})?;
+        let elapsed = started.elapsed();
+        report(&format!("count {:?}", query.needle), elapsed);
+        println!(
+            "  {:?}, {:.2} GiB/s",
+            counted.map(|c| c.total),
+            gib(len) / elapsed.as_secs_f64()
+        );
+        let started = Instant::now();
+        doc.count(&query, (len / 2, len / 2), &never, &mut |_| {})?;
+        report("  again, elsewhere", started.elapsed());
     }
     Ok(())
 }

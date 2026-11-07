@@ -75,7 +75,7 @@ export default async function (t) {
   await page.fill(".findbar input[placeholder=Find]", needle);
   await page.fill(".findbar input[placeholder=Replace]", "GRID*            9");
   await timed(`replaced ${toReplace}`, async () => {
-    await page.click(".findbar button:text-is('Replace All')");
+    await page.click(".findbar button[aria-label='Replace All']");
     await until("the replacements", () => page.textContent(".findbar .status"), `Replaced ${toReplace.toLocaleString("en-US")}`, 2 * MINUTE);
   });
   await page.keyboard.press("Escape");
@@ -89,7 +89,7 @@ export default async function (t) {
   // More matches than the limit is refused.
   await page.keyboard.press("Control+h");
   await page.fill(".findbar input[placeholder=Find]", "CQUAD4");
-  await page.click(".findbar button:text-is('Replace All')");
+  await page.click(".findbar button[aria-label='Replace All']");
   await until("too many matches is refused", () => page.textContent(".findbar .status"), "more than 2,000,000 matches", 2 * MINUTE);
   await page.keyboard.press("Escape");
 

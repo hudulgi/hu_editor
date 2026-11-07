@@ -1,12 +1,12 @@
 //! Literal search over the whole document, read in large chunks so it never
-//! pollutes the viewport's block cache.
+//! pollutes the viewport's block cache. Regular expressions are in
+//! [`crate::pattern`]; [`crate::query`] puts the two together.
 
 use std::io;
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::memmem::{Finder, FinderRev};
-
-use crate::problem::Problem;
 
 const CHUNK: usize = 4 << 20;
 
@@ -39,10 +39,36 @@ pub struct FindOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindResult {
-    /// Offset of the match.
-    Found(u64),
+    /// Where the match starts and ends.
+    Found(u64, u64),
     NotFound,
     Cancelled,
+}
+
+/// What a walk through the matches comes to.
+pub(crate) enum Step<'a> {
+    /// The walk could start again here and find the rest: every match
+    /// before it has been given.
+    Resume(u64),
+    Match(Hit<'a>),
+}
+
+/// A match, with the text read around it.
+pub(crate) struct Hit<'a> {
+    pub start: u64,
+    pub end: u64,
+    /// The text from `at`, which holds the match and its groups.
+    pub text: &'a [u8],
+    pub at: u64,
+    /// A regular expression's groups, the whole match first; `None` for one
+    /// that took no part. Empty for a literal needle.
+    pub groups: &'a [Option<(u64, u64)>],
+}
+
+impl Hit<'_> {
+    pub fn bytes(&self, (start, end): (u64, u64)) -> &[u8] {
+        &self.text[(start - self.at) as usize..(end - self.at) as usize]
+    }
 }
 
 /// Finds the first match starting at or after `from` (the last one starting
@@ -56,98 +82,131 @@ pub fn find(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64),
 ) -> io::Result<FindResult> {
-    find_in_chunks(source, needle, from, options, cancel, progress, CHUNK)
+    let within = (0, source.len());
+    find_in_chunks(
+        source, needle, from, options, within, cancel, progress, CHUNK,
+    )
 }
 
+/// Like [`find`], for matches inside `[lo, hi)` only, going round inside it.
+pub(crate) fn find_within(
+    source: &dyn Reader,
+    needle: &[u8],
+    from: u64,
+    options: &FindOptions,
+    within: (u64, u64),
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<FindResult> {
+    find_in_chunks(
+        source, needle, from, options, within, cancel, progress, CHUNK,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn find_in_chunks(
     source: &dyn Reader,
     needle: &[u8],
     from: u64,
     options: &FindOptions,
+    (lo, hi): (u64, u64),
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64),
     chunk: usize,
 ) -> io::Result<FindResult> {
-    let len = source.len();
     let n = needle.len() as u64;
-    if n == 0 || n > len {
+    if n == 0 || n > hi - lo {
         return Ok(FindResult::NotFound);
     }
-    let from = from.min(len);
-    // `[0, before_from)` holds exactly the matches that start before `from`.
-    let before_from = (from + n - 1).min(len);
-    let mut search = Search::new(source, needle, options.matching, chunk, cancel, progress);
+    let from = from.clamp(lo, hi);
+    // `[lo, before_from)` holds exactly the matches that start before `from`.
+    let before_from = (from + n - 1).min(hi);
+    let mut search = Search::new(
+        source,
+        needle,
+        options.matching,
+        chunk,
+        false,
+        cancel,
+        progress,
+    );
     if options.backward {
-        match search.backward(0, before_from)? {
-            FindResult::NotFound if options.wrap => search.backward(from, len),
+        match search.backward(lo, before_from)? {
+            FindResult::NotFound if options.wrap => search.backward(from, hi),
             result => Ok(result),
         }
     } else {
-        match search.forward(from, len)? {
-            FindResult::NotFound if options.wrap => search.forward(0, before_from),
+        match search.forward(from, hi)? {
+            FindResult::NotFound if options.wrap => search.forward(lo, before_from),
             result => Ok(result),
         }
     }
 }
 
-/// Offsets of all non-overlapping matches, left to right; `None` if
-/// cancelled. More than `limit` matches is an error, so a careless replace
-/// cannot run away with memory.
-pub fn find_all(
+/// Walks through the matches from `resume`, left to right without overlaps,
+/// that start before `start_max` and end by `end_max`; `f` can stop it.
+/// With `original`, hits carry the text as it is rather than case-folded.
+/// Returns `false` if cancelled.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn each(
     source: &dyn Reader,
     needle: &[u8],
     matching: Matching,
-    limit: usize,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(u64),
-) -> io::Result<Option<Vec<u64>>> {
-    find_all_in_chunks(source, needle, matching, limit, cancel, progress, CHUNK)
-}
-
-fn find_all_in_chunks(
-    source: &dyn Reader,
-    needle: &[u8],
-    matching: Matching,
-    limit: usize,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(u64),
+    resume: u64,
+    start_max: u64,
+    end_max: u64,
+    original: bool,
     chunk: usize,
-) -> io::Result<Option<Vec<u64>>> {
-    let len = source.len();
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+    f: &mut dyn FnMut(Step) -> ControlFlow<()>,
+) -> io::Result<bool> {
     let n = needle.len() as u64;
-    let mut found = Vec::new();
     if n == 0 {
-        return Ok(Some(found));
+        return Ok(true);
     }
-    let mut search = Search::new(source, needle, matching, chunk, cancel, progress);
-    let mut pos = 0;
+    let mut search = Search::new(source, needle, matching, chunk, original, cancel, progress);
+    let mut pos = resume;
     // Chunks overlap, so a match can be seen twice; and matches must not overlap.
-    let mut free_from = 0;
-    while pos + n <= len {
+    let mut free_from = resume;
+    while pos + n <= end_max && pos < start_max {
         if search.cancel.load(Ordering::Relaxed) {
-            return Ok(None);
+            return Ok(false);
         }
-        let read = search.read(pos, len)?;
+        // Every match seen so far starts before `pos`: none fit in what was read.
+        if f(Step::Resume(pos.max(free_from))).is_break() {
+            return Ok(true);
+        }
+        let read = search.read(pos, end_max)?;
         let mut i = 0;
         while let Some(j) = search.forward.find(&search.buf[i..read]) {
             let at = pos + (i + j) as u64;
+            if at >= start_max {
+                return Ok(true);
+            }
             // Overlapping ones too: one inside a longer word must not hide one beside it.
             i += j + 1;
             if at >= free_from && search.stands_alone(at, pos, read)? {
-                if found.len() == limit {
-                    return Err(Problem::TooManyMatches { limit }.into());
-                }
-                found.push(at);
                 free_from = at + n;
+                let hit = Hit {
+                    start: at,
+                    end: at + n,
+                    text: search.original(read),
+                    at: pos,
+                    groups: &[],
+                };
+                if f(Step::Match(hit)).is_break() {
+                    return Ok(true);
+                }
             }
         }
         search.report(read);
-        if pos + read as u64 >= len {
+        if pos + read as u64 >= end_max {
             break;
         }
         pos += read as u64 - (n - 1);
     }
-    Ok(Some(found))
+    Ok(true)
 }
 
 /// Bytes of words: ASCII letters, digits and `_`, and every byte of other
@@ -170,6 +229,20 @@ fn joins(edge: u8, next: Option<u8>, beyond: Option<u8>) -> bool {
     }
 }
 
+/// Whether `text[start..end]` is a whole word, judged by the bytes around it
+/// in `text`; an empty match always is.
+pub(crate) fn stands_alone_in(text: &[u8], start: usize, end: usize) -> bool {
+    if start == end {
+        return true;
+    }
+    let byte = |i: Option<usize>| i.and_then(|i| text.get(i).copied());
+    !joins(
+        text[start],
+        byte(start.checked_sub(1)),
+        byte(start.checked_sub(2)),
+    ) && !joins(text[end - 1], byte(Some(end)), byte(Some(end + 1)))
+}
+
 struct Search<'a> {
     source: &'a dyn Reader,
     forward: Finder<'static>,
@@ -177,6 +250,8 @@ struct Search<'a> {
     needle_len: u64,
     matching: Matching,
     buf: Vec<u8>,
+    /// The bytes read before folding case, when they are asked for.
+    raw: Vec<u8>,
     cancel: &'a AtomicBool,
     progress: &'a mut dyn FnMut(u64),
     searched: u64,
@@ -188,6 +263,7 @@ impl<'a> Search<'a> {
         needle: &[u8],
         matching: Matching,
         chunk: usize,
+        original: bool,
         cancel: &'a AtomicBool,
         progress: &'a mut dyn FnMut(u64),
     ) -> Self {
@@ -198,6 +274,11 @@ impl<'a> Search<'a> {
         };
         // Consecutive chunks overlap by `needle.len() - 1`; keep them clearly larger.
         let chunk = chunk.max(needle.len() * 2);
+        let raw_len = if original && !matching.case_sensitive {
+            chunk
+        } else {
+            0
+        };
         Self {
             source,
             forward: Finder::new(&needle).into_owned(),
@@ -205,6 +286,7 @@ impl<'a> Search<'a> {
             needle_len: needle.len() as u64,
             matching,
             buf: vec![0; chunk],
+            raw: vec![0; raw_len],
             cancel,
             progress,
             searched: 0,
@@ -256,7 +338,7 @@ impl<'a> Search<'a> {
             while let Some(j) = self.forward.find(&self.buf[i..len]) {
                 let at = pos + (i + j) as u64;
                 if self.stands_alone(at, pos, len)? {
-                    return Ok(FindResult::Found(at));
+                    return Ok(FindResult::Found(at, at + self.needle_len));
                 }
                 i += j + 1;
             }
@@ -282,7 +364,7 @@ impl<'a> Search<'a> {
             while let Some(i) = self.backward.rfind(&self.buf[..upto]) {
                 let at = chunk_start + i as u64;
                 if self.stands_alone(at, chunk_start, len)? {
-                    return Ok(FindResult::Found(at));
+                    return Ok(FindResult::Found(at, at + self.needle_len));
                 }
                 // Overlapping ones too: the next may end inside this one.
                 upto = i + self.needle_len as usize - 1;
@@ -302,9 +384,21 @@ impl<'a> Search<'a> {
         let buf = &mut self.buf[..len];
         self.source.read_at(pos, buf)?;
         if !self.matching.case_sensitive {
+            if !self.raw.is_empty() {
+                self.raw[..len].copy_from_slice(buf);
+            }
             buf.make_ascii_lowercase();
         }
         Ok(len)
+    }
+
+    /// The first `len` bytes read, as they are in the source.
+    fn original(&self, len: usize) -> &[u8] {
+        if self.raw.is_empty() {
+            &self.buf[..len]
+        } else {
+            &self.raw[..len]
+        }
     }
 
     fn report(&mut self, len: usize) {
@@ -347,14 +441,66 @@ mod tests {
             .collect()
     }
 
-    fn naive(hay: &[u8], needle: &[u8], from: usize, options: &FindOptions) -> FindResult {
-        let matches = naive_matches(hay, needle, options.matching);
+    fn naive(
+        hay: &[u8],
+        needle: &[u8],
+        from: usize,
+        options: &FindOptions,
+        (lo, hi): (usize, usize),
+    ) -> FindResult {
+        let matches: Vec<usize> = naive_matches(hay, needle, options.matching)
+            .into_iter()
+            .filter(|&m| m >= lo && m + needle.len() <= hi)
+            .collect();
+        let from = from.clamp(lo, hi);
         let found = if options.backward {
             matches.iter().rev().find(|&&m| m < from).or(matches.last())
         } else {
             matches.iter().find(|&&m| m >= from).or(matches.first())
         };
-        found.map_or(FindResult::NotFound, |&m| FindResult::Found(m as u64))
+        found.map_or(FindResult::NotFound, |&m| {
+            FindResult::Found(m as u64, (m + needle.len()) as u64)
+        })
+    }
+
+    /// The matches `each` finds from `resume`, and where it could resume.
+    fn walk(
+        hay: &[u8],
+        needle: &[u8],
+        matching: Matching,
+        (resume, start_max, end_max): (u64, u64, u64),
+        chunk: usize,
+    ) -> (Vec<u64>, Vec<u64>) {
+        let (mut found, mut resumes) = (Vec::new(), Vec::new());
+        let cancel = AtomicBool::new(false);
+        let done = each(
+            &hay,
+            needle,
+            matching,
+            resume,
+            start_max,
+            end_max,
+            true,
+            chunk,
+            &cancel,
+            &mut |_| {},
+            &mut |step| {
+                match step {
+                    Step::Resume(at) => resumes.push(at),
+                    Step::Match(hit) => {
+                        assert!(
+                            hit.bytes((hit.start, hit.end)).eq_ignore_ascii_case(needle),
+                            "the text as it is"
+                        );
+                        found.push(hit.start);
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        assert!(done);
+        (found, resumes)
     }
 
     const MATCHINGS: [Matching; 4] = [
@@ -382,6 +528,7 @@ mod tests {
             b"*Node\n1, 2, 3\n*NSET, nset=Top\n*nset, NSET=BOTTOM\n2, 3\n*Nset, nset=SIDE\n\
             Set-1 Set-10 0.101 101 xa.a.a 1010 101.5 x.101,1.1.1 a.a.ax";
         let cancel = AtomicBool::new(false);
+        let len = hay.len();
 
         for needle in [
             "*Nset", "nset", "NSET=", "3\n", "*Node", "E\n", "missing", "*", "101", "Set-1", "a.a",
@@ -394,19 +541,25 @@ mod tests {
                         backward,
                         wrap: true,
                     };
-                    for from in 0..=hay.len() {
-                        let got = find_in_chunks(
-                            &hay,
-                            needle.as_bytes(),
-                            from as u64,
-                            &options,
-                            &cancel,
-                            &mut |_| {},
-                            8,
-                        )
-                        .unwrap();
-                        let expected = naive(hay, needle.as_bytes(), from, &options);
-                        assert_eq!(got, expected, "{needle:?} from {from} {options:?}");
+                    for within in [(0, len), (7, 60), (31, len - 5), (40, 44)] {
+                        for from in 0..=len {
+                            let got = find_in_chunks(
+                                &hay,
+                                needle.as_bytes(),
+                                from as u64,
+                                &options,
+                                (within.0 as u64, within.1 as u64),
+                                &cancel,
+                                &mut |_| {},
+                                8,
+                            )
+                            .unwrap();
+                            let expected = naive(hay, needle.as_bytes(), from, &options, within);
+                            assert_eq!(
+                                got, expected,
+                                "{needle:?} from {from} in {within:?} {options:?}"
+                            );
+                        }
                     }
                 }
             }
@@ -414,13 +567,11 @@ mod tests {
     }
 
     #[test]
-    fn find_all_matches_naive_scan_across_chunks() {
+    fn each_walks_like_a_naive_scan_across_chunks() {
         let hay: &[u8] = b"aaaa*Nset*NSET aaa nset*nset xa.a.a 1.1.1 101 1010 0.101 x.101";
-        let cancel = AtomicBool::new(false);
+        let len = hay.len() as u64;
         let all = |needle: &[u8], matching, chunk| {
-            find_all_in_chunks(&hay, needle, matching, 100, &cancel, &mut |_| {}, chunk)
-                .unwrap()
-                .unwrap()
+            walk(hay, needle, matching, (0, len + 1, len), chunk).0
         };
         let [exact, _, whole, _] = MATCHINGS;
         let any_case = Matching {
@@ -452,13 +603,27 @@ mod tests {
                         }
                     }
                     let expected: Vec<u64> = expected.into_iter().map(|at| at as u64).collect();
-                    let got = all(needle.as_bytes(), matching, chunk);
+                    let (got, resumes) =
+                        walk(hay, needle.as_bytes(), matching, (0, len + 1, len), chunk);
                     assert_eq!(got, expected, "{needle:?} {matching:?} chunk {chunk}");
+                    // Going on from where it could resume finds the rest.
+                    for at in resumes {
+                        let rest: Vec<u64> = got.iter().copied().filter(|&m| m >= at).collect();
+                        let again =
+                            walk(hay, needle.as_bytes(), matching, (at, len + 1, len), 1000).0;
+                        assert_eq!(again, rest, "{needle:?} {matching:?} from {at}");
+                    }
+                    // Bounds: starting before 30, ending by 50.
+                    let inside: Vec<u64> = got
+                        .iter()
+                        .copied()
+                        .filter(|&m| m < 30 && m + needle.len() as u64 <= 50)
+                        .collect();
+                    let bounded = walk(hay, needle.as_bytes(), matching, (0, 30, 50), chunk).0;
+                    assert_eq!(bounded, inside, "{needle:?} {matching:?} bounded");
                 }
             }
         }
-        let too_many = find_all_in_chunks(&hay, b"a", exact, 3, &cancel, &mut |_| {}, 8);
-        assert!(too_many.is_err());
     }
 
     #[test]
@@ -470,17 +635,15 @@ mod tests {
                 case_sensitive: false,
                 whole_word: true,
             };
-            let found = find_all_in_chunks(
-                &hay.as_bytes(),
+            let len = hay.len() as u64;
+            let found = walk(
+                hay.as_bytes(),
                 needle.as_bytes(),
                 whole,
-                100,
-                &AtomicBool::new(false),
-                &mut |_| {},
+                (0, len + 1, len),
                 8,
             )
-            .unwrap()
-            .unwrap();
+            .0;
             let mut out = hay.to_string();
             for &at in found.iter().rev() {
                 out.replace_range(at as usize..at as usize + needle.len(), "#");
@@ -515,6 +678,13 @@ mod tests {
             "GRID,101,0.101,1010,101.,x.101,2101,-101,101.5,.101,1.01+2\n\
             Part-1-1.Set-1, Set-10, 강101, # nset=Set-1\n"
         );
+        // The same judgement from the bytes around a match alone.
+        let text = b"x.101,101.5,(101)";
+        assert!(stands_alone_in(text, 2, 5));
+        assert!(!stands_alone_in(text, 6, 9));
+        assert!(stands_alone_in(text, 13, 16));
+        assert!(!stands_alone_in(text, 13, 15));
+        assert!(stands_alone_in(text, 3, 3), "an empty match");
     }
 
     #[test]
@@ -531,5 +701,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, FindResult::Cancelled);
+        let walked = each(
+            &hay,
+            b"x",
+            Matching::default(),
+            0,
+            1001,
+            1000,
+            false,
+            8,
+            &cancel,
+            &mut |_| {},
+            &mut |_| ControlFlow::Continue(()),
+        );
+        assert!(!walked.unwrap());
     }
 }

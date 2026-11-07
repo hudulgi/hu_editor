@@ -71,6 +71,12 @@ impl Encoding {
     pub fn decode(self, bytes: &[u8]) -> Cow<'_, str> {
         self.codec().decode_without_bom_handling(bytes).0
     }
+
+    /// The text, if every byte is valid in this encoding.
+    pub fn decode_exact(self, bytes: &[u8]) -> Option<Cow<'_, str>> {
+        self.codec()
+            .decode_without_bom_handling_and_without_replacement(bytes)
+    }
 }
 
 /// How lines become text.

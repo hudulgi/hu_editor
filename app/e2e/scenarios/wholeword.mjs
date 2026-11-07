@@ -77,7 +77,7 @@ export default async function (t) {
   await press("F3");
   await until("past 2101", app.position, selected(1, IDS.indexOf("-101") + 1, 3));
   await press("F3");
-  await until("past 101.5, .101 and 강101, round again", async () => [await app.position(), await status()], [selected(1, 5, 3), "Wrapped around"]);
+  await until("past 101.5, .101 and 강101, round again", async () => [await app.position(), await status()], [selected(1, 5, 3), "1 of 3"]);
   await press("Shift+F3");
   await until("and back", app.position, selected(1, IDS.indexOf("-101") + 1, 3));
 
@@ -99,7 +99,7 @@ export default async function (t) {
   await press("Enter");
   await until("no 01 stands alone", status, "No results");
   await page.click(WORD);
-  await until("turning it off, the message is gone", status, "");
+  await until("turning it off, the message is gone: a count", status, "? of 10");
   await page.click(WORD);
 
   // Replace: a selection that is part of a longer word is no match to replace.
@@ -109,11 +109,11 @@ export default async function (t) {
   await page.mouse.click(...(await app.at(0, IDS.indexOf("1010"))));
   await press("Shift+ArrowRight", "Shift+ArrowRight", "Shift+ArrowRight");
   await until("101 of 1010 selected", app.position, selected(1, IDS.indexOf("1010"), 3));
-  await page.click(".findbar button:text-is('Replace')");
+  await page.click(".findbar button[aria-label='Replace']");
   await until("it stays, and the next one is found", async () => [(await app.lines())[0], await app.position()], [IDS, selected(1, IDS.indexOf("x.101") + 2, 3)]);
-  await page.click(".findbar button:text-is('Replace')");
+  await page.click(".findbar button[aria-label='Replace']");
   await until("that one is replaced", async () => (await app.lines())[0], IDS.replace("x.101", "x.#"));
-  await page.click(".findbar button:text-is('Replace All')");
+  await page.click(".findbar button[aria-label='Replace All']");
   await until("replace all: whole words only", async () => [await status(), (await app.lines())[0]], [
     "Replaced 2",
     "GRID,#,0.101,1010,101.,x.#,2101,-#,101.5,.101",
@@ -191,7 +191,7 @@ export default async function (t) {
     await page.fill(FIND, needle);
     await until(`${needle}: as many shown as there are`, shown, count);
     await page.fill(REPLACE, "#");
-    await page.click(".findbar button:text-is('Replace All')");
+    await page.click(".findbar button[aria-label='Replace All']");
     await until(`${needle}: the core replaces what the screen shows`, async () => [await status(), await app.lines()], [count ? `Replaced ${count}` : "No results", replaced]);
     await press("Escape");
     await page.mouse.click(...(await app.at(0, 0)));

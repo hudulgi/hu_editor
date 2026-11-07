@@ -19,7 +19,7 @@ export default async function (t) {
   await page.keyboard.press("Enter");
   await until("find selects the match", app.position, "Ln 3, Col 10 (9 selected)");
   await page.keyboard.press("Enter");
-  await until("the only match again", status, "Wrapped around");
+  await until("the only match again: the count says it went round", status, "1 of 1");
 
   // Case is ignored unless asked for.
   await page.fill(FIND, "grid");
@@ -60,14 +60,14 @@ export default async function (t) {
   await page.waitForSelector(REPLACE);
   await page.fill(FIND, "0.");
   await page.fill(REPLACE, "0.0");
-  await page.click(".findbar button:text-is('Replace')");
+  await page.click(".findbar button[aria-label='Replace']");
   await until("the first Replace finds", app.position, "Ln 1, Col 19 (2 selected)");
-  await page.click(".findbar button:text-is('Replace')");
+  await page.click(".findbar button[aria-label='Replace']");
   await until("the next one replaces and finds the next", async () => [(await app.lines())[0], await app.position()], [
     "GRID    1       0.0      0.      0.",
     "Ln 1, Col 28 (2 selected)",
   ]);
-  await page.click(".findbar button:text-is('Replace All')");
+  await page.click(".findbar button[aria-label='Replace All']");
   await until("Replace All", async () => [await status(), (await app.lines())[0]], [
     "Replaced 7",
     "GRID    1       0.00      0.0      0.0",

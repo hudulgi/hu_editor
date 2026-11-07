@@ -86,7 +86,7 @@ export default async function (t) {
   check("the current match moved", (await marked("found")).length, 1);
   await page.keyboard.press("Shift+Enter");
   await until("shift+enter comes back", app.position, "Ln 3, Col 7 (6 selected)");
-  await until("no wrap so far", status, "");
+  await until("the count says which", status, "1 of 2");
 
   // Selected backward the caret is at its start, but the search still leaves it behind.
   await clickAt(2, 6);
@@ -201,7 +201,7 @@ export default async function (t) {
   await clickAt(1, 16, 2);
   await page.keyboard.press("Control+F3");
   await until("a selection replaces what to find", value, "1.");
-  await until("the only one: it wraps onto itself", status, "Wrapped around");
+  await until("the only one: it wraps onto itself", status, "1 of 1");
   await closeBar();
 
   // Ctrl+H with a selection: only the replacement is left to type.

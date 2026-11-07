@@ -110,7 +110,11 @@
   let replacement = $state("");
   let caseSensitive = $state(false);
   let wholeWord = $state(false);
-  let highlight = $derived(findOpen && needle ? { needle, matching: { caseSensitive, wholeWord } } : null);
+  let regex = $state(false);
+  let preserveCase = $state(false);
+  /** Find in Selection: the document, and the part of it the bar looks in. */
+  let scope = $state<{ id: number; range: [number, number] } | null>(null);
+  let activeScope = $derived(scope && active && scope.id === active.doc.id ? scope.range : null);
   let encodingOpen = $state(false);
   let settingsOpen = $state(false);
   let settingsPage = $state<Category>("general");
@@ -662,6 +666,7 @@
     if (!tab) return;
     if (news.kind === "edited") {
       for (const view of viewsOf(news.id)) view.followEdit(news.change);
+      followScope(news.id, news.change);
       refreshAfterEdit(news.id, news.state);
     } else if (news.kind === "saved") {
       Object.assign(tab.doc, { path: news.path, name: news.name });
@@ -998,6 +1003,7 @@
   function edited(id: number, from: Pane, result: api.EditResult) {
     keepOpen(id);
     for (const pane of panes) if (pane !== from) pane.editors[id]?.followEdit(result.change);
+    followScope(id, result.change);
     refreshAfterEdit(id, result.state);
     if (sharedDocs.has(id)) tell({ kind: "edited", id, change: result.change, state: result.state });
   }
@@ -1072,7 +1078,7 @@
    */
   async function startFind(replace: boolean, orWord = false) {
     const seed = editor?.findSeed(orWord);
-    if (seed) needle = seed;
+    if (seed) needle = regex ? escapeRegex(seed) : seed;
     if (replace) replacing = true;
     else if (!findOpen) replacing = false;
     findOpen = true;
@@ -1089,13 +1095,43 @@
   async function findAgain(backward: boolean, fromSelection: boolean) {
     if (fromSelection || !needle) {
       const seed = editor?.findSeed(true);
-      if (seed) needle = seed;
+      if (seed) needle = regex ? escapeRegex(seed) : seed;
     }
     if (!needle) return startFind(false);
     if (!findOpen) replacing = false;
     findOpen = true;
     await tick();
     findBar?.run(backward);
+  }
+
+  /** What finds `text` as it is, with the regular expression toggle on. */
+  const escapeRegex = (text: string) => text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+
+  /** Find in Selection (Alt+L, the bar's button): in the selection, or everywhere again. */
+  function toggleScope() {
+    if (activeScope) {
+      scope = null;
+      return;
+    }
+    const [anchor, caret] = editor?.selection() ?? [0, 0];
+    if (!active || anchor === caret) return;
+    scope = { id: active.doc.id, range: [Math.min(anchor, caret), Math.max(anchor, caret)] };
+  }
+
+  /** The scope stays on its text through an edit; one that takes it all ends it. */
+  function followScope(id: number, change: api.Change) {
+    if (scope?.id !== id) return;
+    const end = change.start + change.oldLen;
+    const moved = (at: number, isEnd: boolean) =>
+      at >= end ? at + change.newLen - change.oldLen : at <= change.start ? at : isEnd ? change.start + change.newLen : change.start;
+    const range: [number, number] = [moved(scope.range[0], false), moved(scope.range[1], true)];
+    scope = range[0] < range[1] ? { id, range } : null;
+  }
+
+  /** What the find bar looks for in a document, to show on screen. */
+  function highlightFor(id: number): api.Query | null {
+    if (!findOpen) return null;
+    return { needle, caseSensitive, wholeWord, regex, scope: scope?.id === id ? scope.range : null };
   }
 
   async function showAbout() {
@@ -1532,6 +1568,9 @@
     else if (mod && key === "g" && active) openGoto();
     else if (e.key === "F3" && active) findAgain(e.shiftKey, mod);
     else if (e.altKey && !mod && e.code === "KeyW" && findOpen) wholeWord = !wholeWord;
+    else if (e.altKey && !mod && e.code === "KeyR" && findOpen) regex = !regex;
+    else if (e.altKey && !mod && e.code === "KeyP" && findOpen) preserveCase = !preserveCase;
+    else if (e.altKey && !mod && e.code === "KeyL" && findOpen) toggleScope();
     else if (e.key === "F10" && !encodingOpen) menuBar?.toggleKeyboard();
     else if (e.key === "Escape" && findOpen && !encodingOpen && !e.defaultPrevented) findBar?.close();
     else return;
@@ -1755,23 +1794,6 @@
               onunlock={() => toggleLock(pane)}
               onmore={(button) => toggleMoreMenu(pane.key, button)}
             />
-            {#if i === focused && findOpen && active && editor}
-              <FindBar
-                bind:this={findBar}
-                bind:replacing
-                bind:needle
-                bind:replacement
-                bind:caseSensitive
-                bind:wholeWord
-                doc={active.doc}
-                len={active.state.len}
-                viewer={editor}
-                onclose={() => {
-                  findOpen = false;
-                  editor?.focus();
-                }}
-              />
-            {/if}
             <div class="editors">
               <!-- In a stable order, whatever the tabs': an editor moved would lose the keyboard and its scrolling. -->
               {#each [...pane.ids].sort((a, b) => a - b) as id (id)}
@@ -1784,7 +1806,8 @@
                       lang={tab.lang}
                       indexed={tab.status?.scanned ?? 0}
                       lines={tab.status?.lines ?? 0}
-                      {highlight}
+                      highlight={highlightFor(id)}
+                      covered={i === focused && findOpen ? () => findBar?.box() ?? null : undefined}
                       oncaret={(c) => (pane.carets[id] = c)}
                       oncontext={(x, y) => (paneMenu = { key: pane.key, kind: "text", point: { x, y } })}
                       onedit={(result) => edited(id, pane, result)}
@@ -1793,6 +1816,29 @@
                   </div>
                 {/if}
               {/each}
+              {#if i === focused && findOpen && active && editor}
+                <FindBar
+                  bind:this={findBar}
+                  bind:replacing
+                  bind:needle
+                  bind:replacement
+                  bind:caseSensitive
+                  bind:wholeWord
+                  bind:regex
+                  bind:preserveCase
+                  doc={active.doc}
+                  docState={active.state}
+                  viewer={editor}
+                  caret={activeCaret ?? undefined}
+                  scope={activeScope}
+                  ontogglescope={toggleScope}
+                  onclose={() => {
+                    findOpen = false;
+                    scope = null;
+                    editor?.focus();
+                  }}
+                />
+              {/if}
               {#if i === focused}
                 {#if gotoOpen}
                   <div class="goto">

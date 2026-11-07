@@ -452,11 +452,13 @@ export default async function (t) {
   await until("found here", app.position, "Ln 2, Col 10 (9 selected)");
   const foundIn = (i) => page.$$eval(`${PANE(i)} .slot:not(.hidden) .found`, (els) => els.map((e) => e.textContent).join(""));
   await until("the current one only here", async () => [await foundIn(0), await foundIn(1)], ["GRID    2", ""]);
-  check("the find bar stays in its pane and hides nothing", await page.evaluate((pane) => {
+  // The second line, under the bar at the top of a narrow pane: the text makes room above it.
+  await until("the find bar stays in its pane and hides nothing", () => page.evaluate((pane) => {
     const bar = document.querySelector(".findbar").getBoundingClientRect();
     const box = document.querySelector(pane).getBoundingClientRect();
     const found = document.querySelector(`${pane} .slot:not(.hidden) .found`).getBoundingClientRect();
-    return [bar.left >= box.left, bar.right <= box.right, bar.bottom <= found.top];
+    const apart = bar.bottom <= found.top || found.bottom <= bar.top || bar.right <= found.left || found.right <= bar.left;
+    return [bar.left >= box.left, bar.right <= box.right, apart];
   }, PANE(0)), [true, true, true]);
   await app.shot("split-find");
   await clickIn(1, 0, 0);
@@ -477,7 +479,7 @@ export default async function (t) {
   await goTo(120);
   const top120 = await firstLineOf(0);
   await press("Control+2");
-  await page.click(`${PANE(1)} .findbar button:text-is('Replace All')`);
+  await page.click(`${PANE(1)} .findbar button[aria-label='Replace All']`);
   await until("replace all from one pane", () => page.textContent(".findbar .status"), "Replaced 400");
   await until("the other shows it", async () => (await linesOf(0))[0], `NODE    ${top120}`);
   await until("staying on its line", () => firstLineOf(0), top120);

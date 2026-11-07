@@ -4,8 +4,10 @@
 //! Reads go through a [`Text`] snapshot, which is cheap to take and stays
 //! valid while editing goes on, so a long search or save never blocks typing.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufWriter};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -21,7 +23,8 @@ use crate::line_index::{self, IndexStatus, LineIndex};
 use crate::original::Original;
 use crate::pieces::{Added, Piece, Pieces, Source, total_len};
 use crate::problem::Problem;
-use crate::search;
+use crate::query::{Count, MatchCount, Matcher, Query, Replacement};
+use crate::search::{FindResult, Step};
 use crate::source::FileSource;
 use crate::text::{BoxRows, Text, View, ViewTarget};
 
@@ -29,6 +32,8 @@ use crate::text::{BoxRows, Text, View, ViewTarget};
 pub const MAX_COPY: u64 = 256 << 20;
 /// Replace All stops at this many matches.
 pub const MAX_REPLACE: usize = 2_000_000;
+/// The matches marked on screen stop at this many.
+pub const MAX_MARKS: usize = 10_000;
 const SNIFF_LEN: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +65,8 @@ pub struct DocState {
     pub dirty: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Bumped by every change to the text.
+    pub version: u64,
 }
 
 /// `[start, start + old_len)` became `[start, start + new_len)`.
@@ -95,6 +102,7 @@ impl State {
             dirty: self.history.is_dirty(),
             can_undo: !self.history.undo.is_empty(),
             can_redo: !self.history.redo.is_empty(),
+            version: self.version,
         }
     }
 }
@@ -133,6 +141,15 @@ pub struct Document {
     path: RwLock<Option<PathBuf>>,
     disk: Mutex<Stamp>,
     cancel: Arc<AtomicBool>,
+    /// The last count of matches, for the text it was made of.
+    counted: Mutex<Option<Counted>>,
+}
+
+struct Counted {
+    query: Query,
+    encoding: Encoding,
+    version: u64,
+    count: Arc<Count>,
 }
 
 impl Document {
@@ -207,6 +224,7 @@ impl Document {
             eol: Eol::detect(&sample),
             path: RwLock::new(path),
             cancel,
+            counted: Mutex::default(),
         })
     }
 
@@ -479,37 +497,188 @@ impl Document {
         }))
     }
 
-    /// Replaces every match of `needle` with `replacement` as one undo step.
-    /// Returns how many were replaced, or `None` if cancelled. All
-    /// replacements point at one copy of the text, so even a million of
+    /// The next match after the selection, or the one before it `backward`,
+    /// going round the end (of the scope, for Find in Selection). A
+    /// selection that is a match is gone past: forward, the search starts
+    /// just after its start, so that a match overlapping it is found too.
+    pub fn find(
+        &self,
+        query: &Query,
+        (anchor, caret): (u64, u64),
+        backward: bool,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<FindResult> {
+        let text = self.text();
+        let Some(matcher) = Matcher::new(query, self.encoding(), text.len())? else {
+            return Ok(FindResult::NotFound);
+        };
+        let (start, end) = (anchor.min(caret), anchor.max(caret));
+        let from = if backward {
+            start
+        } else if matcher.at(&text, (start, end), |_| ())?.is_some() {
+            start + 1
+        } else {
+            caret
+        };
+        matcher.find(&text, from, backward, cancel, progress)
+    }
+
+    /// How many matches there are, and which one the selection is; `None`
+    /// if cancelled. The count is kept until the text or the query changes,
+    /// so asking again as the selection moves costs little.
+    pub fn count(
+        &self,
+        query: &Query,
+        (anchor, caret): (u64, u64),
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> io::Result<Option<MatchCount>> {
+        let (text, _, version) = self.snapshot();
+        let encoding = self.encoding();
+        let Some(matcher) = Matcher::new(query, encoding, text.len())? else {
+            return Ok(Some(MatchCount {
+                total: 0,
+                index: None,
+            }));
+        };
+        let kept = self.counted.lock().unwrap().as_ref().and_then(|c| {
+            (c.version == version && c.encoding == encoding && c.query == *query)
+                .then(|| c.count.clone())
+        });
+        let count = match kept {
+            Some(count) => count,
+            None => {
+                let Some(count) = matcher.count(&text, cancel, progress)? else {
+                    return Ok(None);
+                };
+                let count = Arc::new(count);
+                *self.counted.lock().unwrap() = Some(Counted {
+                    query: query.clone(),
+                    encoding,
+                    version,
+                    count: count.clone(),
+                });
+                count
+            }
+        };
+        let index = matcher.index(&text, &count, (anchor.min(caret), anchor.max(caret)))?;
+        Ok(Some(MatchCount {
+            total: count.total,
+            index,
+        }))
+    }
+
+    /// Where the matches starting in `[from, to)` are, for the screen: no
+    /// more than [`MAX_MARKS`].
+    pub fn matches_in(&self, query: &Query, from: u64, to: u64) -> io::Result<Vec<(u64, u64)>> {
+        let text = self.text();
+        let mut found = Vec::new();
+        let Some(matcher) = Matcher::new(query, self.encoding(), text.len())? else {
+            return Ok(found);
+        };
+        let never = AtomicBool::new(false);
+        matcher.each(&text, from, to, false, &never, &mut |_| {}, &mut |step| {
+            if let Step::Match(hit) = step {
+                found.push((hit.start, hit.end));
+                if found.len() == MAX_MARKS {
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        Ok(found)
+    }
+
+    /// What the selection would be replaced with, if it is a match.
+    pub fn replacement_for(
+        &self,
+        query: &Query,
+        replacement: &str,
+        preserve_case: bool,
+        (anchor, caret): (u64, u64),
+    ) -> io::Result<Option<String>> {
+        let text = self.text();
+        let Some(matcher) = Matcher::new(query, self.encoding(), text.len())? else {
+            return Ok(None);
+        };
+        let replacement = self.replacement(replacement, query, &matcher, preserve_case);
+        let bytes = matcher.at(&text, (anchor.min(caret), anchor.max(caret)), |hit| {
+            replacement.expand(hit)
+        })?;
+        Ok(bytes.map(|b| self.encoding().decode(&b).into_owned()))
+    }
+
+    /// Replaces every match with `replacement` as one undo step. Returns how
+    /// many were replaced, or `None` if cancelled. Replacements that come
+    /// out the same point at one copy of the text, so even a million of
     /// them cost only their pieces.
     pub fn replace_all(
         &self,
-        needle: &str,
+        query: &Query,
         replacement: &str,
-        matching: search::Matching,
+        preserve_case: bool,
         before: (u64, u64),
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(u64),
     ) -> io::Result<Option<(usize, Option<EditResult>)>> {
-        let needle = self.encoding().encode(needle).into_owned();
-        let piece = self.added_piece(&self.encode(replacement));
         for _ in 0..3 {
             let (text, _, version) = self.snapshot();
-            let Some(found) =
-                search::find_all(&text, &needle, matching, MAX_REPLACE, cancel, progress)?
-            else {
-                return Ok(None);
+            let Some(matcher) = Matcher::new(query, self.encoding(), text.len())? else {
+                return Ok(Some((0, None)));
             };
-            let n = needle.len() as u64;
-            let edits: Vec<_> = found.iter().map(|&at| (at, at + n, piece)).collect();
+            let replacement = self.replacement(replacement, query, &matcher, preserve_case);
+            let mut edits = Vec::new();
+            let mut pieces = HashMap::new();
+            let mut too_many = false;
+            let done = matcher.each_match(
+                &text,
+                replacement.needs_text(),
+                cancel,
+                progress,
+                &mut |hit| {
+                    if edits.len() == MAX_REPLACE {
+                        too_many = true;
+                        return ControlFlow::Break(());
+                    }
+                    let bytes = replacement.expand(hit);
+                    let piece = *pieces
+                        .entry(bytes)
+                        .or_insert_with_key(|bytes: &Vec<u8>| self.added_piece(bytes));
+                    edits.push((hit.start, hit.end, piece));
+                    ControlFlow::Continue(())
+                },
+            )?;
+            if too_many {
+                return Err(Problem::TooManyMatches { limit: MAX_REPLACE }.into());
+            }
+            if !done {
+                return Ok(None);
+            }
             let mut state = self.state.write().unwrap();
             if state.version == version {
                 let result = self.apply(&mut state, &edits, EditKind::Other, before);
-                return Ok(Some((found.len(), result)));
+                return Ok(Some((edits.len(), result)));
             }
         }
         Err(Problem::KeptChanging.into())
+    }
+
+    fn replacement(
+        &self,
+        replacement: &str,
+        query: &Query,
+        matcher: &Matcher,
+        preserve_case: bool,
+    ) -> Replacement {
+        let groups = query.regex.then(|| matcher.groups());
+        Replacement::new(
+            replacement,
+            groups,
+            preserve_case,
+            self.encoding(),
+            |text| self.encode(text),
+        )
     }
 
     /// Applies sorted, non-overlapping edits `(start, end, new text)` in one

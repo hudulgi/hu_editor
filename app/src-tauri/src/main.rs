@@ -49,6 +49,9 @@ fn main() {
             commands::set_encoding,
             commands::save_converted,
             commands::find,
+            commands::count_matches,
+            commands::matches_in,
+            commands::replacement_for,
             commands::cancel_find,
         ])
         .run(tauri::generate_context!())

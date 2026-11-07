@@ -39,8 +39,10 @@
     indexed: number;
     /** Lines known so far, for the gutter width. */
     lines: number;
-    /** What the find bar is looking for: its matches on screen stand out. */
-    highlight?: { needle: string; matching: api.Matching } | null;
+    /** What the find bar is looking for: its matches on screen stand out, and its scope. */
+    highlight?: api.Query | null;
+    /** Where something covers the text (the find bar): a match found is scrolled clear of it. */
+    covered?: () => DOMRect | null;
     onview?: (view: api.View) => void;
     oncaret?: (caret: CaretInfo) => void;
     /** A right click in the text, at this point. */
@@ -50,7 +52,7 @@
     onerror?: (message: string) => void;
   }
 
-  let { doc, lang, indexed, lines, highlight = null, onview, oncaret, oncontext, onedit, onerror }: Props = $props();
+  let { doc, lang, indexed, lines, highlight = null, covered, onview, oncaret, oncontext, onedit, onerror }: Props = $props();
 
   const MIN_THUMB = 24;
   const WORD = /[\p{L}\p{N}_.]/u;
@@ -858,7 +860,7 @@
   }
 
   /** The selection's line and columns, if it lies on one visible line. */
-  export function selectionInLine(): { line: string; from: number; to: number } | null {
+  function selectionInLine(): { line: string; from: number; to: number } | null {
     if (!view || box || selStart === selEnd) return null;
     const row = rowOf(selStart);
     if (row < 0) return null;
@@ -966,7 +968,7 @@
     });
   }
 
-  /** Selects `[from, to)` and scrolls it into view, a third down the page. */
+  /** Selects `[from, to)` and scrolls it into view, a third down the page and clear of the find bar. */
   export function select(from: number, to: number) {
     enqueue(async () => {
       box = null;
@@ -974,11 +976,50 @@
       caret = to;
       preferredCol = null;
       await settled();
-      if (rowOf(from) < 0 || rowOf(to) < 0) {
-        jump({ kind: "offset", offset: from, context: Math.floor(rows / 3) });
+      // Scrolled sideways to the caret first.
+      await tick();
+      if (rowOf(from) < 0 || rowOf(to) < 0 || underCover(from, to)) {
+        jump({ kind: "offset", offset: from, context: clearRows() });
         await settled();
+        await tick();
+        // At the start of the text there is nowhere to scroll to: make room above it instead.
+        const cover = covered?.();
+        if (cover && view?.top === 0 && underCover(from, to)) {
+          lift = Math.ceil(cover.bottom - root.getBoundingClientRect().top);
+          await tick();
+          await settled();
+        }
       }
     });
+  }
+
+  /** Room above the first line, so that the find bar hides no match there, as
+   * VS Code makes; gone once the text scrolls or nothing covers it. */
+  let lift = $state(0);
+  $effect(() => {
+    if (!covered || (view && view.top !== 0)) lift = 0;
+  });
+
+  /** Whether `[from, to)`, on screen, is under what covers the text. */
+  function underCover(from: number, to: number) {
+    const cover = covered?.();
+    const row = rowOf(from);
+    const el = row >= 0 ? (lineBox?.children[row] as HTMLElement | undefined) : undefined;
+    if (!cover || !view || !el) return false;
+    const line = view.lines[row];
+    const rect = el.getBoundingClientRect();
+    const left = rect.left + xAt(el, colOf(line, from));
+    const right = rect.left + xAt(el, colOf(line, Math.min(to, line.offset + line.len)));
+    return rect.top < cover.bottom && rect.bottom > cover.top && left < cover.right && right > cover.left;
+  }
+
+  /** Lines above a match brought into view: a third of the page, or all that the cover hides. */
+  function clearRows() {
+    const third = Math.floor(rows / 3);
+    const cover = covered?.();
+    if (!cover) return third;
+    const hidden = Math.ceil((cover.bottom - scroller.getBoundingClientRect().top) / lineH);
+    return Math.min(rows - 1, Math.max(third, hidden));
   }
 
   /** The same bytes are now read in another encoding: shows them, with the
@@ -1192,12 +1233,43 @@
     });
   });
 
+  // A regular expression's matches on screen come from the core, which has
+  // the regex engine; a literal needle's are found here.
+  let coreMarks = $state<[number, number][]>([]);
+  $effect(() => {
+    const query = highlight;
+    const shown = view;
+    if (!query?.regex || !query.needle || !shown) {
+      coreMarks = [];
+      return;
+    }
+    let stale = false;
+    const asked = { ...query, scope: query.scope ? [query.scope[0], query.scope[1]] : null } satisfies api.Query;
+    api.matchesIn(doc.id, asked, shown.top, shown.end).then(
+      (marks) => !stale && (coreMarks = marks),
+      () => !stale && (coreMarks = []),
+    );
+    return () => (stale = true);
+  });
+
   function marksOf(line: Line): Mark[] {
     const marks: Mark[] = [];
-    if (highlight?.needle) {
-      for (const [a, b] of findMatches(line.text, highlight.needle, highlight.matching)) {
-        const selected = offsetOf(line, a) === selStart && offsetOf(line, b) === selEnd;
-        marks.push([a, b, selected ? "found" : "match"]);
+    const end = line.offset + line.len;
+    const scope = highlight?.scope;
+    if (scope && scope[0] <= end && scope[1] > line.offset) {
+      marks.push([colOf(line, Math.max(scope[0], line.offset)), colOf(line, Math.min(scope[1], end)), "scope"]);
+    }
+    const found = (a: number, b: number) => (a === selStart && b === selEnd ? "found" : "match");
+    if (highlight?.regex) {
+      for (const [a, b] of coreMarks) {
+        if (a < line.offset || a > end) continue;
+        marks.push([colOf(line, a), colOf(line, Math.min(b, end)), found(a, b)]);
+      }
+    } else if (highlight?.needle) {
+      for (const [a, b] of findMatches(line.text, highlight.needle, highlight)) {
+        const [from, to] = [offsetOf(line, a), offsetOf(line, b)];
+        if (scope && (from < scope[0] || to > scope[1])) continue;
+        marks.push([a, b, found(from, to)]);
       }
     }
     if (box) {
@@ -1285,6 +1357,7 @@
   class:no-shading={!settings.fieldShading}
   class:no-gutter={!settings.lineNumbers}
   class:rainbow={settings.rainbowColumns}
+  style:padding-top={lift ? `${lift}px` : null}
   bind:this={root}
 >
   {#if settings.lineNumbers}
@@ -1373,6 +1446,7 @@
   .editor {
     position: relative;
     display: flex;
+    box-sizing: border-box;
     height: 100%;
     font-family: var(--mono);
     font-size: var(--font-size);
@@ -1572,10 +1646,15 @@
   /* Fill the line's height, so that highlighted lines touch: the padding moves
      no text and the line clips what is too much. (An inline-block would restart
      the tab stops inside it.) */
+  .lines :global(.scope),
   .lines :global(.sel),
   .lines :global(.match),
   .lines :global(.found) {
     padding-block: var(--line-h);
+  }
+  /* Find in Selection's scope, under the selection and the matches in it. */
+  .lines :global(.scope) {
+    background: rgba(58, 61, 65, 0.8);
   }
   /* White text: syntax colors are not readable on backgrounds this strong. */
   .lines :global(.sel) {
