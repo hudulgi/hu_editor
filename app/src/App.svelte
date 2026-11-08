@@ -348,7 +348,7 @@
       if (!panes[at].locked) return at;
     }
     const added = addPane(panes[focused], sideAfter(splitDirection));
-    return panes.indexOf(added);
+    return panes.findIndex((pane) => pane.key === added.key);
   }
 
   /**
@@ -361,6 +361,8 @@
     goto: number | null = null,
     show = true,
     preview = false,
+    /** A pane asked for, locked or not: where a file was dropped. */
+    into: number | null = null,
   ) {
     const tab: Tab = {
       doc,
@@ -388,7 +390,7 @@
       if (show) activate(doc.id);
     } else {
       tabs.push(tab);
-      const at = openTarget();
+      const at = into ?? openTarget();
       const pane = panes[at];
       const previous = pane.previewId;
       if (preview && previous !== null) {
@@ -627,6 +629,42 @@
     const zone = dropZone;
     dropZone = null;
     if (zone) moveTab(id, panes[from], panes[zone.pane], zone.side);
+  }
+
+  /** Files dragged from the explorer or the OS: where they would go, shown as a tab's would be. */
+  function dragFiles(x: number, y: number) {
+    const over = paneAt(x, y);
+    dropZone = over === null ? null : { pane: over, side: sideAt(over, x, y) ?? undefined };
+  }
+
+  /**
+   * Files let go: into the pane they were over or, near an edge of its text, a
+   * new pane on that side, locked or not; folders show in the explorer. Off the
+   * panes, the OS's open as usual (`elsewhere`), the explorer's do not.
+   */
+  async function dropFiles(paths: string[], elsewhere: boolean) {
+    const zone = dropZone;
+    dropZone = null;
+    const files: string[] = [];
+    for (const path of paths) {
+      if ((await api.pathKind(path)) !== "dir") files.push(path);
+      else {
+        sidebarOpen = true;
+        sideView = "explorer";
+        explorer?.reveal(path, true);
+      }
+    }
+    if (!files.length) return;
+    if (!zone) {
+      if (elsewhere) for (const path of files) await openPath(path);
+      return;
+    }
+    let at = zone.pane;
+    if (zone.side) {
+      const added = addPane(panes[at], zone.side);
+      at = panes.findIndex((pane) => pane.key === added.key);
+    }
+    for (const path of files) await openPath(path, true, false, at);
   }
 
   /** Moves a tab to the pane next to its own on `side`, or if there is none, to a new one there. */
@@ -916,12 +954,13 @@
    * explorer down to it (not wanted when picked there). `preview`: not meant to
    * stay yet; otherwise a tab that was a preview stays from now on.
    */
-  async function openPath(path: string, reveal = true, preview = false) {
+  async function openPath(path: string, reveal = true, preview = false, into: number | null = null) {
     // A double click arrives while its first click is still opening the file.
     await opening.get(path);
     const open = tabOfPath(path);
     if (open) {
-      if (panes[focused].activeId === null && !panes[focused].locked) addView(open.doc.id, focused);
+      if (into !== null) addView(open.doc.id, into);
+      else if (panes[focused].activeId === null && !panes[focused].locked) addView(open.doc.id, focused);
       else activate(open.doc.id);
       if (!preview) keepOpen(open.doc.id);
     } else {
@@ -929,8 +968,8 @@
         try {
           const loaded = await load(path);
           // A blank, untouched new document gives way to the file.
-          const blank = active && !panes[focused].locked && active.doc.path === null && !active.state.dirty && active.state.len === 0;
-          add(loaded, blank ? active : null, null, true, preview && settings.previewEditors);
+          const blank = into === null && active && !panes[focused].locked && active.doc.path === null && !active.state.dirty && active.state.len === 0;
+          add(loaded, blank ? active : null, null, true, preview && settings.previewEditors, into);
           return true;
         } catch (e) {
           notice = describeError(e);
@@ -1989,15 +2028,15 @@
     const unlisten: (() => void)[] = [];
     getCurrentWebview()
       .onDragDropEvent(async (e) => {
-        if (e.payload.type !== "drop" || !e.payload.paths.length) return;
-        for (const path of e.payload.paths) {
-          if ((await api.pathKind(path)) === "dir") {
-            sidebarOpen = true;
-            explorer?.reveal(path, true);
-          } else {
-            await openPath(path);
-          }
+        const dragged = e.payload;
+        if (dragged.type === "leave") {
+          dropZone = null;
+          return;
         }
+        // Called physical, but only Windows sends device pixels; macOS and Linux send CSS pixels already.
+        const { x, y } = dragged.position.toLogical(isWindows ? window.devicePixelRatio : 1);
+        dragFiles(x, y);
+        if (dragged.type === "drop") await dropFiles(dragged.paths, true);
       })
       .then((u) => unlisten.push(u));
     // Closing the window with unsaved changes asks first; other windows go on.
@@ -2088,6 +2127,14 @@
         onopenside={openToSide}
         onmoved={followMoves}
         ondeleted={checkDisk}
+        ondragfile={dragFiles}
+        ondropfile={(path, point) => {
+          if (!point) dropZone = null;
+          else {
+            dragFiles(point.x, point.y);
+            dropFiles([path], false);
+          }
+        }}
         onerror={(message) => (notice = message)}
       />
       </div>

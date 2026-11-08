@@ -160,7 +160,7 @@ export class Session {
   }
 
   /** Starts the app as on a new machine, with `settings` in its settings file if given. */
-  async launch({ locale = "en-US", settings, launchPath = null, viewport = { width: 1280, height: 800 }, scale } = {}) {
+  async launch({ locale = "en-US", settings, launchPath = null, viewport = { width: 1280, height: 800 }, scale, userAgent } = {}) {
     const settingsPath = join(this.config, `settings-${this.apps.length}`, "settings.json");
     if (settings) {
       mkdirSync(dirname(settingsPath), { recursive: true });
@@ -171,7 +171,7 @@ export class Session {
     const browser = scale
       ? await launchBrowser([`--force-device-scale-factor=${scale}`, `--window-size=${viewport.width},${viewport.height}`])
       : this.browser;
-    const context = await browser.newContext(scale ? { locale, viewport: null } : { locale, viewport });
+    const context = await browser.newContext({ locale, viewport: scale ? null : viewport, ...(userAgent && { userAgent }) });
     const start = async (label, launchPath) => {
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
@@ -367,12 +367,29 @@ export class App {
     });
   destroyed = () => this.page.evaluate(() => window.__e2e.destroyed);
 
-  /** Files dropped on the window. */
-  drop = (paths) =>
-    this.page.evaluate((paths) => {
-      const handler = window.__e2e.listeners["tauri://drag-drop"];
-      window[`_${handler}`]({ event: "tauri://drag-drop", id: 1, payload: { paths, position: { x: 10, y: 10 } } });
-    }, paths);
+  /**
+   * Files dropped on the window, at a point of the page off the panes unless
+   * given. Sent as wry sends it: in device pixels on Windows, in CSS pixels on
+   * macOS, though both are called physical.
+   */
+  drop = (paths, at = { x: 10, y: 10 }) =>
+    this.page.evaluate(
+      ({ paths, at }) => {
+        const scale = navigator.userAgent.includes("Windows") ? window.devicePixelRatio : 1;
+        const handler = window.__e2e.listeners["tauri://drag-drop"];
+        window[`_${handler}`]({ event: "tauri://drag-drop", id: 1, payload: { paths, position: { x: at.x * scale, y: at.y * scale } } });
+      },
+      { paths, at },
+    );
+
+  /** Files from the OS, dragged over the window at a point (sent as `drop`'s), or out of it again (null). */
+  dragOver = (at) =>
+    this.page.evaluate((at) => {
+      const scale = navigator.userAgent.includes("Windows") ? window.devicePixelRatio : 1;
+      const event = at ? "tauri://drag-over" : "tauri://drag-leave";
+      const handler = window.__e2e.listeners[event];
+      window[`_${handler}`]({ event, id: 1, payload: at ? { position: { x: at.x * scale, y: at.y * scale } } : null });
+    }, at);
 
   // ---- Settings window -------------------------------------------------------
 

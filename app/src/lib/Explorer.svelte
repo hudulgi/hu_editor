@@ -27,10 +27,42 @@
     onmoved: (docs: api.MovedDoc[]) => void;
     /** Something was deleted: open files may be gone from the disk. */
     ondeleted: () => void;
+    /** A file is being dragged out of the tree, now at this point of the window. */
+    ondragfile?: (x: number, y: number) => void;
+    /** And let go, at this point, or given up. */
+    ondropfile?: (path: string, point: { x: number; y: number } | null) => void;
     onerror: (message: string) => void;
   }
 
-  let { active, onopen, onopenside, onmoved, ondeleted, onerror }: Props = $props();
+  let { active, onopen, onopenside, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
+
+  // A file dragged out to the editors, to open where it is let go. Pointer
+  // events, not HTML drag and drop: Tauri takes those for files on Windows.
+  const DRAG_START = 6;
+  let dragged = $state<string | null>(null);
+
+  function dragFrom(down: PointerEvent, path: string) {
+    if (down.button !== 0) return;
+    let dragging = false;
+    const move = (e: PointerEvent) => {
+      if (!dragging && Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) >= DRAG_START) {
+        dragging = true;
+        dragged = path;
+      }
+      if (dragging) ondragfile?.(e.clientX, e.clientY);
+    };
+    const end = (e: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      if (!dragging) return;
+      dragged = null;
+      ondropfile?.(path, e.type === "pointerup" ? { x: e.clientX, y: e.clientY } : null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
 
   /** A folder as the tree has it: its row, and the root that row is under. */
   interface Folder {
@@ -668,6 +700,8 @@
           aria-expanded={entry.isDir ? expanded.has(row.key) : undefined}
           title={entry.path}
           style:padding-left="{6 + row.depth * 14}px"
+          class:dragged={dragged !== null && samePath(dragged, entry.path)}
+          onpointerdown={(e) => row.kind === "entry" && !entry.isDir && !editing && dragFrom(e, entry.path)}
           onclick={() => activate(row)}
           ondblclick={() => row.kind === "entry" && !row.entry.isDir && onopen(row.entry.path)}
           oncontextmenu={(e) => rowMenu(e, row)}
@@ -858,6 +892,9 @@
     box-shadow: inset 0 0 0 1px var(--accent);
   }
   .row.hidden .name {
+    opacity: 0.6;
+  }
+  .row.dragged {
     opacity: 0.6;
   }
   .row.cut {
