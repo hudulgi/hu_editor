@@ -1153,8 +1153,15 @@
 
   function toggleAutoSave() {
     settings.autoSave = !settings.autoSave;
-    for (const tab of tabs) if (tab.state.dirty) autoSaveSoon(tab.doc.id);
   }
+
+  // Turned on, from the menu or the settings: what is unsaved saves soon, not only after its next edit.
+  $effect(() => {
+    if (!settings.autoSave) return;
+    untrack(() => {
+      for (const tab of tabs) if (tab.state.dirty) autoSaveSoon(tab.doc.id);
+    });
+  });
 
   // ---- Edit menu: comments, Find in Files ----------------------------------------
 

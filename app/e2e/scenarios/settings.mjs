@@ -10,6 +10,7 @@ export default async function (t) {
     "sjis.inp": Buffer.from("** \x93\xFA\x96\x7B\x8C\xEA\n*Node\n", "latin1"), // ** 日本語
     "unknown.blk": "some words\n",
     "three.inp": "aaa\nbbb\nccc\n",
+    "autosave.inp": "*Node\n",
     "utf8.inp": "** 한글\n*Node\n",
     ".secret": "hidden\n",
   });
@@ -34,10 +35,17 @@ export default async function (t) {
   await page.keyboard.press("Control+,");
   await until("ctrl+, closes", () => page.locator(".settings").count(), 0);
 
-  // Language: everything switches at once, without a restart.
+  // What is changed waits for Apply, as in a Windows dialog.
+  const APPLY = ".settings footer .actions button:last-child";
   await app.menu("File", "Settings…");
+  check("nothing to apply yet", await page.isDisabled(APPLY), true);
   await page.selectOption(".settings select", "ko");
+  await page.waitForTimeout(100);
+  check("not before Apply", [await page.textContent(".settings h1"), await firstMenu(app), await page.isDisabled(APPLY)], ["Settings", "File", false]);
+  await app.applySettings();
+  // Language: everything switches at once, without a restart.
   await until("the dialog switches", () => page.textContent(".settings h1"), "설정");
+  check("and has nothing more to apply", await page.isDisabled(APPLY), true);
   await until("the menu switches", () => firstMenu(app), "파일(F)");
   await until("the explorer switches", () => page.textContent(".explorer .title"), "탐색기");
   await until("the file has it", () => app.savedSettings()?.language, "ko");
@@ -64,8 +72,8 @@ export default async function (t) {
   // And back; the names of encodings and solvers never change.
   await page.keyboard.press("Control+,");
   await page.selectOption(".settings select", "en");
-  await app.closeSettings();
-  await until("English again", () => firstMenu(app), "File");
+  await app.okSettings();
+  await until("OK: English again", () => firstMenu(app), "File");
   check("the encoding's name is the same", await app.encoding(), "UTF-8");
 
   // Font size: half-typed values wait; out of range is clamped when done.
@@ -74,29 +82,56 @@ export default async function (t) {
   await app.openSettings("Editor");
   const size = app.numberSetting("Font size");
   await size.fill("20");
+  await app.applySettings();
   await until("size 20 grows the lines", rowHeight, 31);
   check("the font follows", await fontSize(), "20px");
   await size.fill("1");
   check("half-typed values wait", await fontSize(), "20px");
   await page.keyboard.press("Tab");
+  await app.applySettings();
   await until("a value out of range is clamped when done", fontSize, "8px");
   check("and shown", await size.inputValue(), "8");
   await size.fill("13");
-  await page.fill(".settings input[list]", "Courier New");
+  // The font box: typed into, or picked from a list that always has them all.
+  const FONT = ".settings #settings-font";
+  const listed = () => page.$$eval(".settings .fonts li", (els) => els.map((e) => e.textContent.trim()));
+  await page.click(".settings .combo .drop");
+  const all = await listed();
+  check("the list: the default, then the fonts this machine has", [all[0], all.length > 1], ["Default (Consolas family)", true]);
+  await page.click(`.settings .fonts li >> nth=1`);
+  check("one picked", [await page.inputValue(FONT), await page.locator(".settings .fonts").count()], [all[1], 0]);
+  await page.click(".settings .combo .drop");
+  check("the list again: still all of them", await listed(), all);
+  await page.click(".settings .combo .drop");
+  await page.focus(FONT);
+  await page.keyboard.press("ArrowDown");
+  check("down opens it, at the one in the box", await page.textContent(".settings .fonts li.marked"), all[1]);
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  check("enter picks, and the dialog stays", [await page.inputValue(FONT), await page.locator(".settings").count()], ["", 1]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  check("esc closes the list only", [await page.locator(".settings .fonts").count(), await page.locator(".settings").count()], [0, 1]);
+  await page.fill(FONT, "Courier New");
+  await app.applySettings();
   await until("the font name is used", () => page.$eval(`${SLOT} .lines`, (e) => getComputedStyle(e).fontFamily.split(",")[0].replace(/"/g, "")), "Courier New");
-  await page.fill(".settings input[list]", "");
+  await page.fill(FONT, "");
 
   // Editor switches.
   await app.toggleSetting("Show line numbers");
+  await app.applySettings();
   await until("no line numbers", () => page.locator(`${SLOT} .gutter`).count(), 0);
   await app.toggleSetting("Highlight the current line");
+  await app.applySettings();
   await until("no current line", () => page.locator(`${SLOT} .lines .line.current`).count(), 0);
   const shaded = () => page.$eval(`${SLOT} .lines .line .fb`, (e) => getComputedStyle(e).backgroundColor).catch(() => "none");
   const shade = await shaded();
   check("fields are shaded to start with", shade !== "rgba(0, 0, 0, 0)" && shade !== "none", true);
   await app.toggleSetting("Shade Nastran fields");
+  await app.applySettings();
   await until("no shading", shaded, "rgba(0, 0, 0, 0)");
   await app.toggleSetting("Syntax highlighting");
+  await app.applySettings();
   await until("no colors", () => page.$$eval(`${SLOT} .lines .line:first-child span`, (s) => new Set(s.map((e) => getComputedStyle(e).color)).size), 1);
   await app.shot("settings-editor");
   await app.closeSettings();
@@ -110,7 +145,7 @@ export default async function (t) {
 
   // Tab key: spaces to a stop of the chosen size, or a tab character.
   await app.numberSetting("Spaces per tab stop").fill("4");
-  await app.closeSettings();
+  await app.okSettings();
   await open("other.bdf");
   await page.click(`${SLOT} .lines .line`);
   await page.keyboard.press("Home");
@@ -123,7 +158,7 @@ export default async function (t) {
   await app.openSettings("Editor");
   await app.selectSetting("Tab key", "tab");
   check("the size does not apply to a tab character", await app.numberSetting("Spaces per tab stop").isDisabled(), true);
-  await app.closeSettings();
+  await app.okSettings();
   await page.keyboard.press("Tab");
   await until("a tab character", async () => (await app.lines())[0], "\tGRID    1");
   await page.keyboard.press("Control+z");
@@ -147,7 +182,7 @@ export default async function (t) {
   await app.settingsCategory("Files");
   await app.selectSetting("New file encoding", "cp949");
   await app.selectSetting("New file line breaks", "lf");
-  await app.closeSettings();
+  await app.okSettings();
   await page.keyboard.press("Control+n");
   await until("a new file in CP949, LF", async () => [await app.encoding(), (await app.status()).includes("LF")], ["CP949", true]);
   await page.keyboard.insertText("한글");
@@ -159,7 +194,7 @@ export default async function (t) {
   await app.openSettings("Files");
   await app.selectSetting("New file encoding", "utf8");
   await app.selectSetting("New file line breaks", "crlf");
-  await app.closeSettings();
+  await app.okSettings();
   await page.keyboard.press("Control+n");
   await until("a new file in UTF-8, CRLF", async () => [await app.encoding(), (await app.status()).includes("CRLF")], ["UTF-8", true]);
   await page.keyboard.press("Control+w");
@@ -170,7 +205,7 @@ export default async function (t) {
   await page.keyboard.press("Control+w");
   await app.openSettings("Files");
   await app.selectSetting("not UTF-8", "shiftJis");
-  await app.closeSettings();
+  await app.okSettings();
   await open("sjis.inp");
   await until("Shift-JIS with the setting", async () => [await app.encoding(), (await app.lines())[0]], ["Shift-JIS", "** 日本語"]);
   await page.keyboard.press("Control+w");
@@ -181,7 +216,7 @@ export default async function (t) {
   await app.openSettings("Files");
   await app.selectSetting(".blk", "abaqus");
   await app.shot("settings-files");
-  await app.closeSettings();
+  await app.okSettings();
   await until("the open .blk follows", app.language, "Abaqus");
 
   // Hidden files in the explorer, at once.
@@ -189,12 +224,12 @@ export default async function (t) {
   await until("a hidden file is not listed", () => inTree(".secret"), 0);
   await app.openSettings();
   await app.toggleSetting("Show hidden files");
-  await app.closeSettings();
+  await app.okSettings();
   await until("listed once asked", () => inTree(".secret"), 1);
   check("with its size", /\d\s*B/.test(await page.locator(`.explorer .row:has-text('.secret')`).textContent()), true);
   await app.openSettings();
   await app.toggleSetting("Show hidden files");
-  await app.closeSettings();
+  await app.okSettings();
   await until("gone again", () => inTree(".secret"), 0);
 
   // A modal window keeps keys and focus to itself.
@@ -217,6 +252,52 @@ export default async function (t) {
   await until("the menu goes", () => page.locator(".menu").count(), 0);
   await app.closeSettings();
 
+  // Cancel, Esc and Ctrl+, give up what was not applied; Enter in a box is OK.
+  await app.openSettings("Editor");
+  await app.numberSetting("Font size").fill("25");
+  await app.closeSettings();
+  await app.openSettings("Editor");
+  check("esc gave it up", [await app.numberSetting("Font size").inputValue(), await fontSize()], ["13", "13px"]);
+  await app.numberSetting("Font size").fill("25");
+  await page.click(".settings footer .actions button:has-text('Cancel')");
+  await page.waitForSelector(".settings", { state: "detached" });
+  check("so did cancel", await fontSize(), "13px");
+  await app.openSettings("Editor");
+  await app.numberSetting("Font size").fill("15");
+  await page.keyboard.press("Enter");
+  await until("enter is OK", async () => [await page.locator(".settings").count(), await fontSize()], [0, "15px"]);
+
+  // Only what was changed here is applied: another window may have changed the rest meanwhile.
+  await page.keyboard.press("Control+Shift+n");
+  await until("another window", () => app.opened.length, 1);
+  const other = app.opened[0];
+  await other.page.waitForSelector(".empty");
+  await app.openSettings("Editor");
+  await app.toggleSetting("Rainbow columns");
+  await other.setFontSize(18);
+  await until("the other window's change arrives", fontSize, "18px");
+  await app.okSettings();
+  await until("both changes kept", async () => [await fontSize(), app.savedSettings()?.rainbowColumns, app.savedSettings()?.fontSize], ["18px", true, 18]);
+  await other.page.keyboard.press("Control+Shift+w");
+  await app.openSettings("Editor");
+  await app.toggleSetting("Rainbow columns");
+  await app.numberSetting("Font size").fill("15");
+  await app.okSettings();
+
+  // Auto save, turned on here: what is unsaved already saves too.
+  await open("autosave.inp");
+  await page.click(`${SLOT} .lines .line`);
+  await page.keyboard.press("Home");
+  await page.keyboard.type("x");
+  await app.openSettings();
+  await app.toggleSetting("Auto save");
+  await app.okSettings();
+  await until("saved without another edit", () => t.read("autosave.inp"), "x*Node\n", 4000);
+  await app.openSettings();
+  await app.toggleSetting("Auto save");
+  await app.okSettings();
+  await page.keyboard.press("Control+w");
+
   // Settings survive a restart; the session setting decides what comes back.
   await app.setFontSize(16);
   await until("written to the file", () => app.savedSettings()?.fontSize, 16);
@@ -225,8 +306,8 @@ export default async function (t) {
   await until("the size stays after a restart", fontSize, "16px");
   await app.openSettings();
   await app.toggleSetting("Reopen the last files");
+  await app.okSettings();
   await until("written", () => app.savedSettings()?.restoreSession, false);
-  await app.closeSettings();
   await page.reload();
   await page.waitForSelector(".empty");
   check("no files come back with the setting off", await page.locator(".strip .tab").count(), 0);
@@ -237,15 +318,21 @@ export default async function (t) {
   mkdirSync(blocker);
   await app.openSettings();
   await app.toggleSetting("Show hidden files");
-  await app.closeSettings();
+  await app.okSettings();
   await until("a failed save is reported", async () => ((await app.notice()) ?? "").startsWith("Settings could not be saved:"), true);
   rmdirSync(blocker);
   await page.click(".notice");
 
-  // Reset to defaults.
+  // Reset to defaults: into the dialog, until applied.
   await app.openSettings();
   await page.click(".settings footer button:has-text('Reset')");
   await app.closeSettings();
+  await page.waitForTimeout(400);
+  const pageFont = () => page.$eval(":root", (e) => e.style.getPropertyValue("--font-size"));
+  check("given up with the rest", [await pageFont(), app.savedSettings()?.fontSize], ["16px", 16]);
+  await app.openSettings();
+  await page.click(".settings footer button:has-text('Reset')");
+  await app.okSettings();
   await until("reset", () => {
     const saved = app.savedSettings();
     return [saved?.fontSize, saved?.restoreSession, saved?.blkDefault, saved?.fallbackEncoding, saved?.tabSize];

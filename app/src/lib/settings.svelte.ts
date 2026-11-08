@@ -41,7 +41,8 @@ export interface Settings {
 const ENCODINGS: readonly Encoding[] = ["utf8", "cp949", "shiftJis", "gbk", "big5", "windows1252"];
 const DEFAULT_FONTS = `"Cascadia Mono", Consolas, "D2Coding", Menlo, monospace`;
 
-function defaults(): Settings {
+/** The settings of a new install. */
+export function defaults(): Settings {
   return {
     language: navigator.language.toLowerCase().startsWith("ko") ? "ko" : "en",
     restoreSession: true,
@@ -136,10 +137,6 @@ function watch() {
       }, 200);
     });
   });
-}
-
-export function resetSettings() {
-  Object.assign(settings, defaults());
 }
 
 /** Pixels per line for a font size. */

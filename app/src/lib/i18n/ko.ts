@@ -306,7 +306,6 @@ export const ko: Record<keyof typeof en, string> = {
   "settings.files": "파일",
   "settings.shortcuts": "단축키",
   "settings.reset": "기본값으로 되돌리기",
-  "settings.close": "닫기",
 
   "settings.language": "언어",
   "settings.restoreSession": "시작할 때 지난 파일 다시 열기",
@@ -314,6 +313,7 @@ export const ko: Record<keyof typeof en, string> = {
 
   "settings.fontFamily": "글꼴",
   "settings.fontDefault": "기본값 (Consolas 계열)",
+  "settings.fontList": "글꼴 목록 보기",
   "settings.fontHint": "고정폭 글꼴이어야 열이 맞습니다.",
   "settings.fontSize": "글꼴 크기",
   "settings.lineNumbers": "줄 번호 표시",
@@ -333,9 +333,12 @@ export const ko: Record<keyof typeof en, string> = {
   "settings.fallbackHint": "인코딩을 직접 고른 적 없는 파일을 열 때 사용합니다.",
   "settings.blkDefault": ".blk 파일을 내용으로 판단할 수 없을 때",
   "settings.autoSave": "자동 저장 (마지막 편집 1초 뒤)",
+  "settings.ok": "확인",
+  "settings.cancel": "취소",
+  "settings.apply": "적용",
 
   "shortcut.menu": "메뉴 열기",
-  "shortcut.new": "새 파일",
+  "shortcut.new": "새 텍스트 파일",
   "shortcut.open": "파일 열기",
   "shortcut.save": "저장",
   "shortcut.saveAs": "다른 이름으로 저장",
@@ -358,4 +361,12 @@ export const ko: Record<keyof typeof en, string> = {
   "shortcut.boxKeys": "Alt+드래그, Alt+Shift+방향키",
   "shortcut.columnMode": "컬럼 모드",
   "shortcut.documentEnds": "파일 처음 / 끝",
+  "shortcut.recent": "최근에 연 파일 열기",
+  "shortcut.expand": "선택 영역 확장 / 축소",
+  "shortcut.copyLines": "위에 / 아래에 줄 복사",
+  "shortcut.moveLines": "줄 위로 / 아래로 이동",
+  "shortcut.addCursor": "위에 / 아래에 커서 추가 (폭 0인 박스)",
+  "shortcut.findToggles": "찾기 창에서: 대소문자, 단어 단위, 정규식, 대/소문자 보존, 선택 영역에서",
+  "shortcut.inFiles": "파일에서 찾기 / 바꾸기",
+  "shortcut.explorerView": "탐색기 보기",
 };

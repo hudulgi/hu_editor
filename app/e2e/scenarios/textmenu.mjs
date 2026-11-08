@@ -273,6 +273,6 @@ export default async function (t) {
   await until("off from the view menu", async () => [await distinct(0), await fieldShown()], [1, null]);
   await app.openSettings("Editor");
   await app.toggleSetting("Rainbow columns");
-  await app.closeSettings();
+  await app.okSettings();
   await until("on from the settings", () => distinct(0), 3);
 }

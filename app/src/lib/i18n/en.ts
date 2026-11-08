@@ -305,7 +305,6 @@ export const en = {
   "settings.files": "Files",
   "settings.shortcuts": "Shortcuts",
   "settings.reset": "Reset to Defaults",
-  "settings.close": "Close",
 
   "settings.language": "Language",
   "settings.restoreSession": "Reopen the last files at startup",
@@ -313,6 +312,7 @@ export const en = {
 
   "settings.fontFamily": "Font",
   "settings.fontDefault": "Default (Consolas family)",
+  "settings.fontList": "Show the fonts",
   "settings.fontHint": "A monospaced font keeps columns aligned.",
   "settings.fontSize": "Font size",
   "settings.lineNumbers": "Show line numbers",
@@ -332,9 +332,12 @@ export const en = {
   "settings.fallbackHint": "Used when opening a file you have not chosen an encoding for.",
   "settings.blkDefault": "When a .blk file's content does not tell",
   "settings.autoSave": "Auto save, a second after the last edit",
+  "settings.ok": "OK",
+  "settings.cancel": "Cancel",
+  "settings.apply": "Apply",
 
   "shortcut.menu": "Open a menu",
-  "shortcut.new": "New file",
+  "shortcut.new": "New text file",
   "shortcut.open": "Open file",
   "shortcut.save": "Save",
   "shortcut.saveAs": "Save as",
@@ -357,4 +360,12 @@ export const en = {
   "shortcut.boxKeys": "Alt+Drag, Alt+Shift+Arrows",
   "shortcut.columnMode": "Column mode",
   "shortcut.documentEnds": "Start / end of the file",
+  "shortcut.recent": "Open a recent file",
+  "shortcut.expand": "Expand / shrink the selection",
+  "shortcut.copyLines": "Copy the lines up / down",
+  "shortcut.moveLines": "Move the lines up / down",
+  "shortcut.addCursor": "Carets above / below (a box of no width)",
+  "shortcut.findToggles": "In the find bar: case, whole word, regex, preserve case, in selection",
+  "shortcut.inFiles": "Find / replace in files",
+  "shortcut.explorerView": "The explorer view",
 } as const;

@@ -595,7 +595,7 @@ export default async function (t) {
   await until("the settings, on the editor's page", () => page.locator(".settings label.check:has-text('preview')").count(), 1);
   await app.shot("actions-settings");
   await app.toggleSetting("Open files picked in the explorer as a preview");
-  await app.closeSettings();
+  await app.okSettings();
   await until("back in the text", keyboardIn, "editor 0");
   await page.click(row("b.inp"));
   await page.click(row("a.inp"));

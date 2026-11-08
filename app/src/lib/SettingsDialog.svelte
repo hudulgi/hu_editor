@@ -6,7 +6,7 @@
   import { onMount, untrack } from "svelte";
   import { ENCODING_LABEL, ENCODINGS } from "./encodings";
   import { t, type MessageKey } from "./i18n";
-  import { clampFontSize, clampTabSize, resetSettings, settings } from "./settings.svelte";
+  import { clampFontSize, clampTabSize, defaults, settings, type Settings } from "./settings.svelte";
   import { LANG_LABEL } from "./syntax";
 
   interface Props {
@@ -23,44 +23,180 @@
     ["files", "settings.files"],
     ["shortcuts", "settings.shortcuts"],
   ];
-  const FONTS = ["Cascadia Mono", "Consolas", "D2Coding", "Courier New", "Lucida Console", "JetBrains Mono"];
+  /** Monospaced fonts to offer, of those this machine has. */
+  const FONTS = [
+    "Cascadia Mono",
+    "Cascadia Code",
+    "Consolas",
+    "D2Coding",
+    "NanumGothicCoding",
+    "JetBrains Mono",
+    "Fira Code",
+    "Source Code Pro",
+    "Ubuntu Mono",
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "Lucida Console",
+    "Courier New",
+    "SF Mono",
+    "Menlo",
+    "Monaco",
+  ];
+
+  /** Whether a font is installed: text in it measures unlike the fallbacks. */
+  function installed(name: string) {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return true;
+    const sample = "mmmmmmmmmmlli10OoWW@#";
+    return ["monospace", "serif", "sans-serif"].some((base) => {
+      context.font = `20px ${base}`;
+      const fallback = context.measureText(sample).width;
+      context.font = `20px "${name}", ${base}`;
+      return context.measureText(sample).width !== fallback;
+    });
+  }
+
+  const fonts = FONTS.filter(installed);
+
+  // The font box is a combo box, as Windows has it: typed into, or picked from
+  // a list that always shows every font, whatever is typed.
+  let fontsOpen = $state(false);
+  /** The item marked in the list: 0 is the default. */
+  let fontAt = $state(0);
+  let fontList = $state<HTMLElement>();
+
+  function openFonts() {
+    fontAt = Math.max(0, fonts.indexOf(draft.fontFamily.trim()) + 1);
+    fontsOpen = true;
+  }
+
+  function pickFont(at: number) {
+    draft.fontFamily = at === 0 ? "" : fonts[at - 1];
+    fontsOpen = false;
+  }
+
+  async function markFont(at: number) {
+    fontAt = (at + fonts.length + 1) % (fonts.length + 1);
+    await Promise.resolve();
+    fontList?.children[fontAt]?.scrollIntoView({ block: "nearest" });
+  }
+
+  function fontKeydown(e: KeyboardEvent) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!fontsOpen) openFonts();
+      else markFont(fontAt + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (fontsOpen && (e.key === "Enter" || e.key === "Escape")) {
+      // The list's, not the dialog's: Enter picks, Esc closes only the list.
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Enter") pickFont(fontAt);
+      else fontsOpen = false;
+    }
+  }
 
   let category = $state<Category>(untrack(() => initial));
   let panel: HTMLElement;
 
-  let shortcuts = $derived<[string, string][]>([
-    ["Alt+F, E, S, V, H / F10", t("shortcut.menu")],
-    ["Ctrl+N", t("shortcut.new")],
-    ["Ctrl+O", t("shortcut.open")],
-    ["Ctrl+S", t("shortcut.save")],
-    ["Ctrl+Shift+S", t("shortcut.saveAs")],
-    ["Ctrl+W", t("shortcut.closeTab")],
-    ["Ctrl+K W", t("shortcut.closeAll")],
-    ["Ctrl+K U", t("shortcut.closeSaved")],
-    ["Ctrl+Alt+T", t("shortcut.closeOthers")],
-    ["Ctrl+K Enter", t("shortcut.keepOpen")],
-    ["Ctrl+K Shift+Enter", t("shortcut.pin")],
-    ["Ctrl+K O", t("shortcut.copyToWindow")],
-    ["Ctrl+Shift+P, F1", t("shortcut.palette")],
-    ["Ctrl+F2", t("shortcut.changeAll")],
-    ["Ctrl+Tab, Ctrl+Shift+Tab", t("shortcut.nextTab")],
-    ["Ctrl+B", t("shortcut.explorer")],
-    ["Ctrl+,", t("shortcut.settings")],
-    ["Ctrl+Z, Ctrl+Y", t("shortcut.undo")],
-    ["Ctrl+C, Ctrl+X, Ctrl+V", t("shortcut.clipboard")],
-    ["Ctrl+A", t("shortcut.selectAll")],
-    ["Ctrl+F, F3, Shift+F3", t("shortcut.find")],
-    ["Ctrl+F3, Ctrl+Shift+F3", t("shortcut.findSelection")],
-    ["Ctrl+H", t("shortcut.replace")],
-    ["Ctrl+Alt+Enter", t("shortcut.replaceAll")],
-    ["Ctrl+\\", t("shortcut.split")],
-    ["Ctrl+1 … Ctrl+9", t("shortcut.focusPane")],
-    ["Ctrl+Alt+←, Ctrl+Alt+→", t("shortcut.moveTab")],
-    ["Shift+Alt+0", t("menu.flipLayout")],
-    ["Ctrl+G", t("shortcut.goto")],
-    [t("shortcut.boxKeys"), t("shortcut.box")],
-    ["Alt+C", t("shortcut.columnMode")],
-    ["Ctrl+Home, Ctrl+End", t("shortcut.documentEnds")],
+  // What is changed here goes to the settings only with Apply or OK, as in a
+  // Windows dialog; Cancel, Esc and Ctrl+, leave them as they were. Only what
+  // was changed here goes: another window may have changed the rest.
+  const KEYS = Object.keys(defaults()) as (keyof Settings)[];
+  let base = $state.raw<Settings>($state.snapshot(settings));
+  let draft = $state<Settings>($state.snapshot(settings));
+  let pending = $derived(KEYS.some((key) => draft[key] !== base[key]));
+
+  /** Apply: what was changed here, and the dialog stays. */
+  export function apply() {
+    for (const key of KEYS) if (draft[key] !== base[key]) Object.assign(settings, { [key]: draft[key] });
+    base = $state.snapshot(settings);
+    draft = $state.snapshot(settings);
+  }
+
+  /** OK: applies and closes. */
+  export function confirm() {
+    apply();
+    onclose();
+  }
+
+  /** Reset to Defaults: into the dialog, for Apply or OK to take. */
+  function reset() {
+    Object.assign(draft, defaults());
+  }
+
+  let shortcuts = $derived<[string, [string, string][]][]>([
+    [
+      t("menu.file"),
+      [
+        ["Ctrl+N", t("shortcut.new")],
+        ["Ctrl+Shift+N", t("menu.newWindow")],
+        ["Ctrl+O", t("shortcut.open")],
+        ["Ctrl+R", t("shortcut.recent")],
+        ["Ctrl+Shift+T", t("menu.reopenClosed")],
+        ["Ctrl+S", t("shortcut.save")],
+        ["Ctrl+Shift+S", t("shortcut.saveAs")],
+        ["Ctrl+K S", t("menu.saveAll")],
+        ["Ctrl+W", t("shortcut.closeTab")],
+        ["Ctrl+Shift+W", t("menu.closeWindow")],
+        ["Ctrl+K W", t("shortcut.closeAll")],
+        ["Ctrl+K U", t("shortcut.closeSaved")],
+        ["Ctrl+Alt+T", t("shortcut.closeOthers")],
+        ["Ctrl+K Enter", t("shortcut.keepOpen")],
+        ["Ctrl+K Shift+Enter", t("shortcut.pin")],
+        ["Ctrl+K O", t("shortcut.copyToWindow")],
+        ["Ctrl+,", t("shortcut.settings")],
+      ],
+    ],
+    [
+      t("menu.edit"),
+      [
+        ["Ctrl+Z, Ctrl+Y", t("shortcut.undo")],
+        ["Ctrl+C, Ctrl+X, Ctrl+V", t("shortcut.clipboard")],
+        ["Ctrl+/", t("menu.lineComment")],
+        ["Shift+Alt+A", t("menu.blockComment")],
+      ],
+    ],
+    [
+      t("menu.selection"),
+      [
+        ["Ctrl+A", t("shortcut.selectAll")],
+        ["Ctrl+Shift+Alt+→, ←", t("shortcut.expand")],
+        ["Ctrl+Shift+Alt+↑, ↓", t("shortcut.copyLines")],
+        ["Alt+↑, Alt+↓", t("shortcut.moveLines")],
+        ["Ctrl+D", t("menu.duplicate")],
+        ["Ctrl+Alt+↑, ↓", t("shortcut.addCursor")],
+        [t("shortcut.boxKeys"), t("shortcut.box")],
+        ["Alt+C", t("shortcut.columnMode")],
+        ["Ctrl+Home, Ctrl+End", t("shortcut.documentEnds")],
+      ],
+    ],
+    [
+      t("menu.search"),
+      [
+        ["Ctrl+F, F3, Shift+F3", t("shortcut.find")],
+        ["Ctrl+F3, Ctrl+Shift+F3", t("shortcut.findSelection")],
+        ["Ctrl+H", t("shortcut.replace")],
+        ["Ctrl+Alt+Enter", t("shortcut.replaceAll")],
+        ["Ctrl+F2", t("shortcut.changeAll")],
+        ["Alt+C, W, R, P, L", t("shortcut.findToggles")],
+        ["Ctrl+Shift+F, Ctrl+Shift+H", t("shortcut.inFiles")],
+        ["Ctrl+G", t("shortcut.goto")],
+      ],
+    ],
+    [
+      t("menu.view"),
+      [
+        ["Alt+F, E, T, S, V, H / F10", t("shortcut.menu")],
+        ["Ctrl+Shift+P, F1", t("shortcut.palette")],
+        ["Ctrl+B", t("shortcut.explorer")],
+        ["Ctrl+Shift+E", t("shortcut.explorerView")],
+        ["Ctrl+Tab, Ctrl+Shift+Tab", t("shortcut.nextTab")],
+        ["Ctrl+\\", t("shortcut.split")],
+        ["Ctrl+1 … Ctrl+9", t("shortcut.focusPane")],
+        ["Ctrl+Alt+←, Ctrl+Alt+→", t("shortcut.moveTab")],
+        ["Shift+Alt+0", t("menu.flipLayout")],
+      ],
+    ],
   ]);
 
   // The dialog is modal: focus stays in it, away from the editor's input.
@@ -68,6 +204,11 @@
     if (e.key === "Escape") {
       e.preventDefault();
       onclose();
+    } else if (e.key === "Enter" && (e.target as HTMLElement).matches?.("input:not([type=checkbox])")) {
+      // As a dialog's default button; a number half typed counts as typed.
+      e.preventDefault();
+      e.target!.dispatchEvent(new Event("change"));
+      confirm();
     } else if (e.key === "Tab") {
       const items = [...panel.querySelectorAll<HTMLElement>("button, input, select")].filter(
         (item) => !(item as HTMLInputElement).disabled,
@@ -123,43 +264,80 @@
       {#if category === "general"}
         <label class="field">
           <span>{t("settings.language")}</span>
-          <select bind:value={settings.language}>
+          <select bind:value={draft.language}>
             <option value="en">English</option>
             <option value="ko">한국어</option>
           </select>
         </label>
-        {@render check(t("settings.restoreSession"), settings.restoreSession, (on) => (settings.restoreSession = on))}
-        {@render check(t("settings.autoSave"), settings.autoSave, (on) => (settings.autoSave = on))}
-        {@render check(t("settings.showHidden"), settings.showHidden, (on) => (settings.showHidden = on))}
+        {@render check(t("settings.restoreSession"), draft.restoreSession, (on) => (draft.restoreSession = on))}
+        {@render check(t("settings.autoSave"), draft.autoSave, (on) => (draft.autoSave = on))}
+        {@render check(t("settings.showHidden"), draft.showHidden, (on) => (draft.showHidden = on))}
       {:else if category === "editor"}
-        <label class="field">
-          <span>{t("settings.fontFamily")}</span>
-          <input
-            class="wide"
-            list="settings-fonts"
-            placeholder={t("settings.fontDefault")}
-            spellcheck="false"
-            bind:value={settings.fontFamily}
-          />
-          <datalist id="settings-fonts">
-            {#each FONTS as font (font)}
-              <option value={font}></option>
-            {/each}
-          </datalist>
-        </label>
+        <div class="field">
+          <label for="settings-font">{t("settings.fontFamily")}</label>
+          <div class="combo">
+            <input
+              id="settings-font"
+              class="wide"
+              role="combobox"
+              aria-expanded={fontsOpen}
+              aria-controls="settings-fonts"
+              aria-autocomplete="none"
+              placeholder={t("settings.fontDefault")}
+              spellcheck="false"
+              bind:value={draft.fontFamily}
+              onkeydown={fontKeydown}
+              onblur={() => (fontsOpen = false)}
+            />
+            <button
+              class="drop"
+              tabindex="-1"
+              title={t("settings.fontList")}
+              aria-label={t("settings.fontList")}
+              onmousedown={(e) => {
+                // The keyboard stays in the box.
+                e.preventDefault();
+                (e.currentTarget.previousElementSibling as HTMLInputElement).focus();
+                if (fontsOpen) fontsOpen = false;
+                else openFonts();
+              }}
+            >
+              <svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+            </button>
+            {#if fontsOpen}
+              <ul id="settings-fonts" class="fonts" role="listbox" bind:this={fontList}>
+                {#each ["", ...fonts] as font, i (font)}
+                  <li
+                    role="option"
+                    class:marked={i === fontAt}
+                    aria-selected={draft.fontFamily.trim() === font}
+                    style:font-family={font ? `"${font}"` : null}
+                    onmousedown={(e) => {
+                      e.preventDefault();
+                      pickFont(i);
+                    }}
+                    onmousemove={() => (fontAt = i)}
+                  >
+                    {font || t("settings.fontDefault")}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        </div>
         <p class="hint">{t("settings.fontHint")}</p>
         <label class="field">
           <span>{t("settings.fontSize")}</span>
-          {@render number(settings.fontSize, 8, 32, clampFontSize, (size) => (settings.fontSize = size))}
+          {@render number(draft.fontSize, 8, 32, clampFontSize, (size) => (draft.fontSize = size))}
         </label>
-        {@render check(t("settings.lineNumbers"), settings.lineNumbers, (on) => (settings.lineNumbers = on))}
-        {@render check(t("settings.highlightLine"), settings.highlightLine, (on) => (settings.highlightLine = on))}
-        {@render check(t("settings.previewEditors"), settings.previewEditors, (on) => (settings.previewEditors = on))}
+        {@render check(t("settings.lineNumbers"), draft.lineNumbers, (on) => (draft.lineNumbers = on))}
+        {@render check(t("settings.highlightLine"), draft.highlightLine, (on) => (draft.highlightLine = on))}
+        {@render check(t("settings.previewEditors"), draft.previewEditors, (on) => (draft.previewEditors = on))}
         <label class="field">
           <span>{t("settings.tabKey")}</span>
           <select
-            value={settings.tabSpaces ? "spaces" : "tab"}
-            onchange={(e) => (settings.tabSpaces = e.currentTarget.value === "spaces")}
+            value={draft.tabSpaces ? "spaces" : "tab"}
+            onchange={(e) => (draft.tabSpaces = e.currentTarget.value === "spaces")}
           >
             <option value="spaces">{t("settings.tabSpaces")}</option>
             <option value="tab">{t("settings.tabCharacter")}</option>
@@ -167,16 +345,16 @@
         </label>
         <label class="field">
           <span>{t("settings.tabSize")}</span>
-          {@render number(settings.tabSize, 1, 16, clampTabSize, (size) => (settings.tabSize = size), !settings.tabSpaces)}
+          {@render number(draft.tabSize, 1, 16, clampTabSize, (size) => (draft.tabSize = size), !draft.tabSpaces)}
         </label>
         <p class="hint">{t("settings.tabSizeHint")}</p>
-        {@render check(t("settings.syntaxHighlight"), settings.syntaxHighlight, (on) => (settings.syntaxHighlight = on))}
-        {@render check(t("settings.fieldShading"), settings.fieldShading, (on) => (settings.fieldShading = on))}
-        {@render check(t("settings.rainbowColumns"), settings.rainbowColumns, (on) => (settings.rainbowColumns = on))}
+        {@render check(t("settings.syntaxHighlight"), draft.syntaxHighlight, (on) => (draft.syntaxHighlight = on))}
+        {@render check(t("settings.fieldShading"), draft.fieldShading, (on) => (draft.fieldShading = on))}
+        {@render check(t("settings.rainbowColumns"), draft.rainbowColumns, (on) => (draft.rainbowColumns = on))}
       {:else if category === "files"}
         <label class="field">
           <span>{t("settings.newFileEncoding")}</span>
-          <select bind:value={settings.newFileEncoding}>
+          <select bind:value={draft.newFileEncoding}>
             {#each ENCODINGS as [encoding, hint] (encoding)}
               <option value={encoding}>{ENCODING_LABEL[encoding]} ({t(hint)})</option>
             {/each}
@@ -184,7 +362,7 @@
         </label>
         <label class="field">
           <span>{t("settings.newFileEol")}</span>
-          <select bind:value={settings.newFileEol}>
+          <select bind:value={draft.newFileEol}>
             <option value="os">{t("settings.eolOs")}</option>
             <option value="crlf">CRLF</option>
             <option value="lf">LF</option>
@@ -192,7 +370,7 @@
         </label>
         <label class="field">
           <span>{t("settings.fallbackEncoding")}</span>
-          <select bind:value={settings.fallbackEncoding}>
+          <select bind:value={draft.fallbackEncoding}>
             {#each ENCODINGS.filter(([encoding]) => encoding !== "utf8") as [encoding, hint] (encoding)}
               <option value={encoding}>{ENCODING_LABEL[encoding]} ({t(hint)})</option>
             {/each}
@@ -201,27 +379,34 @@
         <p class="hint">{t("settings.fallbackHint")}</p>
         <label class="field">
           <span>{t("settings.blkDefault")}</span>
-          <select bind:value={settings.blkDefault}>
+          <select bind:value={draft.blkDefault}>
             <option value="nastran">{LANG_LABEL.nastran}</option>
             <option value="abaqus">{LANG_LABEL.abaqus}</option>
           </select>
         </label>
       {:else}
         <table>
-          <tbody>
-            {#each shortcuts as [keys, what] (keys)}
-              <tr>
-                <td class="keys">{keys}</td>
-                <td>{what}</td>
-              </tr>
-            {/each}
-          </tbody>
+          {#each shortcuts as [group, rows] (group)}
+            <tbody>
+              <tr><th colspan="2">{group}</th></tr>
+              {#each rows as [keys, what] (keys)}
+                <tr>
+                  <td class="keys">{keys}</td>
+                  <td>{what}</td>
+                </tr>
+              {/each}
+            </tbody>
+          {/each}
         </table>
       {/if}
     </div>
     <footer>
-      <button onclick={resetSettings}>{t("settings.reset")}</button>
-      <button class="primary" onclick={onclose}>{t("settings.close")}</button>
+      <button onclick={reset}>{t("settings.reset")}</button>
+      <span class="actions">
+        <button class="primary" onclick={confirm}>{t("settings.ok")}</button>
+        <button onclick={onclose}>{t("settings.cancel")}</button>
+        <button disabled={!pending} onclick={apply}>{t("settings.apply")}</button>
+      </span>
     </footer>
   </div>
 </div>
@@ -302,6 +487,66 @@
   .field input.wide {
     width: 240px;
   }
+  .combo {
+    position: relative;
+    display: flex;
+    flex: none;
+  }
+  .combo input.wide {
+    padding-right: 26px;
+  }
+  .drop {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 0 3px 3px 0;
+    background: transparent;
+    color: var(--muted);
+  }
+  .drop:hover {
+    color: var(--fg);
+  }
+  .drop svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+  }
+  .fonts {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    z-index: 1;
+    max-height: 220px;
+    margin: 0;
+    padding: 4px 0;
+    overflow-y: auto;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #2b2b2b;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  .fonts li {
+    padding: 3px 10px;
+    white-space: nowrap;
+    cursor: default;
+  }
+  .fonts li.marked {
+    background: #04395e;
+  }
+  .fonts li[aria-selected="true"] {
+    color: #fff;
+    font-weight: 600;
+  }
   select {
     padding: 3px 6px;
     border: 1px solid var(--border);
@@ -335,6 +580,14 @@
     padding: 3px 12px 3px 0;
     vertical-align: top;
   }
+  th {
+    padding: 12px 0 4px;
+    font-weight: 600;
+    text-align: left;
+  }
+  tbody:first-child th {
+    padding-top: 0;
+  }
   .keys {
     color: var(--muted);
     font-family: var(--ui);
@@ -346,6 +599,17 @@
     justify-content: space-between;
     padding: 10px 16px;
     border-top: 1px solid var(--border);
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+  .actions button {
+    min-width: 76px;
+  }
+  footer button:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .primary {
     background: var(--accent);

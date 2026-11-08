@@ -378,10 +378,20 @@ export class App {
 
   settingsCategory = (name) => this.page.click(`.settings nav button:has-text('${name}')`);
 
+  /** Esc: what was changed and not applied is given up. */
   async closeSettings() {
     await this.page.keyboard.press("Escape");
     await this.page.waitForSelector(".settings", { state: "detached" });
   }
+
+  /** OK: what was changed is applied, and the dialog closes. */
+  async okSettings() {
+    await this.page.click(".settings footer button.primary");
+    await this.page.waitForSelector(".settings", { state: "detached" });
+  }
+
+  /** Apply: what was changed is applied, and the dialog stays. */
+  applySettings = () => this.page.click(".settings footer .actions button:last-child");
 
   toggleSetting = (name) => this.page.click(`.settings label.check:has-text('${name}') input`);
   selectSetting = (name, value) => this.page.selectOption(`.settings .field:has-text('${name}') select`, value);
@@ -389,6 +399,6 @@ export class App {
   async setFontSize(size) {
     await this.openSettings("Editor");
     await this.numberSetting("Font size").fill(String(size));
-    await this.closeSettings();
+    await this.okSettings();
   }
 }
