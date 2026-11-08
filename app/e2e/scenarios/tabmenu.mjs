@@ -308,7 +308,7 @@ export default async function (t) {
   await openAll("a.inp", "b.inp");
   await page.click(tabIn(0, "a.inp"));
   await page.keyboard.type("q");
-  await press("Control+\\");
+  await app.splitTab();
   await until("two panes", paneCount, 2);
   await press("Control+1");
   await onTab("a.inp", "Close Others");
@@ -456,7 +456,7 @@ export default async function (t) {
 
   await until("to start", tabsOf, ["^b.inp", "^*a.inp", "wide.txt"]);
   await page.click(tabIn(0, "wide.txt"));
-  await app.layout("Split Right");
+  await app.splitTab();
   await until("two panes", paneCount, 2);
   await app.open(t.path("c.inp"));
   await until("the second pane", () => tabsOf(1), ["wide.txt", "*c.inp"]);

@@ -501,8 +501,17 @@
 
   const sideAfter = (direction: Direction): Side => (direction === "columns" ? "right" : "bottom");
 
-  /** A new pane on `side` of this one, showing this pane's tab at the same place. */
-  async function split(side: Side) {
+  /**
+   * Split (Ctrl+\\, the tab bar's button, Editor Layout): a new, empty pane on
+   * `side` of this one, with the keyboard, for what is opened next.
+   */
+  function split(side: Side) {
+    const added = addPane(panes[focused], side);
+    focusPane(panes.findIndex((pane) => pane.key === added.key));
+  }
+
+  /** The tab menu's Split: a new pane on `side` of this one, showing this tab at the same place. */
+  async function splitTab(side: Side) {
     if (!active) return;
     const id = active.doc.id;
     const place = editor?.place();
@@ -1569,10 +1578,10 @@
             label: t("menu.editorLayout"),
             key: "L",
             items: [
-              { label: t("menu.splitUp"), key: "U", enabled: open, run: () => split("top") },
-              { label: t("menu.splitDown"), key: "D", enabled: open, run: () => split("bottom") },
-              { label: t("menu.splitLeft"), key: "L", enabled: open, run: () => split("left") },
-              { label: t("menu.splitRight"), key: "R", enabled: open, run: () => split("right") },
+              { label: t("menu.splitUp"), key: "U", run: () => split("top") },
+              { label: t("menu.splitDown"), key: "D", run: () => split("bottom") },
+              { label: t("menu.splitLeft"), key: "L", run: () => split("left") },
+              { label: t("menu.splitRight"), key: "R", run: () => split("right") },
               "separator",
               { label: t("menu.moveToNewWindow"), key: "M", enabled: open, run: () => toNewWindow(true) },
               { label: t("menu.copyToNewWindow"), key: "C", enabled: open, run: () => toNewWindow(false) },
@@ -1647,14 +1656,14 @@
       { label: t("tabMenu.keepOpen"), shortcut: "Ctrl+K Enter", enabled: pane.previewId === id, run: () => keepOpen(id) },
       { label: t(pinned ? "tabMenu.unpin" : "tabMenu.pin"), shortcut: "Ctrl+K Shift+Enter", run: () => togglePin(id, pane) },
       "separator",
-      { label: t("tabMenu.splitRight"), palette: false, run: showing(() => split("right")) },
+      { label: t("tabMenu.splitRight"), palette: false, run: showing(() => splitTab("right")) },
       {
         label: t("tabMenu.splitMove"),
         items: [
-          { label: t("menu.splitUp"), palette: false, run: showing(() => split("top")) },
-          { label: t("menu.splitDown"), palette: false, run: showing(() => split("bottom")) },
-          { label: t("menu.splitLeft"), palette: false, run: showing(() => split("left")) },
-          { label: t("menu.splitRight"), palette: false, run: showing(() => split("right")) },
+          { label: t("menu.splitUp"), palette: false, run: showing(() => splitTab("top")) },
+          { label: t("menu.splitDown"), palette: false, run: showing(() => splitTab("bottom")) },
+          { label: t("menu.splitLeft"), palette: false, run: showing(() => splitTab("left")) },
+          { label: t("menu.splitRight"), palette: false, run: showing(() => splitTab("right")) },
           "separator",
           { label: t("tabMenu.moveUp"), enabled: canMove("top"), run: () => moveTabToSide(id, pane, "top") },
           { label: t("tabMenu.moveDown"), enabled: canMove("bottom"), run: () => moveTabToSide(id, pane, "bottom") },
@@ -1854,7 +1863,7 @@
     else if (mod && key === "w" && (active || panes.length > 1)) closeTabOrPane();
     else if (mod && e.altKey && e.code === "KeyT" && active) closeOthers(panes[focused], active.doc.id);
     else if (mod && e.code === "Backslash" && panes.length > 1) applyPreset("single");
-    else if (mod && e.code === "Backslash" && active) split(sideAfter(splitDirection));
+    else if (mod && e.code === "Backslash") split(sideAfter(splitDirection));
     else if (mod && /^Digit[1-9]$/.test(e.code)) focusPane(Number(e.code.slice(5)) - 1);
     else if (e.altKey && e.shiftKey && !mod && e.code === "Digit0") flipLayout();
     else if (mod && e.altKey && e.key === "ArrowRight") moveTabBy(1);

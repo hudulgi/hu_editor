@@ -17,6 +17,7 @@ export default async function (t) {
   const press = (...keys) => keys.reduce((done, key) => done.then(() => page.keyboard.press(key)), Promise.resolve());
   const paneCount = () => page.locator(".pane").count();
   const focused = () => page.$eval(".pane.focused", (e) => Number(e.dataset.pane));
+  const focusedPane = () => page.$eval(".pane.focused", (e) => Number(e.dataset.pane));
   const keyboardIn = () =>
     page.evaluate(() => {
       const el = document.activeElement;
@@ -76,17 +77,18 @@ export default async function (t) {
   await until("at line 150", position, "Ln 150, Col 1");
   await page.click(`${PANE(0)} .actions .split`);
   await until("the split button splits to the right", fractions, [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]]);
-  await until("the same tab, its place, the keyboard", async () => [await tabsOf(1), await position(), await keyboardIn()], [["*deck.bdf"], "Ln 150, Col 1", "editor 1"]);
+  await until("into an empty pane, with the keyboard, for what opens next", async () => [await tabsOf(1), await focusedPane(), await keyboardIn()], [[], 1, "BODY"]);
+  await app.open(t.path("a.inp"));
 
   await page.keyboard.down("Alt");
   await page.click(`${PANE(1)} .actions .split`);
   await page.keyboard.up("Alt");
   await until("with alt, downwards", fractions, [[0, 0, 0.5, 1], [0.5, 0, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]]);
-  await until("nothing went to the menu bar", keyboardIn, "editor 2");
+  await until("nothing went to the menu bar: the new pane has it", async () => [await focusedPane(), await keyboardIn()], [2, "BODY"]);
 
   await page.click(`${PANE(0)} .actions .split`);
   await until("a button belongs to its own pane, with the keyboard elsewhere", fractions, [[0, 0, 0.25, 1], [0.25, 0, 0.25, 1], [0.5, 0, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]]);
-  await until("and takes the keyboard there", keyboardIn, "editor 1");
+  await until("and takes the keyboard there", focusedPane, 1);
   await app.layout("Single");
   await until("one pane", paneCount, 1);
 
@@ -241,7 +243,7 @@ export default async function (t) {
   await press("Control+1");
   await until("the keyboard in the text", keyboardIn, "editor 0");
   await page.keyboard.type("!");
-  await press("Control+\\");
+  await app.splitTab();
   await until("split", paneCount, 2);
   await app.open(t.path("d.inp"));
   await more("Show Opened Editors", 1);
@@ -290,7 +292,7 @@ export default async function (t) {
   // A document that another pane shows is not asked about, and stays.
   await app.open(t.path("a.inp"));
   await page.keyboard.type("k");
-  await press("Control+\\");
+  await app.splitTab();
   await until("split", paneCount, 2);
   await app.open(t.path("b.inp"));
   await more("Close All", 1);
@@ -527,7 +529,7 @@ export default async function (t) {
   await closeEverything();
   await page.click(row("a.inp"));
   await until("a preview", () => tabsOf(0), ["~*a.inp"]);
-  await press("Control+\\");
+  await app.splitTab();
   await until("split: the new pane has the tab to stay", async () => [await paneCount(), await tabsOf(1)], [2, ["*a.inp"]]);
   const heldInSplit = await held();
   await press("Control+1");
@@ -543,7 +545,7 @@ export default async function (t) {
 
   await page.click(row("a.inp"));
   await until("a preview", () => tabsOf(0), ["~*a.inp"]);
-  await press("Control+\\");
+  await app.splitTab();
   await until("two", paneCount, 2);
   await press("Control+2");
   await page.keyboard.type("w");

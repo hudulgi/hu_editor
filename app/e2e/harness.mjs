@@ -353,6 +353,12 @@ export class App {
   /** Picks an item of View > Editor Layout. */
   layout = (item) => this.menu("View", "Editor Layout", item);
 
+  /** The tab menu's Split Right: the focused pane's tab once more, in a new pane beside it. */
+  async splitTab() {
+    await this.page.click(".pane.focused .strip .tab.active", { button: "right" });
+    await this.page.click(".drop-menu:not(.sub) .label:text-is('Split Right')");
+  }
+
   /** The window's close button. */
   closeWindow = () =>
     this.page.evaluate(() => {

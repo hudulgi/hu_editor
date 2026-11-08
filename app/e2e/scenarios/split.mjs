@@ -56,6 +56,12 @@ export default async function (t) {
     return items;
   };
 
+  /** The tab menu's Split Right: the focused pane's tab once more, beside it. */
+  const splitTab = async () => {
+    await page.click(`.pane.focused .strip .tab.active`, { button: "right" });
+    await page.click(".drop-menu:not(.sub) .label:text-is('Split Right')");
+  };
+
   /** The presets of View > Editor Layout that are checked. */
   const layoutShown = async () => {
     await page.click(".menubar .title:text-matches('^View$')");
@@ -76,7 +82,11 @@ export default async function (t) {
   check("scrolled down", leftTop > 100, true);
   await press("Control+\\");
   await until("ctrl+\\ makes two panes", paneCount, 2);
-  await until("the same tab in both", async () => [await tabsOf(0), await tabsOf(1)], [["*deck.bdf"], ["*deck.bdf"]]);
+  await until("the new one empty, with the keyboard, for what opens next", async () => [await tabsOf(0), await tabsOf(1), await focusedPane(), await page.locator(`${PANE(1)} .empty`).count()], [["*deck.bdf"], [], 1, 1]);
+  await press("Control+\\");
+  await until("and back to one", paneCount, 1);
+  await splitTab();
+  await until("the tab menu's Split Right: the same tab in both", async () => [await tabsOf(0), await tabsOf(1)], [["*deck.bdf"], ["*deck.bdf"]]);
   await until("the new pane has the keyboard", async () => [await focusedPane(), await keyboardIn()], [1, 1]);
   await until("and starts at the same place", async () => [await firstLineOf(1), await app.position()], [leftTop, "Ln 200, Col 1"]);
 
@@ -439,7 +449,7 @@ export default async function (t) {
   await until("one pane again", paneCount, 1);
   await until("the panes' tabs together, nothing closed", app.tabs, ["*other.inp", "deck.bdf", "third.inp"]);
   await app.open(t.path("deck.bdf"));
-  await press("Control+\\");
+  await splitTab();
   await until("split the deck again", async () => [await tabsOf(0), await tabsOf(1)], [["other.inp", "*deck.bdf", "third.inp"], ["*deck.bdf"]]);
   await press("Control+Home", "Control+1", "Control+Home");
 
@@ -500,7 +510,7 @@ export default async function (t) {
   await until("one pane", paneCount, 1);
   await app.open(t.path("kr.inp"));
   await until("read as CP949", app.encoding, "CP949");
-  await press("Control+\\");
+  await splitTab();
   await until("split", paneCount, 2);
   await until("korean in both", async () => [await topOf(0), await topOf(1)], ["** 한글", "** 한글"]);
   await page.click(".statusbar .status-button");
@@ -553,7 +563,7 @@ export default async function (t) {
   // ---- Sessions ------------------------------------------------------------------
 
   await app.open(t.path("deck.bdf"));
-  await press("Control+\\");
+  await splitTab();
   await until("split", paneCount, 2);
   await app.layout("Two Rows");
   await app.open(t.path("other.inp"));

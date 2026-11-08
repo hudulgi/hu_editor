@@ -343,7 +343,7 @@ export default async function (t) {
   await until("code again", async () => [(await classed("value")).length, (await plainNumbers()) > 10], [0, true]);
 
   // An edit above changes what is below it, wherever the view is.
-  await page.keyboard.press("Control+\\");
+  await app.splitTab();
   await until("two panes", () => page.locator(".pane").count(), 2);
   await page.keyboard.press("Control+Home");
   await page.keyboard.press("Control+1");
@@ -367,7 +367,7 @@ export default async function (t) {
   await until("one pane", () => page.locator(".pane").count(), 1);
 
   // Lines read before an edit but arriving after it say nothing about the text now.
-  await page.keyboard.press("Control+\\");
+  await app.splitTab();
   await until("two panes", () => page.locator(".pane").count(), 2);
   await page.keyboard.press("Control+Home");
   await page.keyboard.press("Control+1");

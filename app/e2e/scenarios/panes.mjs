@@ -100,11 +100,11 @@ export default async function (t) {
     await page.waitForSelector(SUB);
   };
   await openLayoutMenu(empty.page);
-  check("the layout menu, in its order", await subEntries(empty.page), [
-    "-Split Up",
-    "-Split Down",
-    "-Split Left",
-    "-Split Right",
+  check("the layout menu, in its order: splits need no file", await subEntries(empty.page), [
+    "Split Up",
+    "Split Down",
+    "Split Left",
+    "Split Right",
     "—",
     "-Move Editor into New Window",
     "-Copy Editor into New Window",
@@ -123,6 +123,11 @@ export default async function (t) {
   await empty.shot("panes-menu");
   await empty.page.keyboard.press("Escape");
   await empty.page.keyboard.press("Escape");
+  // Ctrl+\\ needs no file either, and goes back to one.
+  await empty.page.keyboard.press("Control+\\");
+  await until("ctrl+\\ in an empty window", () => empty.page.locator(".pane .empty").count(), 2);
+  await empty.page.keyboard.press("Control+\\");
+  await until("and back", () => empty.page.locator(".pane").count(), 1);
 
   // In Korean, as the words of VS Code's menu.
   const korean = await t.launch({ settings: { language: "ko" } });
@@ -274,8 +279,13 @@ export default async function (t) {
   for (const [name, [boxes, at]] of Object.entries(SPLITS)) {
     await app.layout(name);
     await until(`${name}: where the panes are`, fractions, boxes);
-    await until(`${name}: the new pane has the same place and the keyboard`, async () => [await focused(), await focusIn(), await firstLineOf(at), await app.position()], [at, `editor ${at}`, top, "Ln 200, Col 1"]);
-    check(`${name}: the same tab in both`, await allTabs(), [["*deck.bdf"], ["*deck.bdf"]]);
+    const other = 1 - at;
+    await until(`${name}: the new pane is empty, and has the keyboard for what opens next`, async () => [await focused(), await focusIn(), await allTabs()], [
+      at,
+      "BODY",
+      at === 0 ? [[], ["*deck.bdf"]] : [["*deck.bdf"], []],
+    ]);
+    check(`${name}: the other keeps its place`, await firstLineOf(other), top);
     await app.layout("Single");
     await until(`${name}: one again`, paneCount, 1);
     await goTo(200);
@@ -290,7 +300,12 @@ export default async function (t) {
   await app.layout("Split Right");
   await until("in the corner", fractions, [[0, 0, 0.5, 1], [0.5, 0, 0.5, 0.5], [0.5, 0.5, 0.25, 0.5], [0.75, 0.5, 0.25, 0.5]]);
   check("no preset is that", await checked(), []);
-  check("the same document in all", await allTabs(), [["*deck.bdf"], ["*deck.bdf"], ["*deck.bdf"], ["*deck.bdf"]]);
+  check("the new ones empty", await allTabs(), [["*deck.bdf"], [], [], []]);
+  for (const n of [2, 3, 4]) {
+    await press(`Control+${n}`);
+    await app.open(t.path("deck.bdf"));
+  }
+  check("the same document in all, opened in each", await allTabs(), [["*deck.bdf"], ["*deck.bdf"], ["*deck.bdf"], ["*deck.bdf"]]);
 
   // An edit in one shows in all, and each stays on its own text.
   await press("Control+1", "Control+Home");
@@ -413,6 +428,7 @@ export default async function (t) {
   check("and its element was not moved", await page.evaluate(() => window.__panesMoved), 0);
   await app.layout("Single");
   await until("single again", paneCount, 1);
+  await page.click(`.strip .tab:has(.name:text-is('wide.txt'))`);
   await page.click(`.strip .tab:has(.name:text-is('wide.txt')) .close`);
   await until("closed", app.tabs, ["*deck.bdf"]);
 

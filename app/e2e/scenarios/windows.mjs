@@ -213,7 +213,7 @@ export default async function (t) {
 
   // Moved out of a split: the other pane keeps it, in this window.
   await app.open(t.path("other.inp"));
-  await press("Control+\\");
+  await app.splitTab();
   await until("split", () => page.locator(".pane").count(), 2);
   await app.layout("Move Editor into New Window");
   const fromSplit = await newWindow();
