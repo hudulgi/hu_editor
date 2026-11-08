@@ -14,6 +14,8 @@
     preview: boolean;
     /** At the start of the strip, closed only on purpose. */
     pinned: boolean;
+    /** Shows its Markdown preview, not its text. */
+    rendered: boolean;
   }
 </script>
 
@@ -39,12 +41,19 @@
     oncontext: (id: number, x: number, y: number) => void;
     /** No new files open in this pane. */
     locked: boolean;
+    /** The active tab is Markdown, showing its text or its preview: the preview buttons show. */
+    markdown: "source" | "rendered" | null;
+    /** Open Preview, or to the side; for a preview, Show Source. */
+    onpreview: (side: boolean) => void;
     onsplit: (down: boolean) => void;
     onunlock: () => void;
     onmore: (button: HTMLElement) => void;
   }
 
-  let { tabs, active, focused, onselect, onclose, ondrag, ondrop, onkeep, onunpin, oncontext, locked, onsplit, onunlock, onmore }: Props = $props();
+  let { tabs, active, focused, onselect, onclose, ondrag, ondrop, onkeep, onunpin, oncontext, locked, markdown, onpreview, onsplit, onunlock, onmore }: Props =
+    $props();
+
+  const titled = (tab: TabItem) => (tab.rendered ? t("tabs.preview", { name: tab.name }) : tab.name);
 
   let strip: HTMLDivElement;
 
@@ -117,14 +126,14 @@
         {@const badge = langBadge(tab.lang)}
         <span class="badge {badge.cls}">{badge.text}</span>
       {/if}
-      <span class="name" class:untitled={tab.path === null}>{tab.name}</span>
+      <span class="name" class:untitled={tab.path === null}>{titled(tab)}</span>
       {#if tab.hint}
         <span class="hint">{tab.hint}</span>
       {/if}
       <button
         class="close"
         title={tab.pinned ? t("tabs.unpin") : t("tabs.close")}
-        aria-label={tab.pinned ? t("tabs.unpin") : t("tabs.closeNamed", { name: tab.name })}
+        aria-label={tab.pinned ? t("tabs.unpin") : t("tabs.closeNamed", { name: titled(tab) })}
         onmousedown={(e) => e.stopPropagation()}
         onpointerdown={(e) => e.stopPropagation()}
         ondblclick={(e) => e.stopPropagation()}
@@ -139,6 +148,45 @@
 </div>
 <!-- The buttons leave the keyboard where it is. -->
 <div class="actions" role="toolbar">
+  {#if markdown === "source"}
+    <button
+      class="action preview-side"
+      title="{t('menu.previewToSide')} (Ctrl+K V)"
+      aria-label={t("menu.previewToSide")}
+      tabindex="-1"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => onpreview(true)}
+    >
+      <svg viewBox="0 0 16 16"
+        ><path d="M8 2.5h4a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H8zM8 2.5H4A1.5 1.5 0 0 0 2.5 4v3" /><circle cx="5.25" cy="10" r="2" /><path
+          d="M3.8 11.45l-1.8 1.8"
+        /></svg
+      >
+    </button>
+    <button
+      class="action preview"
+      title="{t('menu.openPreview')} (Ctrl+Shift+V)"
+      aria-label={t("menu.openPreview")}
+      tabindex="-1"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => onpreview(false)}
+    >
+      <svg viewBox="0 0 16 16"
+        ><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /><path d="M2.5 5.5h11M8.5 8h3M8.5 10.5h3" /><rect x="4.5" y="7.5" width="2.5" height="3.5" /></svg
+      >
+    </button>
+  {:else if markdown === "rendered"}
+    <button
+      class="action source"
+      title="{t('menu.showSource')} (Ctrl+Shift+V)"
+      aria-label={t("menu.showSource")}
+      tabindex="-1"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => onpreview(false)}
+    >
+      <svg viewBox="0 0 16 16"><path d="M4 2.5h5l3 3v8H4zM9 2.5v3h3" /><path d="M5.8 9.8L4.8 10.8l1 1M10.2 9.8l1 1-1 1" /></svg>
+    </button>
+  {/if}
   <button
     class="action split"
     title={t("tabs.split")}

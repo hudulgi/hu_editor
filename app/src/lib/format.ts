@@ -44,6 +44,29 @@ export function dirName(path: string) {
 /** `name` in the folder `dir`. */
 export const joinPath = (dir: string, name: string) => (/[\\/]$/.test(dir) ? dir + name : dir + SEPARATOR + name);
 
+/**
+ * The file that a link in the document at `from` names: `docs/a.md` or
+ * `../b.inp` from the document's folder, `/x`, `C:/x` or `file:///C:/x` as is,
+ * with `%20` and the like decoded and the separators the system's.
+ */
+export function linkedPath(from: string, href: string) {
+  let path = href;
+  try {
+    path = decodeURIComponent(href);
+  } catch {
+    // Left as written.
+  }
+  path = path.replace(/^file:\/\/(localhost)?/i, "").replace(/^\/([A-Za-z]:)/, "$1");
+  const full = /^([A-Za-z]:)?[\\/]/.test(path) ? path : joinPath(dirName(from), path);
+  const root = isWindows && /^[\\/]{2}/.test(full) ? "\\\\" : (full.match(/^([A-Za-z]:)?[\\/]/)?.[0] ?? "");
+  const parts: string[] = [];
+  for (const part of full.slice(root.length).split(/[\\/]+/)) {
+    if (part === "..") parts.pop();
+    else if (part !== "" && part !== ".") parts.push(part);
+  }
+  return root.replace(/[\\/]$/, SEPARATOR) + parts.join(SEPARATOR);
+}
+
 /** Where `path` is after `from` moved to `to`, if it was `from` or in it. */
 export function movedPath(path: string, from: string, to: string) {
   if (samePath(path, from)) return to;

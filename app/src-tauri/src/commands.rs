@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use hu_core::files::{self, FileMatches, FileSearch, Globs, Searched, Source};
 use hu_core::{
     BlockKind, BoxRows, Dialect, DocState, Document, EditKind, EditResult, Encoding, Eol,
-    FindResult, IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, settings,
+    FindResult, IndexStatus, MatchCount, Query, View, ViewTarget, dir, ipc_message, markdown,
+    settings,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -254,6 +255,15 @@ pub fn reveal_path(path: PathBuf) -> Result<(), String> {
     tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// A web or mail link of a Markdown preview, in the system's browser or mail program.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !markdown::is_web_link(&url) {
+        return Err(format!("{url}: not a web or mail link"));
+    }
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| format!("{url}: {e}"))
+}
+
 /// Opens the system's terminal in `dir`.
 #[tauri::command]
 pub fn open_terminal(dir: PathBuf) -> Result<(), String> {
@@ -490,6 +500,19 @@ pub async fn index_status(id: u32, docs: State<'_, Docs>) -> Result<IndexStatus,
 pub async fn detect_dialect(id: u32, docs: State<'_, Docs>) -> Result<Option<Dialect>, String> {
     let open = docs.get(id)?;
     blocking(move || open.doc.dialect().map_err(|e| ipc_message(&e))).await
+}
+
+/// The document as HTML, for its Markdown preview.
+#[tauri::command]
+pub async fn render_markdown(id: u32, docs: State<'_, Docs>) -> Result<String, String> {
+    let open = docs.get(id)?;
+    blocking(move || markdown::preview(&open.doc).map_err(|e| ipc_message(&e))).await
+}
+
+/// An image that a Markdown preview shows, as a `data:` URL.
+#[tauri::command]
+pub async fn image_data(path: PathBuf) -> Result<String, String> {
+    blocking(move || markdown::image_data(&path).map_err(|e| ipc_message(&e))).await
 }
 
 #[tauri::command]

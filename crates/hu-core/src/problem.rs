@@ -32,6 +32,11 @@ pub enum Problem {
         size_mb: u64,
         limit_mb: u64,
     },
+    /// A Markdown preview of a text too large to read whole.
+    TooLargeToPreview {
+        size_mb: u64,
+        limit_mb: u64,
+    },
     TooManyMatches {
         limit: usize,
     },
@@ -101,6 +106,12 @@ impl fmt::Display for Problem {
                 write!(
                     f,
                     "selection is too large to copy ({size_mb} MB; the limit is {limit_mb} MB)"
+                )
+            }
+            Problem::TooLargeToPreview { size_mb, limit_mb } => {
+                write!(
+                    f,
+                    "too large to preview ({size_mb} MB; the limit is {limit_mb} MB)"
                 )
             }
             Problem::TooManyMatches { limit } => write!(f, "more than {limit} matches"),

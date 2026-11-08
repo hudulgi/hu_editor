@@ -68,6 +68,7 @@ export const en = {
   "empty.new": "Start a new one with Ctrl+N.",
   "empty.closePane": "Ctrl+W closes this pane.",
   "tabs.split": "Split Editor Right (Alt: Down)",
+  "tabs.preview": "Preview {name}",
   "tabs.unlock": "Unlock Group",
   "tabs.more": "More Actions…",
   "more.showOpen": "Show Opened Editors",
@@ -78,6 +79,9 @@ export const en = {
   "more.configure": "Configure Editors",
   "menu.palette": "Command Palette…",
   "menu.rainbow": "Rainbow Columns",
+  "menu.openPreview": "Open Preview",
+  "menu.previewToSide": "Open Preview to the Side",
+  "menu.showSource": "Show Source",
   "menu.newFileOf": "New File…",
   "menu.newWindow": "New Window",
   "menu.openFolder": "Open Folder…",
@@ -202,6 +206,7 @@ export const en = {
   "notice.dismiss": "Dismiss",
   "notice.settingsNotSaved": "Settings could not be saved: {error}",
   "notice.recentGone": "{path} is no longer there; it is off the list.",
+  "notice.linkMissing": "{path} is not there.",
 
   "editor.label": "Editor",
 
@@ -286,6 +291,7 @@ export const en = {
   "error.malformed": "line {line} has bytes that are not valid {encoding}; read the file with the right encoding first",
   "error.unsavedChanges": "Save or undo your changes before reading the file in another encoding.",
   "error.tooLargeToCopy": "The selection is too large to copy ({sizeMb} MB; the limit is {limitMb} MB).",
+  "error.tooLargeToPreview": "Too large to preview ({sizeMb} MB; the limit is {limitMb} MB).",
   "error.tooManyMatches": "more than {limit} matches",
   "error.boxTooTall": "A box selection is limited to {limit} lines.",
   "error.keptChanging": "The document kept changing. Try again.",

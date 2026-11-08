@@ -74,6 +74,8 @@ export default async function (t) {
     "✓Syntax Highlighting|",
     "✓Field Shading|",
     "Rainbow Columns|",
+    "-Open Preview|Ctrl+Shift+V",
+    "-Open Preview to the Side|Ctrl+K V",
     "Editor Layout|›",
     "-Move Tab to Other Pane|Ctrl+Alt+←/→",
     "-Switch Pane|Ctrl+1…9",

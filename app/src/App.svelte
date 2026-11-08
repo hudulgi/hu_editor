@@ -6,7 +6,7 @@
   import { emit, listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
-  import { baseName, dirName, formatNumber as fmt, formatSize as size, isWindows, joinPath, parentName, samePath } from "./lib/format";
+  import { baseName, dirName, formatNumber as fmt, formatSize as size, isWindows, joinPath, linkedPath, parentName, samePath } from "./lib/format";
   import { commentsOf } from "./lib/languages";
   import { dependsOnContent, detectLang, langLabel, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
@@ -15,6 +15,7 @@
   import Explorer from "./lib/Explorer.svelte";
   import SearchView from "./lib/SearchView.svelte";
   import FindBar from "./lib/FindBar.svelte";
+  import MarkdownView from "./lib/MarkdownView.svelte";
   import DropMenu, { type DropEntry } from "./lib/DropMenu.svelte";
   import { describeError, t } from "./lib/i18n";
   import {
@@ -80,12 +81,26 @@
     pinned: number[];
     /** New files open in another pane. */
     locked: boolean;
+    /** The tabs that show their Markdown preview here, in place of the text. */
+    rendered: number[];
     carets: Record<number, CaretInfo | null>;
     editors: Record<number, ReturnType<typeof Editor> | undefined>;
+    previews: Record<number, ReturnType<typeof MarkdownView> | undefined>;
   }
 
   let paneKeys = 0;
-  const newPane = (): Pane => ({ key: paneKeys++, ids: [], activeId: null, previewId: null, pinned: [], locked: false, carets: {}, editors: {} });
+  const newPane = (): Pane => ({
+    key: paneKeys++,
+    ids: [],
+    activeId: null,
+    previewId: null,
+    pinned: [],
+    locked: false,
+    rendered: [],
+    carets: {},
+    editors: {},
+    previews: {},
+  });
 
   let tabs = $state<Tab[]>([]);
   /** In reading order. */
@@ -98,7 +113,9 @@
   let splitDirection = $state<Direction>("columns");
   let activeId = $derived(panes[focused].activeId);
   let active = $derived(tabs.find((t) => t.doc.id === activeId) ?? null);
-  let editor = $derived(activeId === null ? undefined : panes[focused].editors[activeId]);
+  /** The active tab shows its Markdown preview: what works on the text does not. */
+  let rendering = $derived(activeId !== null && panes[focused].rendered.includes(activeId));
+  let editor = $derived(activeId === null || rendering ? undefined : panes[focused].editors[activeId]);
   let activeCaret = $derived(activeId === null ? null : (panes[focused].carets[activeId] ?? null));
   let lang = $derived(active?.lang ?? "plain");
 
@@ -124,7 +141,7 @@
   /** A pane's menu: more actions, hanging from its button, or a tab's, at the mouse. */
   let paneMenu = $state.raw<{
     key: number;
-    kind: "more" | "tab" | "text";
+    kind: "more" | "tab" | "text" | "preview";
     button?: HTMLElement;
     tab?: number;
     point?: { x: number; y: number };
@@ -164,6 +181,7 @@
     preview?: string | null;
     pinned?: string[];
     locked?: boolean;
+    rendered?: string[];
   }
 
   interface Session {
@@ -185,6 +203,7 @@
         preview: pane && pane.previewId !== null ? (tabOf(pane.previewId)?.doc.path ?? null) : null,
         pinned: pane?.pinned.flatMap((id) => tabOf(id)?.doc.path ?? []),
         locked: pane?.locked,
+        rendered: pane?.rendered.flatMap((id) => tabOf(id)?.doc.path ?? []),
       };
     };
     const session: Session = { layout: mapLeaves(layout, saveOf), direction: splitDirection, focused };
@@ -217,6 +236,7 @@
         hint: doc.path && nameCounts.get(doc.name)! > 1 ? parentName(doc.path) : null,
         preview: pane.previewId === id,
         pinned: pane.pinned.includes(id),
+        rendered: pane.rendered.includes(id),
       };
     });
   }
@@ -261,7 +281,9 @@
     gotoOpen = false;
     encodingOpen = false;
     tick().then(() => {
-      if (!prompt) pane.editors[id]?.focus();
+      if (prompt) return;
+      if (pane.rendered.includes(id)) pane.previews[id]?.focus();
+      else pane.editors[id]?.focus();
     });
   }
 
@@ -285,9 +307,11 @@
     const index = pane.ids.indexOf(id);
     pane.ids.splice(index, 1);
     delete pane.editors[id];
+    delete pane.previews[id];
     delete pane.carets[id];
     if (pane.previewId === id) pane.previewId = null;
     pane.pinned = pane.pinned.filter((one) => one !== id);
+    pane.rendered = pane.rendered.filter((one) => one !== id);
     if (pane.activeId === id) pane.activeId = pane.ids[Math.min(index, pane.ids.length - 1)] ?? null;
     // An empty pane has no button to unlock it with.
     if (!pane.ids.length) pane.locked = false;
@@ -386,6 +410,7 @@
         if (pane.activeId === old) pane.activeId = doc.id;
         if (pane.previewId === old) pane.previewId = null;
         pane.pinned = pane.pinned.map((one) => (one === old ? doc.id : one));
+        pane.rendered = pane.rendered.filter((one) => one !== old);
       }
       if (show) activate(doc.id);
     } else {
@@ -516,8 +541,9 @@
   async function splitTab(side: Side) {
     if (!active) return;
     const id = active.doc.id;
-    const place = editor?.place();
+    const place = panes[focused].editors[id]?.place();
     const pane = addPane(panes[focused], side);
+    if (rendering) pane.rendered.push(id);
     addView(id, panes.indexOf(pane));
     await tick();
     if (place) pane.editors[id]?.goToPlace(place);
@@ -542,6 +568,9 @@
       }
       // Those pinned anywhere stay pinned, in front.
       const pinned = [...new Set(merging.flatMap((pane) => pane.pinned))];
+      // A tab shows as it did here, or else as it did where it came from.
+      const had = new Set(into.ids);
+      into.rendered = [...new Set([...into.rendered, ...merging.flatMap((pane) => pane.rendered).filter((id) => !had.has(id))])];
       into.ids = [...new Set([...pinned, ...merging.flatMap((pane) => pane.ids)])];
       into.pinned = pinned;
       into.activeId ??= into.ids[0] ?? null;
@@ -567,6 +596,7 @@
     const place = source.editors[id]?.place();
     const shown = target.ids.includes(id);
     const pinned = source.pinned.includes(id) && !target.pinned.includes(id);
+    if (!shown && source.rendered.includes(id)) target.rendered.push(id);
     if (!shown) target.ids.splice(placeForTab(target), 0, id);
     if (pinned) togglePin(id, target);
     removeView(id, panes.indexOf(source));
@@ -589,6 +619,81 @@
     }
     const next = panes[wrap ? (focused + step + panes.length) % panes.length : focused + step];
     if (next) moveTab(active.doc.id, source, next);
+  }
+
+  // ---- Markdown preview --------------------------------------------------------
+
+  /** A preview can be opened of the active tab, or it shows one. */
+  let previewable = $derived(rendering || active?.lang === "markdown");
+
+  /** Open Preview (Ctrl+Shift+V): the active tab shows its preview in place of its text, or its text again. */
+  function togglePreview() {
+    const pane = panes[focused];
+    const id = pane.activeId;
+    if (id === null) return;
+    if (pane.rendered.includes(id)) pane.rendered = pane.rendered.filter((one) => one !== id);
+    else pane.rendered.push(id);
+    activate(id, focused);
+  }
+
+  /**
+   * Open Preview to the Side (Ctrl+K V): the active tab's preview in the pane on
+   * its right, made if there is none, while the keyboard stays in the text.
+   */
+  function previewToSide() {
+    const source = panes[focused];
+    const id = source.activeId;
+    if (id === null || !previewable) return;
+    const right = neighbor(layout, source.key, "right");
+    const target = panes.find((pane) => pane.key === right) ?? addPane(source, "right");
+    if (!target.ids.includes(id)) target.ids.splice(placeForTab(target), 0, id);
+    if (!target.rendered.includes(id)) target.rendered.push(id);
+    target.activeId = id;
+    activate(id, panes.findIndex((pane) => pane.key === source.key));
+  }
+
+  /**
+   * A link in a preview: on the web or to mail, for the system; otherwise a
+   * file next to the document, opened in the preview's pane (as a preview too
+   * if it is Markdown), or a folder, shown in the explorer.
+   */
+  async function followLink(href: string, from: Tab, pane: Pane) {
+    if (/^[a-z][a-z0-9+.-]+:/i.test(href) && !/^file:/i.test(href)) {
+      api.openUrl(href).catch((e) => (notice = describeError(e)));
+      return;
+    }
+    const target = href.replace(/[?#].*$/, "");
+    if (!target || from.doc.path === null) return;
+    const path = linkedPath(from.doc.path, target);
+    const kind = await api.pathKind(path);
+    if (kind === null) notice = t("notice.linkMissing", { path });
+    else if (kind === "dir") {
+      sidebarOpen = true;
+      sideView = "explorer";
+      await tick();
+      await explorer?.reveal(path, true);
+    } else {
+      const at = panes.findIndex((one) => one.key === pane.key);
+      await openPath(path, true, false, at);
+      const opened = tabOfPath(path);
+      if (opened?.lang === "markdown" && panes[at]?.ids.includes(opened.doc.id) && !panes[at].rendered.includes(opened.doc.id)) {
+        panes[at].rendered.push(opened.doc.id);
+        activate(opened.doc.id, at);
+      }
+    }
+  }
+
+  /** A preview's own menu. */
+  function previewMenuItems(pane: Pane): DropEntry[] {
+    const id = pane.activeId;
+    const view = id === null ? undefined : pane.previews[id];
+    const selected = view?.selection() ?? "";
+    return [
+      { label: t("menu.copy"), shortcut: "Ctrl+C", enabled: selected !== "", palette: false, run: () => api.writeClipboard(selected) },
+      { label: t("menu.selectAll"), shortcut: "Ctrl+A", palette: false, run: () => view?.selectAll() },
+      "separator",
+      { label: t("menu.showSource"), shortcut: "Ctrl+Shift+V", palette: false, run: togglePreview },
+    ];
   }
 
   /** The pane under a point, if any. */
@@ -1614,6 +1719,15 @@
           { label: t("menu.rainbow"), key: "R", checked: settings.rainbowColumns, run: toggleRainbow },
           "separator",
           {
+            label: rendering ? t("menu.showSource") : t("menu.openPreview"),
+            key: "O",
+            shortcut: "Ctrl+Shift+V",
+            enabled: previewable,
+            run: togglePreview,
+          },
+          { label: t("menu.previewToSide"), key: "D", shortcut: "Ctrl+K V", enabled: previewable, run: previewToSide },
+          "separator",
+          {
             label: t("menu.editorLayout"),
             key: "L",
             items: [
@@ -1752,6 +1866,7 @@
     if (!pane || !paneMenu) return [];
     if (paneMenu.kind === "tab") return tabMenuItems(pane, paneMenu.tab!);
     if (paneMenu.kind === "text") return textMenuItems();
+    if (paneMenu.kind === "preview") return previewMenuItems(pane);
     return moreItemsFor(pane);
   });
 
@@ -1832,6 +1947,7 @@
     else if (e.code === "KeyU") closeSaved(pane);
     else if (e.code === "KeyO") toNewWindow(false);
     else if (e.code === "KeyS") saveAll();
+    else if (e.code === "KeyV") previewToSide();
     else if (e.key === "Enter" && pane.activeId !== null) {
       if (e.shiftKey) togglePin(pane.activeId, pane);
       else keepOpen(pane.activeId);
@@ -1913,6 +2029,7 @@
     else if (mod && e.shiftKey && !e.altKey && e.code === "KeyF") showSearch(false);
     else if (mod && e.shiftKey && !e.altKey && e.code === "KeyH") showSearch(true);
     else if (mod && e.shiftKey && !e.altKey && e.code === "KeyE") pickSideView("explorer");
+    else if (mod && e.shiftKey && !e.altKey && e.code === "KeyV" && previewable) togglePreview();
     else if (mod && !e.shiftKey && !e.altKey && e.code === "Slash" && inText()) toggleComment(false);
     else if (e.shiftKey && e.altKey && !mod && e.code === "KeyA" && inText()) toggleComment(true);
     else if (mod && (key === "f" || key === "h") && active) startFind(key === "h");
@@ -1987,6 +2104,10 @@
       for (const path of saved.pinned ?? []) {
         const pinned = tabOfPath(path);
         if (pinned && panes[at].ids.includes(pinned.doc.id)) togglePin(pinned.doc.id, panes[at]);
+      }
+      for (const path of saved.rendered ?? []) {
+        const rendered = tabOfPath(path);
+        if (rendered && panes[at].ids.includes(rendered.doc.id)) panes[at].rendered.push(rendered.doc.id);
       }
     }
     // Only now: a locked pane would have sent its own files elsewhere.
@@ -2183,6 +2304,16 @@
               onunpin={(id) => togglePin(id, pane)}
               oncontext={(id, x, y) => (paneMenu = { key: pane.key, kind: "tab", tab: id, point: { x, y } })}
               locked={pane.locked}
+              markdown={pane.activeId !== null && pane.rendered.includes(pane.activeId)
+                ? "rendered"
+                : tabOf(pane.activeId ?? -1)?.lang === "markdown"
+                  ? "source"
+                  : null}
+              onpreview={(side) => {
+                focusPane(i);
+                if (side) previewToSide();
+                else togglePreview();
+              }}
               onsplit={(down) => split(down ? "bottom" : "right")}
               onunlock={() => toggleLock(pane)}
               onmore={(button) => toggleMoreMenu(pane.key, button)}
@@ -2192,7 +2323,8 @@
               {#each [...pane.ids].sort((a, b) => a - b) as id (id)}
                 {@const tab = tabOf(id)}
                 {#if tab}
-                  <div class="slot" class:hidden={id !== pane.activeId}>
+                  {@const showsPreview = pane.rendered.includes(id)}
+                  <div class="slot" class:hidden={id !== pane.activeId || showsPreview}>
                     <Editor
                       bind:this={pane.editors[id]}
                       doc={tab.doc}
@@ -2207,6 +2339,18 @@
                       onerror={(message) => (notice = message)}
                     />
                   </div>
+                  {#if showsPreview}
+                    <div class="slot" class:hidden={id !== pane.activeId}>
+                      <MarkdownView
+                        bind:this={pane.previews[id]}
+                        {id}
+                        version={tab.state.version}
+                        path={tab.doc.path}
+                        onlink={(href) => followLink(href, tab, pane)}
+                        oncontext={(x, y) => (paneMenu = { key: pane.key, kind: "preview", point: { x, y } })}
+                      />
+                    </div>
+                  {/if}
                 {/if}
               {/each}
               {#if i === focused && findOpen && active && editor}

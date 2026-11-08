@@ -6,7 +6,7 @@
 //! cancelled, the clipboard is a string here, and the settings file's path
 //! comes with the request. What the app streams through a channel comes all
 //! at once, in `__channels` beside the answer, for the page to hand on. A delete is for good, not to the trash, and the
-//! file manager and terminal asked for are only noted.
+//! file manager, terminal and web links asked for are only noted.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use hu_core::files::{self, FileSearch, Globs, Source};
 use hu_core::{
     BlockKind, BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir,
-    ipc_message, settings,
+    ipc_message, markdown, settings,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -215,6 +215,18 @@ impl Bridge {
                 self.launched.lock().unwrap().push(json!([cmd, path]));
                 Value::Null
             }
+            "open_url" => {
+                let url: String = arg(args, "url")?;
+                if !markdown::is_web_link(&url) {
+                    return Err(format!("{url}: not a web or mail link"));
+                }
+                self.launched.lock().unwrap().push(json!([cmd, url]));
+                Value::Null
+            }
+            "image_data" => {
+                let path: PathBuf = arg(args, "path")?;
+                to_json(markdown::image_data(&path).map_err(problem)?)?
+            }
             "write_clipboard" => {
                 *self.clipboard.lock().unwrap() = arg(args, "text")?;
                 Value::Null
@@ -281,6 +293,7 @@ impl Bridge {
             "index_status" => to_json(doc()?.index_status())?,
             "disk_changed" => json!(doc()?.changed_on_disk()),
             "detect_dialect" => to_json(doc()?.dialect().map_err(problem)?)?,
+            "render_markdown" => to_json(markdown::preview(&*doc()?).map_err(problem)?)?,
             "view" => {
                 let target: ViewTarget = arg(args, "target")?;
                 to_json(doc()?.view(target, arg(args, "rows")?).map_err(problem)?)?

@@ -15,6 +15,7 @@ pub mod document;
 pub mod files;
 mod history;
 pub mod line_index;
+pub mod markdown;
 mod original;
 mod pattern;
 mod pieces;

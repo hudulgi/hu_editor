@@ -189,6 +189,8 @@
         ["Alt+F, E, T, S, V, H / F10", t("shortcut.menu")],
         ["Ctrl+Shift+P, F1", t("shortcut.palette")],
         ["Ctrl+B", t("shortcut.explorer")],
+        ["Ctrl+Shift+V", t("menu.openPreview")],
+        ["Ctrl+K V", t("menu.previewToSide")],
         ["Ctrl+Shift+E", t("shortcut.explorerView")],
         ["Ctrl+Tab, Ctrl+Shift+Tab", t("shortcut.nextTab")],
         ["Ctrl+\\", t("shortcut.split")],

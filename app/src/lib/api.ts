@@ -142,6 +142,10 @@ export const windowStart = <T>() => invoke<T | null>("window_start");
 export const indexStatus = (id: number) => invoke<IndexStatus>("index_status", { id });
 export const diskChanged = (id: number) => invoke<boolean>("disk_changed", { id });
 /** Which solver the document's content looks written for, if it says. */
+/** The document as HTML for its Markdown preview, with nothing in it that runs. */
+export const renderMarkdown = (id: number) => invoke<string>("render_markdown", { id });
+/** An image file as a `data:` URL. */
+export const imageData = (path: string) => invoke<string>("image_data", { path });
 export const detectDialect = (id: number) => invoke<"abaqus" | "nastran" | null>("detect_dialect", { id });
 /** Stops the running search, replace or count. */
 export const cancelFind = (id: number) => invoke<void>("cancel_find", { id });
@@ -195,6 +199,8 @@ export const paste = (paths: string[], into: string, cut: boolean) => invoke<Pas
 export const deletePath = (path: string) => invoke<void>("delete_path", { path });
 /** Shows it selected in File Explorer (the Finder). */
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+/** A web or mail link, in the system's browser or mail program. */
+export const openUrl = (url: string) => invoke<void>("open_url", { url });
 export const openTerminal = (dir: string) => invoke<void>("open_terminal", { dir });
 
 /** Replaces display columns `[left, right)` of the box's lines with `texts` (one for all, or one per line). */

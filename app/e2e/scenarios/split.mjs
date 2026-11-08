@@ -74,7 +74,7 @@ export default async function (t) {
   // ---- Splitting ------------------------------------------------------------
 
   check("one pane to start with", await paneCount(), 1);
-  await until("the view menu says so", async () => (await menuItems("View")).slice(7), ["Editor Layout", "-Move Tab to Other Pane", "-Switch Pane"]);
+  await until("the view menu says so", async () => (await menuItems("View")).slice(9), ["Editor Layout", "-Move Tab to Other Pane", "-Switch Pane"]);
   await until("and its layout menu", layoutShown, ["Single"]);
 
   await goTo(200);
@@ -619,7 +619,7 @@ export default async function (t) {
   await korean.page.click(".menubar .title >> nth=4");
   check(
     "korean menu",
-    (await korean.page.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent.trim()))).slice(7),
+    (await korean.page.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent.trim()))).slice(9),
     ["편집기 레이아웃(L)", "다른 칸으로 탭 이동(M)", "다른 칸으로 전환(W)"],
   );
 }

@@ -69,6 +69,7 @@ export const ko: Record<keyof typeof en, string> = {
   "empty.new": "새 파일은 Ctrl+N으로 만들 수 있습니다.",
   "empty.closePane": "Ctrl+W로 이 칸을 닫습니다.",
   "tabs.split": "편집기 오른쪽으로 분할 (Alt: 아래쪽으로)",
+  "tabs.preview": "미리 보기 {name}",
   "tabs.unlock": "그룹 잠금 해제",
   "tabs.more": "기타 작업…",
   "more.showOpen": "열려 있는 편집기 표시",
@@ -79,6 +80,9 @@ export const ko: Record<keyof typeof en, string> = {
   "more.configure": "편집기 구성",
   "menu.palette": "명령 팔레트…",
   "menu.rainbow": "열 색 구분",
+  "menu.openPreview": "미리 보기 열기",
+  "menu.previewToSide": "측면에서 미리 보기 열기",
+  "menu.showSource": "원본 보기",
   "menu.newFileOf": "새 파일…",
   "menu.newWindow": "새 창",
   "menu.openFolder": "폴더 열기…",
@@ -203,6 +207,7 @@ export const ko: Record<keyof typeof en, string> = {
   "notice.dismiss": "닫기",
   "notice.settingsNotSaved": "설정을 저장하지 못했습니다: {error}",
   "notice.recentGone": "{path} 파일이 없어 목록에서 뺐습니다.",
+  "notice.linkMissing": "{path}이(가) 없습니다.",
 
   "editor.label": "편집기",
 
@@ -287,6 +292,7 @@ export const ko: Record<keyof typeof en, string> = {
   "error.malformed": "{line}번째 줄에 {encoding}에 맞지 않는 바이트가 있습니다. 올바른 인코딩으로 먼저 다시 읽으세요",
   "error.unsavedChanges": "다른 인코딩으로 읽기 전에 변경 내용을 저장하거나 실행 취소하세요.",
   "error.tooLargeToCopy": "선택 영역이 너무 커서 복사할 수 없습니다 ({sizeMb}MB, 최대 {limitMb}MB).",
+  "error.tooLargeToPreview": "미리 보기에는 너무 큽니다 ({sizeMb}MB, 최대 {limitMb}MB).",
   "error.tooManyMatches": "일치 항목이 {limit}개를 넘습니다",
   "error.boxTooTall": "박스 선택은 최대 {limit}줄까지 가능합니다.",
   "error.keptChanging": "문서가 계속 변경되고 있습니다. 다시 시도하세요.",
