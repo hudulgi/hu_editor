@@ -1535,6 +1535,14 @@
     about = { version: await getVersion() };
   }
 
+  /** The licenses of the third-party software in the app: a file installed with it, opened as any other. */
+  function openNotices() {
+    api.noticesPath().then(
+      (path) => openPath(path, false),
+      (e) => (notice = describeError(e)),
+    );
+  }
+
   /** The keyboard goes to a pane, or leaves the editors if the pane is empty. */
   function focusPane(at: number) {
     const pane = panes[at];
@@ -1766,6 +1774,7 @@
         key: "H",
         items: [
           { label: t("menu.shortcuts"), key: "K", run: () => openSettings("shortcuts") },
+          { label: t("menu.notices"), key: "N", run: openNotices },
           { label: t("menu.about"), key: "A", run: showAbout },
         ],
       },

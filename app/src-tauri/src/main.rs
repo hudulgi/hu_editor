@@ -12,6 +12,7 @@ fn main() {
         .manage(commands::FileSearches::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
+            commands::notices_path,
             commands::read_clipboard,
             commands::roots,
             commands::list_dir,

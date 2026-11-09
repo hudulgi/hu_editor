@@ -51,6 +51,7 @@ export const ko: Record<keyof typeof en, string> = {
   "menu.switchPane": "다른 칸으로 전환",
   "menu.help": "도움말",
   "menu.shortcuts": "단축키 목록",
+  "menu.notices": "오픈 소스 라이선스",
   "menu.about": "프로그램 정보",
   "about.version": "버전 {version}",
   "about.description": "대용량 Abaqus·Nastran 입력 파일 편집기",

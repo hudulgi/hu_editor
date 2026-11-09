@@ -53,6 +53,8 @@ Windows 설치 파일(NSIS `.exe`, `.msi`)은 GitHub Actions의 Release 워크�
 
 태그를 올리면 워크플로가 태그, `Cargo.toml`, 변경 기록이 서로 맞는지 확인합니다. 그다음 Windows에서 코어 테스트와 빌드를 하고, 변경 기록의 그 버전 부분을 설명으로 붙여 초안 릴리스를 만듭니다. 초안은 GitHub의 Releases에서 확인하고 게시합니다. 코드 서명은 하지 않았으므로, 처음 실행할 때 Windows SmartScreen 경고가 나옵니다.
 
+설치 파일에는 앱에 들어간 라이브러리의 라이선스를 모은 `THIRD_PARTY_NOTICES.txt`가 함께 들어가고, 도움말 메뉴의 오픈 소스 라이선스로 열 수 있습니다. 이 파일은 `npm run build`(설치 파일을 만들 때도 실행됨)가 `app/scripts/notices.mjs`로 새로 만듭니다. 대상은 Windows용 프로그램에 들어가는 Rust 크레이트와 화면에 묶이는 npm 패키지이고, 빌드할 때만 쓰는 것은 빠집니다. 개발 빌드에도 이 파일이 있어야 하므로 저장소에 올려 둡니다. 의존성을 바꾼 뒤 `npm run build`를 실행하면 바뀐 내용이 같이 커밋됩니다.
+
 ## 단축키
 
 | 키 | 동작 |
@@ -199,3 +201,7 @@ Ctrl+, 또는 파일 메뉴의 설정으로 엽니다. Windows 대화 상자처�
 - **단축키**: 메뉴별로 묶은 목록 (변경은 아직 안 됨)
 
 언어를 추가하려면 `app/src/lib/i18n/`에 파일을 하나 더 만듭니다. 인코딩·솔버·카드 이름과 OS가 주는 오류 메시지는 번역하지 않습니다.
+
+## 출처
+
+메뉴 구성, 단축키, 탭 줄 버튼, 메뉴 문구와 그 한국어 번역은 Visual Studio Code를 따랐습니다. 문구와 번역은 [microsoft/vscode](https://github.com/microsoft/vscode)와 [microsoft/vscode-loc](https://github.com/microsoft/vscode-loc)(둘 다 MIT 라이선스, Copyright (c) Microsoft Corporation)에서 가져왔습니다. 아이콘은 직접 그렸습니다. 대용량 파일 처리 방식은 UltraEdit와 EmEditor를 참고했습니다. HU Editor는 Microsoft를 비롯한 이들 제품의 회사와 관계가 없으며, Visual Studio Code는 Microsoft의 상표입니다.

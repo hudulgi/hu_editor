@@ -113,6 +113,8 @@ export type FindOutcome =
   | { kind: "cancelled" };
 
 export const launchPath = () => invoke<string | null>("launch_path");
+/** The licenses of the third-party software in the app, a file installed with it. */
+export const noticesPath = () => invoke<string>("notices_path");
 export const roots = () => invoke<Root[]>("roots");
 export const listDir = (path: string, showHidden: boolean) => invoke<DirEntry[]>("list_dir", { path, showHidden });
 /** Folders from the root down to `path`, ending with `path`; empty for a relative path. */

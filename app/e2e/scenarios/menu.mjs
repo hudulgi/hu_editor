@@ -311,6 +311,12 @@ export default async function (t) {
   await page.waitForSelector(".dialog");
   await page.keyboard.press("Enter");
   await until("enter closes about", () => page.locator(".dialog").count(), 0);
+  // The licenses of what the app is made of, in the file installed with it.
+  await app.menu("Help", "Third-Party Notices");
+  await until("the third-party notices in a tab", async () => [await app.tabs(), (await app.lines())[0]], [["copy.txt", "a.bdf", "*THIRD_PARTY_NOTICES.txt"], "HU Editor: third-party notices"]);
+  check("which lists the crates",await page.evaluate(() => [...document.querySelectorAll(".pane.focused .slot:not(.hidden) .line")].map((e) => e.textContent).join("\n")).then((text) => /Rust crates \(\d+\)/.test(text)), true);
+  await press("Control+w");
+  await until("closed again", app.tabs, ["copy.txt", "*a.bdf"]);
 
   // ---- The keyboard --------------------------------------------------------
 

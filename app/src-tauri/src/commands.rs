@@ -315,6 +315,13 @@ pub fn launch_path() -> Option<String> {
     std::env::args().nth(1)
 }
 
+/// The licenses of the third-party software in the app, installed with it.
+#[tauri::command]
+pub fn notices_path(app: AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("THIRD_PARTY_NOTICES.txt"))
+}
+
 #[tauri::command]
 pub async fn roots() -> Vec<dir::Root> {
     spawn_blocking(dir::roots).await.unwrap_or_default()

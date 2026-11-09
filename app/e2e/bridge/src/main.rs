@@ -155,6 +155,13 @@ impl Bridge {
         let doc = || self.doc(args);
         Ok(match cmd {
             "launch_path" => Value::Null,
+            "notices_path" => to_json(
+                std::fs::canonicalize(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../src-tauri/THIRD_PARTY_NOTICES.txt"
+                ))
+                .map_err(problem)?,
+            )?,
             "roots" => to_json(dir::roots())?,
             "list_dir" => {
                 let path: PathBuf = arg(args, "path")?;

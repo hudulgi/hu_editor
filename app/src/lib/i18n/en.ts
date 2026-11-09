@@ -50,6 +50,7 @@ export const en = {
   "menu.switchPane": "Switch Pane",
   "menu.help": "Help",
   "menu.shortcuts": "Keyboard Shortcuts",
+  "menu.notices": "Third-Party Notices",
   "menu.about": "About HU Editor",
   "about.version": "Version {version}",
   "about.description": "An editor for huge Abaqus and Nastran input files",
