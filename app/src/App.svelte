@@ -1960,10 +1960,13 @@
     // A pinned tab closes only on purpose, from its menu: the keyboard just goes on to the next.
     if (active && panes[focused].pinned.includes(active.doc.id)) cycle(1);
     else if (active) closeTab(active.doc.id, focused);
-    else if (panes.length > 1) {
-      closePane(focused);
-      focusPane(focused);
-    }
+    else if (panes.length > 1) closeEmptyPane(focused);
+  }
+
+  /** The keyboard stays in the pane that had it; if this one had it, it goes next door. */
+  function closeEmptyPane(at: number) {
+    closePane(at);
+    focusPane(focused);
   }
 
   // Alt pressed and released by itself goes to the menu bar, as on Windows. The
@@ -2285,7 +2288,10 @@
           style:width="{box.width * 100}%"
           style:height="{box.height * 100}%"
           onfocusin={() => (focused = i)}
-          onmousedowncapture={() => (focused = i)}
+          onmousedowncapture={(e) => {
+            // Closing a pane is no reason to take the keyboard to it.
+            if (!(e.target as Element).closest(".close-pane")) focused = i;
+          }}
         >
           {#if pane.ids.length}
             <TabBar
@@ -2393,6 +2399,19 @@
               {/if}
             </div>
           {:else}
+            {#if panes.length > 1}
+              <!-- VS Code's empty group has this button alone where the tab bar's would be. -->
+              <button
+                class="close-pane"
+                title={t("tabs.closeGroup")}
+                aria-label={t("tabs.closeGroup")}
+                tabindex="-1"
+                onmousedown={(e) => e.preventDefault()}
+                onclick={() => closeEmptyPane(i)}
+              >
+                <svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+              </button>
+            {/if}
             <div class="empty">
               <p>
                 {t("empty.open")}<br />
@@ -2738,6 +2757,36 @@
   /* In an empty pane, nothing else says that it has the keyboard. */
   .pane.focused:not(:only-of-type) > .empty {
     box-shadow: inset 0 2px 0 var(--accent);
+  }
+  /* As the tab bar's buttons, at their place. */
+  .close-pane {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .pane.focused .close-pane {
+    color: var(--fg);
+  }
+  .close-pane:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .close-pane svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
   }
   .muted {
     color: var(--muted);

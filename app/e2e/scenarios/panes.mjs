@@ -146,6 +146,11 @@ export default async function (t) {
   await until("panes without a file", () => empty.page.locator(".pane .empty").count(), 4);
   await empty.page.keyboard.press("Control+w");
   await until("ctrl+w closes the empty pane", () => empty.page.locator(".pane").count(), 3);
+  check("each empty pane has an X", await empty.page.locator(".pane .close-pane").count(), 3);
+  await empty.page.click('.pane[data-pane="0"] .close-pane');
+  await until("which closes it", () => empty.page.locator(".pane").count(), 2);
+  await empty.page.click('.pane[data-pane="1"] .close-pane');
+  await until("down to one pane, which has none", async () => [await empty.page.locator(".pane").count(), await empty.page.locator(".pane .close-pane").count()], [1, 0]);
   await t.close(empty);
 
   // ---- The menu by mouse and keyboard --------------------------------------------
@@ -487,6 +492,20 @@ export default async function (t) {
   await app.menu("File", "Close Tab");
   await until("the menu closes an empty pane too", paneCount, 3);
   await until("the keyboard goes to the one before", async () => [await focused(), await focusIn()], [2, "editor 2"]);
+  // Its X, as VS Code's: only on an empty pane.
+  await press("Control+1");
+  await app.layout("Grid (2x2)");
+  await until("four, one empty", async () => [await paneCount(), await page.locator(".pane .empty").count()], [4, 1]);
+  check("the X on the empty pane alone", [await page.locator(`${PANE(3)} .close-pane`).count(), await page.locator(".pane .close-pane").count()], [1, 1]);
+  await app.shot("panes-close-empty");
+  await page.click(`${PANE(3)} .close-pane`);
+  await until("closes it, and the keyboard stays where it was", async () => [await paneCount(), await page.locator(".pane .empty").count(), await focused(), await focusIn()], [3, 0, 0, "editor 0"]);
+  await press("Control+3");
+  await app.layout("Grid (2x2)");
+  await press("Control+4");
+  await until("with the keyboard in the empty pane", focused, 3);
+  await page.click(`${PANE(3)} .close-pane`);
+  await until("it goes to the one before", async () => [await paneCount(), await focused(), await focusIn()], [3, 2, "editor 2"]);
 
   // ---- Moving tabs among many ---------------------------------------------------------
 

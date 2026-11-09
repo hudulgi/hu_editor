@@ -70,6 +70,7 @@ export const en = {
   "tabs.split": "Split Editor Right (Alt: Down)",
   "tabs.preview": "Preview {name}",
   "tabs.unlock": "Unlock Group",
+  "tabs.closeGroup": "Close Group (Ctrl+W)",
   "tabs.more": "More Actions…",
   "more.showOpen": "Show Opened Editors",
   "more.closeAll": "Close All",

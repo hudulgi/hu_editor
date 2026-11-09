@@ -71,6 +71,7 @@ export const ko: Record<keyof typeof en, string> = {
   "tabs.split": "편집기 오른쪽으로 분할 (Alt: 아래쪽으로)",
   "tabs.preview": "미리 보기 {name}",
   "tabs.unlock": "그룹 잠금 해제",
+  "tabs.closeGroup": "그룹 닫기 (Ctrl+W)",
   "tabs.more": "기타 작업…",
   "more.showOpen": "열려 있는 편집기 표시",
   "more.closeAll": "모두 닫기",
