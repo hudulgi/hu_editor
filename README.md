@@ -41,6 +41,18 @@ npm run e2e -- --big       # 1GB 덱 시나리오도 함께 (느리고 디스크
 
 Tauri 명령 층은 `e2e/bridge`가 대신합니다. 앱에 명령을 추가하면 브리지에도 추가해야 하고, 빠져 있으면 시나리오를 시작하기 전에 알려 줍니다. 실제 창과 네이티브 대화 상자는 이 시나리오로 확인되지 않습니다.
 
+## 버전과 배포
+
+버전은 루트 `Cargo.toml`의 `[workspace.package] version` 한 곳에만 적습니다. 앱(정보 창, 설치 파일)도 이 값을 씁니다. 바뀐 점은 [CHANGELOG.md](CHANGELOG.md)에 적습니다.
+
+Windows 설치 파일(NSIS `.exe`, `.msi`)은 GitHub Actions의 Release 워크플로가 만듭니다. Actions 탭에서 직접 실행하면 설치 파일만 만들어 결과물(artifact)로 올립니다. 배포할 때는 다음 순서를 따릅니다.
+
+1. `Cargo.toml`의 버전을 올리고 `cargo check`로 `Cargo.lock`을 맞춥니다.
+2. `CHANGELOG.md`에서 그 버전 제목의 "미출시"를 날짜로 바꿉니다. 예: `## [0.2.0] - 2026-12-01`
+3. 커밋하고 `git tag v0.2.0`, `git push origin main v0.2.0`을 실행합니다.
+
+태그를 올리면 워크플로가 태그, `Cargo.toml`, 변경 기록이 서로 맞는지 확인합니다. 그다음 Windows에서 코어 테스트와 빌드를 하고, 변경 기록의 그 버전 부분을 설명으로 붙여 초안 릴리스를 만듭니다. 초안은 GitHub의 Releases에서 확인하고 게시합니다. 코드 서명은 하지 않았으므로, 처음 실행할 때 Windows SmartScreen 경고가 나옵니다.
+
 ## 단축키
 
 | 키 | 동작 |
