@@ -1,6 +1,7 @@
-# The Windows installers: by hand (Actions > Release > Run workflow) to try a
-# build, or by pushing a tag vX.Y.Z, which also drafts a release with them.
-# The draft waits for the core's tests on Windows; the installers do not.
+# The Windows installers and a portable zip (the program and its notices, to
+# run where it is unpacked): by hand (Actions > Release > Run workflow) to try
+# a build, or by pushing a tag vX.Y.Z, which also drafts a release with them.
+# The draft waits for the core's tests on Windows; the build does not.
 name: Release
 
 on:
@@ -48,13 +49,21 @@ jobs:
         working-directory: app
       - run: npx tauri build
         working-directory: app
+      - name: The installers, and the portable zip beside them
+        shell: bash
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          mkdir out portable
+          cp target/release/bundle/nsis/*.exe target/release/bundle/msi/*.msi out/
+          # The notices are read from beside the program, as from the install folder.
+          cp target/release/hu-editor.exe "portable/HU Editor.exe"
+          cp app/src-tauri/THIRD_PARTY_NOTICES.txt portable/
+          (cd portable && 7z a "../out/HU Editor_${version}_x64-portable.zip" *)
       - uses: actions/upload-artifact@v7
         with:
           name: hu-editor-windows
           if-no-files-found: error
-          path: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/msi/*.msi
+          path: out/
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -72,4 +81,4 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v head="## [$version]" 'index($0, "## [") == 1 { on = index($0, head) == 1; next } on' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" --draft --title "HU Editor $GITHUB_REF_NAME" --notes-file notes.md installers/nsis/*.exe installers/msi/*.msi
+          gh release create "$GITHUB_REF_NAME" --draft --title "HU Editor $GITHUB_REF_NAME" --notes-file notes.md installers/*

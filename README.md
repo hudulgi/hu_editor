@@ -45,7 +45,16 @@ Tauri 명령 층은 `e2e/bridge`가 대신합니다. 앱에 명령을 추가하�
 
 버전은 루트 `Cargo.toml`의 `[workspace.package] version` 한 곳에만 적습니다. 앱(정보 창, 설치 파일)도 이 값을 씁니다. 바뀐 점은 [CHANGELOG.md](CHANGELOG.md)에 적습니다.
 
-Windows 설치 파일(NSIS `.exe`, `.msi`)은 GitHub Actions의 Release 워크플로가 만듭니다. Actions 탭에서 직접 실행하면 설치 파일만 만들어 결과물(artifact)로 올립니다. 배포할 때는 다음 순서를 따릅니다.
+Windows 설치 파일(NSIS `.exe`, `.msi`)과 휴대용 zip은 GitHub Actions의 Release 워크플로가 만듭니다. Actions 탭에서 직접 실행하면 이것들만 만들어 결과물(artifact)로 올립니다.
+
+휴대용 zip에는 `HU Editor.exe`와 `THIRD_PARTY_NOTICES.txt`만 들어 있습니다. 아무 폴더에나 풀어 실행하면 되고 설치할 필요가 없어서, 사내 공유 폴더로 나눠 주기에 좋습니다. 두 파일은 같은 폴더에 둡니다(도움말의 오픈 소스 라이선스가 옆의 파일을 엽니다). 주의할 점이 두 가지 있습니다.
+
+- 설치 파일과 달리 WebView2 런타임을 깔아 주지 않습니다. Windows 11과 업데이트된 Windows 10에는 대부분 이미 있습니다.
+- 자동 업데이트가 없으므로 새 버전은 새 zip으로 바꿔 줍니다.
+
+설정과 지난 세션은 설치본과 같은 곳에 저장되므로, 두 가지를 섞어 써도 이어집니다.
+
+배포할 때는 다음 순서를 따릅니다.
 
 1. `Cargo.toml`의 버전을 올리고 `cargo check`로 `Cargo.lock`을 맞춥니다.
 2. `CHANGELOG.md`에서 그 버전 제목의 "미출시"를 날짜로 바꿉니다. 예: `## [0.2.0] - 2026-12-01`
