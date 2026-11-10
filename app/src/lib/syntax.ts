@@ -24,9 +24,10 @@ export function langBadge(lang: Exclude<Lang, "plain">) {
   return { text: lang === "abaqus" ? "A" : "N", cls: lang };
 }
 
-const NASTRAN_EXT = ["bdf", "dat", "nas", "bulk", "fem"];
+export const ABAQUS_EXT = ["inp"];
+export const NASTRAN_EXT = ["bdf", "dat", "nas", "bulk", "fem"];
 /** Used for both solvers: only a file's content can tell which one it is for. */
-const EITHER_SOLVER_EXT = ["blk"];
+export const EITHER_SOLVER_EXT = ["blk"];
 
 const extOf = (name: string) => name.toLowerCase().split(".").pop() ?? "";
 
@@ -35,7 +36,7 @@ export const dependsOnContent = (name: string) => EITHER_SOLVER_EXT.includes(ext
 /** The language a file name alone implies; "plain" when it depends on the content. */
 export function detectLang(name: string): Lang {
   const ext = extOf(name);
-  if (ext === "inp") return "abaqus";
+  if (ABAQUS_EXT.includes(ext)) return "abaqus";
   if (NASTRAN_EXT.includes(ext)) return "nastran";
   return codeLangOf(ext) ?? "plain";
 }

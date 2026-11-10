@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 
 /** Runs in the page, in place of Tauri. Native dialogs answer from a queue. */
 function tauriInPage({ bridge, settingsPath, launchPath, label }) {
-  const e2e = { dialogAnswers: [], dialogCalls: [], messages: [], messageAnswers: [], listeners: {}, destroyed: 0, title: "" };
+  const e2e = { dialogAnswers: [], dialogCalls: [], dialogTypes: [], messages: [], messageAnswers: [], listeners: {}, destroyed: 0, title: "" };
   window.__e2e = e2e;
   // Events reach every window, the one that sent them too.
   const deliver = (event, payload) => {
@@ -44,6 +44,7 @@ function tauriInPage({ bridge, settingsPath, launchPath, label }) {
       }
       if (cmd === "plugin:dialog|save" || cmd === "plugin:dialog|open") {
         e2e.dialogCalls.push(args.options.defaultPath ?? null);
+        e2e.dialogTypes.push(args.options.filters ?? []);
         return e2e.dialogAnswers.shift() ?? null;
       }
       if (cmd === "plugin:dialog|message") {
@@ -294,6 +295,8 @@ export class App {
   /** The next native file dialog answers `path`, or is cancelled for null. */
   answerDialog = (path) => this.page.evaluate((path) => window.__e2e.dialogAnswers.push(path), path);
   dialogCalls = () => this.page.evaluate(() => window.__e2e.dialogCalls);
+  /** The file types each dialog offered, as `name: ext ext`. */
+  dialogTypes = () => this.page.evaluate(() => window.__e2e.dialogTypes.map((types) => types.map((type) => `${type.name}: ${type.extensions.join(" ")}`)));
   /** The next native question is answered `ok` or `cancel`. */
   answerMessage = (answer) => this.page.evaluate((answer) => window.__e2e.messageAnswers.push(answer), answer);
   /** The native questions asked so far: message, title, kind, buttons. */

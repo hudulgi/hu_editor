@@ -71,6 +71,13 @@ export const isCodeLang = (lang: string): lang is CodeLang => lang in LANGUAGES;
 export const codeLabel = (lang: CodeLang) => LANGUAGES[lang].label;
 export const codeBadge = (lang: CodeLang) => LANGUAGES[lang].badge;
 
+/** The extensions of each language by its name, as file types of a dialog: one per name (both Fortrans in one), by name. */
+export function codeFileTypes() {
+  const byName = new Map<string, string[]>();
+  for (const { label, extensions } of Object.values(LANGUAGES)) byName.set(label, [...(byName.get(label) ?? []), ...extensions]);
+  return [...byName].map(([name, extensions]) => ({ name, extensions })).sort((a, b) => a.name.localeCompare(b.name, "en"));
+}
+
 /** Languages whose lines can depend on the lines before. */
 export const dependsOnLinesAbove = (lang: CodeLang) => !["batch", "ini", "fortran", "fortranFixed", "csv", "tsv"].includes(lang);
 

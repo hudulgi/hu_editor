@@ -8,6 +8,7 @@
   import * as api from "./lib/api";
   import { baseName, dirName, formatNumber as fmt, formatSize as size, isWindows, joinPath, linkedPath, parentName, samePath } from "./lib/format";
   import { commentsOf } from "./lib/languages";
+  import { openTypes, saveTypes } from "./lib/fileTypes";
   import { dependsOnContent, detectLang, langLabel, type Lang } from "./lib/syntax";
   import Editor, { type CaretInfo } from "./lib/Editor.svelte";
   import { ENCODING_LABEL } from "./lib/encodings";
@@ -923,11 +924,6 @@
 
   // ---- Files ----------------------------------------------------------------
 
-  const filters = () => [
-    { name: t("filter.solver"), extensions: ["inp", "bdf", "dat", "nas", "blk", "bulk", "fem"] },
-    { name: t("filter.all"), extensions: ["*"] },
-  ];
-
   /** Saves; a new document asks for a file name first. */
   async function saveTab(tab: Tab) {
     // Keys typed just before Ctrl+S must make it into the file.
@@ -942,7 +938,8 @@
   async function saveTabAs(tab: Tab) {
     await flush(tab.doc.id);
     if (saving) return false;
-    const path = await saveDialog({ defaultPath: tab.doc.path ?? untitledName(tab), filters: filters() });
+    const defaultPath = tab.doc.path ?? untitledName(tab);
+    const path = await saveDialog({ defaultPath, filters: saveTypes(defaultPath) });
     if (!path) return false;
     return writing(tab, async (progress) => {
       const done = await api.saveAs(tab.doc.id, path, progress);
@@ -1025,7 +1022,7 @@
       return;
     }
     const path =
-      tab.doc.path ?? (await saveDialog({ defaultPath: untitledName(tab), filters: filters() }));
+      tab.doc.path ?? (await saveDialog({ defaultPath: untitledName(tab), filters: saveTypes(untitledName(tab)) }));
     if (!path) return;
     const line = activeCaret?.line ?? null;
     if (!(await writing(tab, (progress) => api.saveConverted(id, path, encoding, progress)))) return;
@@ -1049,7 +1046,7 @@
   const opening = new Map<string, Promise<void>>();
 
   async function chooseFile() {
-    const path = await openDialog({ multiple: false, directory: false, filters: filters() });
+    const path = await openDialog({ multiple: false, directory: false, filters: openTypes() });
     if (typeof path === "string") await openPath(path);
   }
 
@@ -1173,7 +1170,7 @@
   /** The file is made on disk where the save dialog says, as VS Code does, and opens; nothing there is replaced. */
   async function createNamed(name: string) {
     const folder = active?.doc.path ? dirName(active.doc.path) : null;
-    const path = await saveDialog({ defaultPath: folder ? joinPath(folder, name) : name, filters: filters() });
+    const path = await saveDialog({ defaultPath: folder ? joinPath(folder, name) : name, filters: saveTypes(name) });
     if (!path) return editor?.focus();
     try {
       await api.createFile(path);

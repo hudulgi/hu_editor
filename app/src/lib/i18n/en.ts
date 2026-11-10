@@ -58,8 +58,10 @@ export const en = {
 
   "doc.untitled": "Untitled-{n}",
   "doc.notSaved": "Not saved yet",
-  "filter.solver": "Solver input",
   "filter.all": "All files",
+  "filter.solver": "Solver input",
+  "filter.output": "Solver output",
+  "filter.text": "Text files",
 
   "banner.changed": "The file changed on disk.",
   "banner.changedUnsaved": "The file changed on disk (you have unsaved changes).",

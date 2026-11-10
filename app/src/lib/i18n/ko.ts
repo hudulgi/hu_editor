@@ -59,8 +59,10 @@ export const ko: Record<keyof typeof en, string> = {
 
   "doc.untitled": "제목 없음-{n}",
   "doc.notSaved": "아직 저장하지 않음",
-  "filter.solver": "솔버 입력 파일",
   "filter.all": "모든 파일",
+  "filter.solver": "해석 입력 파일",
+  "filter.output": "해석 결과 파일",
+  "filter.text": "텍스트 파일",
 
   "banner.changed": "디스크에서 파일이 변경되었습니다.",
   "banner.changedUnsaved": "디스크에서 파일이 변경되었습니다 (저장하지 않은 변경 내용이 있습니다).",
