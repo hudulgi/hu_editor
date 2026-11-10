@@ -68,6 +68,10 @@ export default async function (t) {
   await until("their paths, a line each", app.clipboard, [t.path("work", "c.inp"), t.path("work", "d.inp")].join(EOL));
   await page.click(row("d.inp"), { button: "right" });
   await page.waitForSelector(MENU);
+  await pick("Copy Name");
+  await until("and their names", app.clipboard, ["c.inp", "d.inp"].join(EOL));
+  await page.click(row("d.inp"), { button: "right" });
+  await page.waitForSelector(MENU);
   check("a right click on one of them keeps them all", await picked(), ["c.inp", "d.inp"]);
   check("what works on one only is off", (await entries()).filter((e) => /Open to the Side|Rename|Delete|Cut|Copy$/.test(e)), [
     "-Open to the Side",

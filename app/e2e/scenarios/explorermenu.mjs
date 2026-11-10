@@ -2,6 +2,7 @@
 // the space below the rows; and what they do on the disk.
 
 import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 const REVEAL = { win32: "Reveal in File Explorer", darwin: "Reveal in Finder" }[process.platform] ?? "Open Containing Folder";
@@ -86,6 +87,7 @@ export default async function (t) {
     "—",
     "Copy Path|Shift+Alt+C",
     "Copy Relative Path",
+    "Copy Name",
     "—",
     "Rename…|F2",
     "Delete|Delete",
@@ -107,6 +109,7 @@ export default async function (t) {
     "—",
     "Copy Path|Shift+Alt+C",
     "Copy Relative Path",
+    "Copy Name",
   ]);
   await pick("Copy Path");
   await until("the folder's path", app.clipboard, t.path("work"));
@@ -125,6 +128,7 @@ export default async function (t) {
     "—",
     "Copy Path|Shift+Alt+C",
     "Copy Relative Path",
+    "Copy Name",
     "—",
     "Rename…|F2",
     "Delete|Delete",
@@ -160,6 +164,16 @@ export default async function (t) {
   await menuOn("work", "sub", "part.inp");
   await pick("Copy Path");
   await until("copy path", app.clipboard, t.path("work", "sub", "part.inp"));
+  await menuOn("work", "sub", "part.inp");
+  await pick("Copy Name");
+  await until("copy name: the name alone, with its extension", app.clipboard, "part.inp");
+  await menuOn("work", "sub");
+  await pick("Copy Name");
+  await until("a folder's", app.clipboard, "sub");
+  await page.click(".tree .row:has(.root-icon):has-text('Home')", { button: "right" });
+  await page.waitForSelector(MENU);
+  await pick("Copy Name");
+  await until("a quick-access folder's own name, not the one shown", app.clipboard, homedir().split(/[\\/]/).pop());
   await choose("work", "mesh.inp");
   await press("Shift+Alt+C");
   await until("shift+alt+c", app.clipboard, t.path("work", "mesh.inp"));
@@ -448,6 +462,7 @@ export default async function (t) {
     "—",
     "경로 복사",
     "상대 경로 복사",
+    "이름 복사",
     "—",
     "이름 바꾸기…",
     "삭제",

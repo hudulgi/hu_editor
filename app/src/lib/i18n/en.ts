@@ -240,6 +240,7 @@ export const en = {
   "explorer.openToSide": "Open to the Side",
   "explorer.copyPath": "Copy Path",
   "explorer.copyRelativePath": "Copy Relative Path",
+  "explorer.copyName": "Copy Name",
   "explorer.rename": "Rename…",
   "explorer.delete": "Delete",
   "explorer.deleteFile": "Are you sure you want to delete '{name}'?",

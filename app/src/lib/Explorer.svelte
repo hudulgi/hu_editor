@@ -510,6 +510,8 @@
         enabled: on && relative.every((one) => one !== null),
         run: () => copyPaths(relative.map((one, i) => one ?? paths[i])),
       },
+      // A drive has no name but its path; a quick-access folder its own, not the one shown.
+      { label: t("explorer.copyName"), enabled: on, run: () => copyPaths(paths.map((one) => baseName(one) || one)) },
     ];
     const change: DropEntry[] = [
       { label: t("explorer.rename"), shortcut: "F2", enabled: moves && !several, run: () => row && startRename(row) },

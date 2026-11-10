@@ -241,6 +241,7 @@ export const ko: Record<keyof typeof en, string> = {
   "explorer.openToSide": "측면에서 열기",
   "explorer.copyPath": "경로 복사",
   "explorer.copyRelativePath": "상대 경로 복사",
+  "explorer.copyName": "이름 복사",
   "explorer.rename": "이름 바꾸기…",
   "explorer.delete": "삭제",
   "explorer.deleteFile": "'{name}'을(를) 삭제하시겠습니까?",
