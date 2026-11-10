@@ -4,11 +4,13 @@
   // the tree is flattened into rows, so keyboard navigation is a list walk.
   // Opening a file reveals it, the way UltraEdit's explorer follows the
   // active file. A right click opens a menu after VS Code's: new files and
-  // folders, cut, copy and paste, rename, delete to the Recycle Bin.
+  // folders, cut, copy and paste, rename, delete to the Recycle Bin. As in
+  // VS Code, Ctrl+click and Shift+click pick several rows, which then go
+  // together: cut, copied, deleted, dragged or opened at once.
 
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { onMount, tick, untrack } from "svelte";
-  import { SvelteMap } from "svelte/reactivity";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./api";
   import DropMenu, { type DropEntry } from "./DropMenu.svelte";
   import { baseName, dirName, formatSize, isWindows, joinPath, movedPath, relativePath, samePath } from "./format";
@@ -27,27 +29,31 @@
     onmoved: (docs: api.MovedDoc[]) => void;
     /** Something was deleted: open files may be gone from the disk. */
     ondeleted: () => void;
-    /** A file is being dragged out of the tree, now at this point of the window. */
+    /** Files are being dragged out of the tree, now at this point of the window. */
     ondragfile?: (x: number, y: number) => void;
     /** And let go, at this point, or given up. */
-    ondropfile?: (path: string, point: { x: number; y: number } | null) => void;
+    ondropfile?: (paths: string[], point: { x: number; y: number } | null) => void;
     onerror: (message: string) => void;
   }
 
   let { active, onopen, onopenside, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
 
-  // A file dragged out to the editors, to open where it is let go. Pointer
+  // Files dragged out to the editors, to open where they are let go. Pointer
   // events, not HTML drag and drop: Tauri takes those for files on Windows.
   const DRAG_START = 6;
-  let dragged = $state<string | null>(null);
+  let dragged = $state<string[]>([]);
 
-  function dragFrom(down: PointerEvent, path: string) {
+  /** A file row pressed: it, or the files picked with it, may be dragged. */
+  function dragFrom(down: PointerEvent, row: EntryRow) {
     if (down.button !== 0) return;
+    const paths = coveredBy(row)
+      .filter((r) => !r.entry.isDir)
+      .map((r) => r.entry.path);
     let dragging = false;
     const move = (e: PointerEvent) => {
       if (!dragging && Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) >= DRAG_START) {
         dragging = true;
-        dragged = path;
+        dragged = paths;
       }
       if (dragging) ondragfile?.(e.clientX, e.clientY);
     };
@@ -56,8 +62,8 @@
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
       if (!dragging) return;
-      dragged = null;
-      ondropfile?.(path, e.type === "pointerup" ? { x: e.clientX, y: e.clientY } : null);
+      dragged = [];
+      ondropfile?.(paths, e.type === "pointerup" ? { x: e.clientX, y: e.clientY } : null);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
@@ -121,8 +127,13 @@
   const listed = new SvelteMap<string, api.DirEntry[] | string>();
   /** Expanded nodes: tree key → folder path. A folder can appear under two roots. */
   const expanded = new SvelteMap<string, string>();
+  /** The row the keyboard is on. */
   let selected = $state<string | null>(null);
   let selectedPath: string | null = null;
+  /** The rows picked: the selected one, or more with Ctrl+click and Shift+click. */
+  const picked = new SvelteSet<string>();
+  /** Where Shift+click and Shift+arrows pick from. */
+  let anchor: string | null = null;
   let address = $state("");
   let addressError = $state<string | null>(null);
   let tree = $state<HTMLDivElement>();
@@ -130,7 +141,7 @@
   let reveals = 0;
   let menu = $state<{ items: DropEntry[]; point: { x: number; y: number } } | null>(null);
   /** What Cut or Copy took, for Paste. */
-  let clip = $state<{ path: string; cut: boolean } | null>(null);
+  let clip = $state<{ paths: string[]; cut: boolean } | null>(null);
   let pasting = $state(false);
   let editing = $state<Editing | null>(null);
   let editInput = $state<HTMLInputElement>();
@@ -207,7 +218,35 @@
     return id;
   }
 
+  /** That row, alone picked. */
   function select(key: string, path: string) {
+    focusRow(key, path);
+    picked.clear();
+    picked.add(key);
+    anchor = key;
+  }
+
+  /** Ctrl+click: the row picked, or no longer, with the others as they are. */
+  function pickToggle(row: EntryRow) {
+    focusRow(row.key, row.entry.path);
+    if (picked.has(row.key)) picked.delete(row.key);
+    else picked.add(row.key);
+    anchor = row.key;
+  }
+
+  /** Shift+click, Shift+arrows: the rows from the anchor to this one. */
+  function pickTo(row: EntryRow) {
+    const entries = entryRows();
+    const from = entries.findIndex((r) => r.key === (anchor ?? selected));
+    const to = entries.findIndex((r) => r.key === row.key);
+    if (from < 0) return select(row.key, row.entry.path);
+    focusRow(row.key, row.entry.path);
+    picked.clear();
+    for (const r of entries.slice(Math.min(from, to), Math.max(from, to) + 1)) picked.add(r.key);
+  }
+
+  /** The keyboard goes to the row; what is picked stays. */
+  function focusRow(key: string, path: string) {
     selected = key;
     selectedPath = path;
     // Not while the user is typing there: a reveal can finish at any moment.
@@ -240,7 +279,7 @@
 
   async function scrollToSelected(block: ScrollLogicalPosition) {
     await tick();
-    tree?.querySelector(".row.selected")?.scrollIntoView({ block });
+    tree?.querySelector(".row.focused")?.scrollIntoView({ block });
   }
 
   /**
@@ -317,6 +356,28 @@
   const entryRows = () => rows.filter((r): r is EntryRow => r.kind === "entry");
   const selectedRow = () => entryRows().find((r) => r.key === selected) ?? null;
 
+  /** What a key works on: the rows picked, in the tree's order (not those in folders closed since); else the selected row. */
+  function pickedRows() {
+    const shown = entryRows().filter((r) => picked.has(r.key));
+    const row = selectedRow();
+    return shown.length ? shown : row ? [row] : [];
+  }
+
+  /** What a click or a menu on `row` works on: the rows picked, if it is one of them, else that row. */
+  function coveredBy(row: EntryRow) {
+    const rows = picked.has(row.key) ? pickedRows() : [];
+    return rows.length > 1 ? rows : [row];
+  }
+
+  /** Drives and quick-access folders stay where they are. */
+  const movable = (rows: EntryRow[]) => rows.length > 0 && rows.every((r) => !r.root);
+
+  /** The paths of `rows`, each once, without those inside a folder among them: that goes with it. */
+  function outermost(rows: EntryRow[]) {
+    const paths = rows.map((r) => r.entry.path).filter((path, i, all) => all.findIndex((other) => samePath(other, path)) === i);
+    return paths.filter((path) => !paths.some((other) => !samePath(other, path) && movedPath(path, other, other) !== null));
+  }
+
   /** The folder a row stands for: itself, or the one a file is in. */
   const folderOf = (row: EntryRow): Folder | null =>
     row.entry.isDir ? { key: row.key, path: row.entry.path, base: row.base } : (row.parent ?? null);
@@ -333,26 +394,29 @@
     const entries = entryRows();
     const i = entries.findIndex((r) => r.key === selected);
     const row: EntryRow | undefined = entries[i];
-    const pick = (r: EntryRow | undefined) => r && select(r.key, r.entry.path);
+    const pick = (r: EntryRow | undefined) => r && (e.shiftKey ? pickTo(r) : select(r.key, r.entry.path));
     const mod = e.ctrlKey || e.metaKey;
     const plain = !e.shiftKey && !e.altKey;
-    // Drives and quick-access folders stay as they are.
-    const movable = row && !row.root;
+    const all = pickedRows();
+    const several = all.length > 1;
+    const files = all.filter((r) => !r.entry.isDir);
     const folder = row ? folderOf(row) : null;
     if (e.key === "ArrowDown") pick(entries[Math.min(entries.length - 1, i + 1)]);
     else if (e.key === "ArrowUp") pick(entries[Math.max(0, i - 1)]);
-    else if (mod && e.key === "Enter" && row && !row.entry.isDir) onopenside(row.entry.path);
+    else if (e.key === "Escape" && several && row) select(row.key, row.entry.path);
+    else if (mod && e.key === "Enter" && row && !row.entry.isDir && !several) onopenside(row.entry.path);
+    else if (e.key === "Enter" && several && files.length) for (const file of files) onopen(file.entry.path);
     else if (e.key === "Enter" && row) activate(row);
     else if (e.key === "ArrowRight" && row?.entry.isDir) {
       if (!expanded.has(row.key)) toggle(row.key, row.entry.path);
     } else if (e.key === "ArrowLeft" && row) {
       if (row.entry.isDir && expanded.has(row.key)) toggle(row.key, row.entry.path);
       else pick(entries.slice(0, i).findLast((r) => r.depth < row.depth));
-    } else if (e.key === "F2" && movable) startRename(row);
-    else if ((e.key === "Delete" || (e.metaKey && e.key === "Backspace")) && movable) remove(row);
-    else if (mod && plain && (e.code === "KeyX" || e.code === "KeyC") && movable) clip = { path: row.entry.path, cut: e.code === "KeyX" };
+    } else if (e.key === "F2" && row && movable([row]) && !several) startRename(row);
+    else if ((e.key === "Delete" || (e.metaKey && e.key === "Backspace")) && movable(all)) remove(all);
+    else if (mod && plain && (e.code === "KeyX" || e.code === "KeyC") && movable(all)) clip = { paths: outermost(all), cut: e.code === "KeyX" };
     else if (mod && plain && e.code === "KeyV" && folder) pasteInto(folder);
-    else if (e.shiftKey && e.altKey && !mod && e.code === "KeyC" && row) copyPath(row.entry.path);
+    else if (e.shiftKey && e.altKey && !mod && e.code === "KeyC" && all.length) copyPaths(all.map((r) => r.entry.path));
     else if (e.shiftKey && e.altKey && !mod && e.code === "KeyR" && row) showInFileManager(row.entry.path);
     else if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) && row) {
       const box = document.getElementById(rowId(row.key))?.getBoundingClientRect();
@@ -375,13 +439,21 @@
   /** The folder of the file in the editor, which relative paths start from, as an `*INCLUDE` reads them. */
   const relativeTo = (path: string) => (active ? relativePath(dirName(active), path) : null);
 
-  /** The menu for a row, or with none for the empty space below them, which stands for the selected row's folder. */
+  /**
+   * The menu for a row, or with none for the empty space below them, which
+   * stands for the selected row's folder. On one of several rows picked, what
+   * can work on more than one works on them all.
+   */
   function menuItems(row: EntryRow | null): DropEntry[] {
     const selectedOne = selectedRow();
     const folder = row ? folderOf(row) : selectedOne && folderOf(selectedOne);
     const path = row?.entry.path ?? folder?.path ?? null;
     const on = path !== null;
-    const movable = !!row && !row.root;
+    const all = row ? coveredBy(row) : [];
+    const several = all.length > 1;
+    const moves = movable(all);
+    const paths = all.length ? all.map((r) => r.entry.path) : path ? [path] : [];
+    const relative = paths.map(relativeTo);
     const newItems: DropEntry[] = [
       { label: t("explorer.newFile"), enabled: !!folder, run: () => folder && startNew("newFile", folder) },
       { label: t("explorer.newFolder"), enabled: !!folder, run: () => folder && startNew("newDir", folder) },
@@ -397,29 +469,31 @@
       run: () => folder && pasteInto(folder),
     };
     const clipItems: DropEntry[] = [
-      { label: t("menu.cut"), shortcut: "Ctrl+X", enabled: movable, run: () => row && (clip = { path: row.entry.path, cut: true }) },
-      { label: t("menu.copy"), shortcut: "Ctrl+C", enabled: movable, run: () => row && (clip = { path: row.entry.path, cut: false }) },
+      { label: t("menu.cut"), shortcut: "Ctrl+X", enabled: moves, run: () => (clip = { paths: outermost(all), cut: true }) },
+      { label: t("menu.copy"), shortcut: "Ctrl+C", enabled: moves, run: () => (clip = { paths: outermost(all), cut: false }) },
     ];
-    const paths: DropEntry[] = [
-      { label: t("explorer.copyPath"), shortcut: "Shift+Alt+C", enabled: on, run: () => path && copyPath(path) },
+    const pathItems: DropEntry[] = [
+      { label: t("explorer.copyPath"), shortcut: "Shift+Alt+C", enabled: on, run: () => copyPaths(paths) },
       {
         label: t("explorer.copyRelativePath"),
-        enabled: path !== null && relativeTo(path) !== null,
-        run: () => path && copyPath(relativeTo(path) ?? path),
+        enabled: on && relative.every((one) => one !== null),
+        run: () => copyPaths(relative.map((one, i) => one ?? paths[i])),
       },
     ];
     const change: DropEntry[] = [
-      { label: t("explorer.rename"), shortcut: "F2", enabled: movable, run: () => row && startRename(row) },
-      { label: t("explorer.delete"), shortcut: "Delete", enabled: movable, run: () => row && remove(row) },
+      { label: t("explorer.rename"), shortcut: "F2", enabled: moves && !several, run: () => row && startRename(row) },
+      { label: t("explorer.delete"), shortcut: "Delete", enabled: moves, run: () => remove(all) },
     ];
-    if (!row) return [...newItems, ...outside, "separator", paste, "separator", ...paths];
-    if (row.entry.isDir) return [...newItems, ...outside, "separator", ...clipItems, paste, "separator", ...paths, "separator", ...change];
-    const side: DropEntry = { label: t("explorer.openToSide"), shortcut: "Ctrl+Enter", run: () => onopenside(row.entry.path) };
-    return [side, ...outside, "separator", ...clipItems, "separator", ...paths, "separator", ...change];
+    if (!row) return [...newItems, ...outside, "separator", paste, "separator", ...pathItems];
+    if (row.entry.isDir) return [...newItems, ...outside, "separator", ...clipItems, paste, "separator", ...pathItems, "separator", ...change];
+    const side: DropEntry = { label: t("explorer.openToSide"), shortcut: "Ctrl+Enter", enabled: !several, run: () => onopenside(row.entry.path) };
+    return [side, ...outside, "separator", ...clipItems, "separator", ...pathItems, "separator", ...change];
   }
 
   function openMenu(row: EntryRow | null, x: number, y: number) {
-    if (row) select(row.key, row.entry.path);
+    // On one of several picked, they stay picked; on another row, it alone is.
+    if (row && coveredBy(row).length > 1) focusRow(row.key, row.entry.path);
+    else if (row) select(row.key, row.entry.path);
     menu = { items: menuItems(row), point: { x, y } };
   }
 
@@ -443,7 +517,8 @@
 
   const failed = (e: unknown) => onerror(describeError(e));
 
-  const copyPath = (path: string) => api.writeClipboard(path).catch(failed);
+  /** One to a line, as VS Code copies several. */
+  const copyPaths = (paths: string[]) => api.writeClipboard(paths.join(isWindows ? "\r\n" : "\n")).catch(failed);
   const showInFileManager = (path: string) => api.revealPath(path).catch(failed);
   const terminal = (dir: string) => api.openTerminal(dir).catch(failed);
 
@@ -535,19 +610,19 @@
       expanded.delete(key);
       expanded.set(key.slice(0, key.length - path.length) + moved, moved);
     }
-    const clipped = clip && movedPath(clip.path, from, to);
-    if (clip && clipped) clip.path = clipped;
+    if (clip) clip.paths = clip.paths.map((path) => movedPath(path, from, to) ?? path);
   }
 
   async function pasteInto(folder: Folder) {
     if (!clip || pasting) return;
-    const { path, cut } = clip;
+    const { paths, cut } = clip;
     pasting = true;
     try {
-      const done = await api.paste([path], folder.path, cut);
+      // In order, up to the first that could not be: those after it stay cut.
+      const done = await api.paste(paths, folder.path, cut);
       if (cut && done.to.length) {
-        follow(path, done.to[0]);
-        clip = null;
+        done.to.forEach((to, i) => follow(paths[i], to));
+        clip = done.to.length < paths.length ? { paths: clip!.paths.slice(done.to.length), cut } : null;
       }
       if (done.docs.length) onmoved(done.docs);
       if (done.error) failed(done.error);
@@ -555,6 +630,7 @@
       await refresh();
       if (done.to.length) {
         select(`${folder.base}|${done.to[0]}`, done.to[0]);
+        for (const to of done.to.slice(1)) picked.add(`${folder.base}|${to}`);
         await scrollToSelected("nearest");
       }
     } catch (e) {
@@ -564,23 +640,40 @@
     }
   }
 
-  async function remove(row: EntryRow) {
-    const { name, path, isDir } = row.entry;
-    const question = t(isDir ? "explorer.deleteFolder" : "explorer.deleteFile", { name });
-    const ok = await confirm(`${question}\n\n${t(isWindows ? "explorer.restoreWindows" : "explorer.restoreTrash")}`, {
+  /** How many names a question lists before it stops. */
+  const NAMES_ASKED = 10;
+
+  /** To the Recycle Bin, after asking once for them all. */
+  async function remove(rows: EntryRow[]) {
+    const paths = outermost(rows);
+    const one = rows.find((r) => samePath(r.entry.path, paths[0]))!;
+    let question: string;
+    if (paths.length === 1) question = t(one.entry.isDir ? "explorer.deleteFolder" : "explorer.deleteFile", { name: one.entry.name });
+    else {
+      const names = paths.slice(0, NAMES_ASKED).map(baseName);
+      if (paths.length > NAMES_ASKED) names.push("…");
+      question = t("explorer.deleteMany", { n: paths.length, names: names.join("\n") });
+    }
+    const restore = paths.length === 1 ? (isWindows ? "explorer.restoreWindows" : "explorer.restoreTrash") : isWindows ? "explorer.restoreManyWindows" : "explorer.restoreManyTrash";
+    const ok = await confirm(`${question}\n\n${t(restore)}`, {
       title: t("explorer.delete"),
       kind: "warning",
       okLabel: t(isWindows ? "explorer.toRecycleBin" : "explorer.toTrash"),
       cancelLabel: t("prompt.cancel"),
     });
     if (ok) {
-      const at = entryRows().findIndex((r) => r.key === row.key);
-      try {
-        await api.deletePath(path);
-        ondeleted();
-      } catch (e) {
-        failed(e);
+      const at = entryRows().findIndex((r) => rows.includes(r));
+      let deleted = false;
+      // Each on its own: one that cannot be does not keep the others.
+      for (const path of paths) {
+        try {
+          await api.deletePath(path);
+          deleted = true;
+        } catch (e) {
+          failed(e);
+        }
       }
+      if (deleted) ondeleted();
       await refresh();
       // The row that takes its place.
       const entries = entryRows();
@@ -677,6 +770,7 @@
     role="tree"
     tabindex="0"
     aria-activedescendant={selected === null ? undefined : rowId(selected)}
+    aria-multiselectable="true"
     bind:this={tree}
     {onkeydown}
     oncontextmenu={emptyMenu}
@@ -690,20 +784,26 @@
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus (the tree has focus and handles the keys) -->
         <div
           class="row"
-          class:selected={row.key === selected}
+          class:selected={picked.has(row.key)}
+          class:focused={row.key === selected}
           class:active={active !== null && samePath(entry.path, active)}
           class:hidden={entry.hidden}
-          class:cut={clip?.cut && samePath(clip.path, entry.path)}
+          class:cut={clip?.cut && clip.paths.some((path) => samePath(path, entry.path))}
           id={rowId(row.key)}
           role="treeitem"
-          aria-selected={row.key === selected}
+          aria-selected={picked.has(row.key)}
           aria-expanded={entry.isDir ? expanded.has(row.key) : undefined}
           title={entry.path}
           style:padding-left="{6 + row.depth * 14}px"
-          class:dragged={dragged !== null && samePath(dragged, entry.path)}
-          onpointerdown={(e) => row.kind === "entry" && !entry.isDir && !editing && dragFrom(e, entry.path)}
-          onclick={() => activate(row)}
-          ondblclick={() => row.kind === "entry" && !row.entry.isDir && onopen(row.entry.path)}
+          class:dragged={dragged.some((path) => samePath(path, entry.path))}
+          onpointerdown={(e) => row.kind === "entry" && !entry.isDir && !editing && dragFrom(e, row)}
+          onclick={(e) => {
+            // Picking more opens nothing.
+            if (e.shiftKey) pickTo(row);
+            else if (e.ctrlKey || e.metaKey) pickToggle(row);
+            else activate(row);
+          }}
+          ondblclick={(e) => row.kind === "entry" && !row.entry.isDir && !e.shiftKey && !e.ctrlKey && !e.metaKey && onopen(row.entry.path)}
           oncontextmenu={(e) => rowMenu(e, row)}
         >
           <span class="glyph">
@@ -888,7 +988,8 @@
   .row.selected {
     background: #04395e;
   }
-  .tree:focus .row.selected {
+  /* The row the keyboard is on, picked or not. */
+  .tree:focus .row.focused {
     box-shadow: inset 0 0 0 1px var(--accent);
   }
   .row.hidden .name {

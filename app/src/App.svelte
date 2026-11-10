@@ -2261,11 +2261,11 @@
         onmoved={followMoves}
         ondeleted={checkDisk}
         ondragfile={dragFiles}
-        ondropfile={(path, point) => {
+        ondropfile={(paths, point) => {
           if (!point) dropZone = null;
           else {
             dragFiles(point.x, point.y);
-            dropFiles([path], false);
+            dropFiles(paths, false);
           }
         }}
         onerror={(message) => (notice = message)}
