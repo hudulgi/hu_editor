@@ -77,6 +77,9 @@
     base: string;
   }
 
+  /** A row at the top of the tree: a quick-access folder, a drive, or a favorite file or folder. */
+  type TreeRoot = api.Root | { name: string; path: string; group: "favorites"; kind: "favorite"; isDir: boolean };
+
   type EntryRow = {
     kind: "entry";
     key: string;
@@ -84,7 +87,7 @@
     depth: number;
     /** The key of the root it is under. */
     base: string;
-    root?: api.Root;
+    root?: TreeRoot;
     /** The folder it is in; none for a root. */
     parent?: Folder;
   };
@@ -108,7 +111,8 @@
   }
 
   const windows = isWindows;
-  const GROUPS: readonly (readonly [api.Root["group"], MessageKey])[] = [
+  const GROUPS: readonly (readonly [TreeRoot["group"], MessageKey])[] = [
+    ["favorites", "explorer.favorites"],
     ["quick", "explorer.quickAccess"],
     ["drives", windows ? "explorer.thisPc" : "explorer.locations"],
   ];
@@ -119,10 +123,30 @@
     downloads: "explorer.downloads",
   };
   const SAVED_PATH = "hu.explorer.path";
+  /** Shared by the windows, as the recent files are. */
+  const FAVORITES = "hu.explorer.favorites";
+
+  interface Favorite {
+    path: string;
+    isDir: boolean;
+  }
+
+  function readFavorites(): Favorite[] {
+    try {
+      const list = JSON.parse(localStorage.getItem(FAVORITES) ?? "[]");
+      return Array.isArray(list) ? list.filter((one) => typeof one?.path === "string" && typeof one?.isDir === "boolean") : [];
+    } catch {
+      return [];
+    }
+  }
 
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
   let roots = $state<api.Root[]>([]);
   const ready = api.roots().then((r) => (roots = r));
+  /** At the top of the tree, in the order they were added. */
+  let favorites = $state<Favorite[]>(readFavorites());
+  /** Favorites not on the disk when last looked for. */
+  const missing = new SvelteSet<string>();
   /** Listed folders: their entries, or the error message. */
   const listed = new SvelteMap<string, api.DirEntry[] | string>();
   /** Expanded nodes: tree key → folder path. A folder can appear under two roots. */
@@ -147,7 +171,7 @@
   let editInput = $state<HTMLInputElement>();
   let committing = false;
 
-  const rootKey = (root: api.Root) => `${root.group}:${root.path}`;
+  const rootKey = (root: TreeRoot) => `${root.group}:${root.path}`;
 
   function sorted(entries: api.DirEntry[]) {
     // Folders first, then natural order (part2 before part10).
@@ -194,17 +218,21 @@
           if (entry.isDir && expanded.has(key)) walk(base, key, entry.path, depth + 1);
         }
     };
+    const favoriteRoots = favorites.map(
+      ({ path, isDir }): TreeRoot => ({ name: baseName(path) || path, path, group: "favorites", kind: "favorite", isDir }),
+    );
     for (const [group, labelKey] of GROUPS) {
-      const members = roots.filter((r) => r.group === group);
+      const members = group === "favorites" ? favoriteRoots : roots.filter((r) => r.group === group);
       if (!members.length) continue;
       out.push({ kind: "group", key: group, label: t(labelKey) });
       for (const root of members) {
         const key = rootKey(root);
-        const quickName = QUICK_NAMES[root.kind];
+        const quickName = root.group === "quick" ? QUICK_NAMES[root.kind] : undefined;
         const name = quickName ? t(quickName) : root.name;
-        const entry = { name, path: root.path, isDir: true, size: 0 };
+        const isDir = root.group === "favorites" ? root.isDir : true;
+        const entry = { name, path: root.path, isDir, size: 0 };
         out.push({ kind: "entry", key, entry, depth: 0, root, base: key });
-        if (expanded.has(key)) walk(key, key, root.path, 1);
+        if (isDir && expanded.has(key)) walk(key, key, root.path, 1);
       }
     }
     return out;
@@ -327,7 +355,7 @@
   export function refresh() {
     const open = new Set(expanded.values());
     for (const path of [...listed.keys()]) if (!open.has(path)) listed.delete(path);
-    return Promise.all([...open].map(load));
+    return Promise.all([...[...open].map(load), checkFavorites()]);
   }
 
   async function go() {
@@ -462,6 +490,9 @@
       { label: t(REVEAL), shortcut: "Shift+Alt+R", enabled: on, run: () => path && showInFileManager(path) },
       { label: t("explorer.terminal"), enabled: !!folder, run: () => folder && terminal(folder.path) },
     ];
+    // Out of the favorites if all are in them; otherwise into them.
+    if (row && all.every((one) => isFavorite(one.entry.path))) outside.push({ label: t("explorer.removeFavorite"), run: () => removeFavorites(all) });
+    else if (row) outside.push({ label: t("explorer.addFavorite"), run: () => addFavorites(all) });
     const paste: DropEntry = {
       label: t("menu.paste"),
       shortcut: "Ctrl+V",
@@ -520,6 +551,34 @@
   /** One to a line, as VS Code copies several. */
   const copyPaths = (paths: string[]) => api.writeClipboard(paths.join(isWindows ? "\r\n" : "\n")).catch(failed);
   const showInFileManager = (path: string) => api.revealPath(path).catch(failed);
+
+  const isFavorite = (path: string) => favorites.some((one) => samePath(one.path, path));
+
+  function setFavorites(list: Favorite[]) {
+    favorites = list;
+    localStorage.setItem(FAVORITES, JSON.stringify(list));
+    checkFavorites();
+  }
+
+  function addFavorites(rows: EntryRow[]) {
+    const added: Favorite[] = [];
+    for (const { entry } of rows) {
+      if (!isFavorite(entry.path) && !added.some((one) => samePath(one.path, entry.path))) added.push({ path: entry.path, isDir: entry.isDir });
+    }
+    setFavorites([...favorites, ...added]);
+  }
+
+  function removeFavorites(rows: EntryRow[]) {
+    setFavorites(favorites.filter((one) => !rows.some((row) => samePath(row.entry.path, one.path))));
+  }
+
+  /** Which favorites are gone from the disk, or out of reach. */
+  async function checkFavorites() {
+    for (const { path } of favorites) {
+      if ((await api.pathKind(path).catch(() => null)) === null) missing.add(path);
+      else missing.delete(path);
+    }
+  }
   const terminal = (dir: string) => api.openTerminal(dir).catch(failed);
 
   async function startNew(kind: "newFile" | "newDir", folder: Folder) {
@@ -611,6 +670,10 @@
       expanded.set(key.slice(0, key.length - path.length) + moved, moved);
     }
     if (clip) clip.paths = clip.paths.map((path) => movedPath(path, from, to) ?? path);
+    // A favorite renamed, or moved, stays one.
+    if (favorites.some((one) => movedPath(one.path, from, to) !== null)) {
+      setFavorites(favorites.map((one) => ({ ...one, path: movedPath(one.path, from, to) ?? one.path })));
+    }
   }
 
   async function pasteInto(folder: Folder) {
@@ -693,6 +756,7 @@
   });
 
   onMount(async () => {
+    checkFavorites();
     // Come back to where the user was, unless a file is being revealed already.
     await ready;
     const last = localStorage.getItem(SAVED_PATH);
@@ -701,6 +765,8 @@
     if (kind && !reveals) reveal(last, false);
   });
 </script>
+
+<svelte:window onstorage={(e) => e.key === FAVORITES && ((favorites = readFavorites()), checkFavorites())} />
 
 <aside class="explorer">
   <header>
@@ -788,12 +854,13 @@
           class:focused={row.key === selected}
           class:active={active !== null && samePath(entry.path, active)}
           class:hidden={entry.hidden}
+          class:missing={row.root?.group === "favorites" && missing.has(entry.path)}
           class:cut={clip?.cut && clip.paths.some((path) => samePath(path, entry.path))}
           id={rowId(row.key)}
           role="treeitem"
           aria-selected={picked.has(row.key)}
           aria-expanded={entry.isDir ? expanded.has(row.key) : undefined}
-          title={entry.path}
+          title={row.root?.group === "favorites" && missing.has(entry.path) ? `${entry.path}\n${t("explorer.favoriteMissing")}` : entry.path}
           style:padding-left="{6 + row.depth * 14}px"
           class:dragged={dragged.some((path) => samePath(path, entry.path))}
           onpointerdown={(e) => row.kind === "entry" && !entry.isDir && !editing && dragFrom(e, row)}
@@ -816,7 +883,7 @@
               <span class="badge {badge.cls}">{badge.text}</span>
             {/if}
           </span>
-          {#if row.root}
+          {#if row.root && row.root.group !== "favorites"}
             <svg class="root-icon" viewBox="0 0 16 16">
               {#if row.root.kind === "home"}
                 <path d="M2.5 7.5L8 3l5.5 4.5M4 6.5V13h8V6.5" />
@@ -839,7 +906,9 @@
             {@render nameInput()}
           {:else}
             <span class="name">{entry.name}</span>
-            {#if !entry.isDir && (!entry.hidden || entry.size > 0)}
+            {#if row.root?.group === "favorites"}
+              <span class="where"><bdi>{dirName(entry.path)}</bdi></span>
+            {:else if !entry.isDir && (!entry.hidden || entry.size > 0)}
               <span class="size">{formatSize(entry.size)}</span>
             {/if}
           {/if}
@@ -994,6 +1063,19 @@
   }
   .row.hidden .name {
     opacity: 0.6;
+  }
+  .row.missing {
+    opacity: 0.45;
+  }
+  /* The folder a favorite is in; cut short at its start, where it is least telling. */
+  .where {
+    max-width: 50%;
+    direction: rtl;
+    text-align: left;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
   }
   .row.dragged {
     opacity: 0.6;
