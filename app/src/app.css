@@ -53,3 +53,38 @@ input {
 input:focus {
   border-color: var(--accent);
 }
+
+/* Syntax colors, of the editor's lines and the compare window's. */
+.lines .comment {
+  color: #6a9955;
+}
+.lines .keyword {
+  color: #569cd6;
+}
+.lines .param {
+  color: #9cdcfe;
+}
+.lines .value {
+  color: #ce9178;
+}
+.lines .card {
+  color: #4ec9b0;
+}
+.lines .number {
+  color: #b5cea8;
+}
+.lines .fn {
+  color: #dcdcaa;
+}
+.lines .cont,
+.lines .punct,
+.lines .truncated {
+  color: #808080;
+}
+/* Every other Nastran field, shaded. */
+.lines .fb {
+  background: rgba(255, 255, 255, 0.06);
+}
+.no-shading .lines .fb {
+  background: none;
+}

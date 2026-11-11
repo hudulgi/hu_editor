@@ -4,7 +4,8 @@
   "description": "Capability for the editor windows",
   "windows": [
     "main",
-    "editor-*"
+    "editor-*",
+    "compare-*"
   ],
   "permissions": [
     "core:default",

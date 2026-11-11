@@ -411,3 +411,67 @@ export const duplicateSelection = (id: number, anchor: number, caret: number) =>
 /** The block the selection's lines are in: a keyword's lines, a card's, or a paragraph. */
 export const blockAround = (id: number, kind: "abaqus" | "nastran" | "paragraph", anchor: number, caret: number) =>
   invoke<[number, number]>("block_around", { id, kind, anchor, caret });
+
+// ---- The compare window -----------------------------------------------------------
+
+export type Side = "left" | "right";
+
+export interface CompareLine {
+  /** 0-based. */
+  line: number;
+  text: string;
+  truncated: boolean;
+  /** What changed from the line across, in UTF-16 units of `text`. */
+  marks: [number, number][];
+}
+
+/** A line on each side, or on one side only, in a hunk or not. */
+export interface CompareRow {
+  hunk: number | null;
+  left: CompareLine | null;
+  right: CompareLine | null;
+}
+
+export interface CompareView {
+  top: number;
+  /** Rows in all. */
+  total: number;
+  hunks: number;
+  rows: CompareRow[];
+}
+
+/** The rows a hunk takes, `end` past its last. */
+export interface HunkRows {
+  index: number;
+  start: number;
+  end: number;
+}
+
+/** How a stretch of rows looks in the overview. */
+export const OVERVIEW = { none: 0, changed: 1, left: 2, right: 3 } as const;
+
+/** A comparison of two open documents, and the work comparing them takes in the units of its progress. */
+export const compareNew = (left: number, right: number) => invoke<{ id: number; work: number }>("compare_new", { left, right });
+
+/** What `compareRun` tells once both files are read and only the hunks are left to find: u64::MAX, past any byte count. */
+export const allRead = (done: number) => done > Number.MAX_SAFE_INTEGER;
+
+/** Compares, once both line indexes are done, telling the work done; null if closed first. */
+export function compareRun(id: number, onProgress: (done: number) => void) {
+  const channel = new Channel<number>();
+  channel.onmessage = onProgress;
+  return invoke<{ rows: number; hunks: number } | null>("compare_run", { id, onProgress: channel });
+}
+
+export const compareView = (id: number, top: number, rows: number) => invoke<CompareView>("compare_view", { id, top, rows });
+/** The kind of rows in each of `buckets` equal stretches of all the rows, as `OVERVIEW` values. */
+export const compareOverview = (id: number, buckets: number) => invoke<number[]>("compare_overview", { id, buckets });
+/** Hunk `index`. */
+export const compareHunk = (id: number, index: number) => invoke<HunkRows | null>("compare_hunk", { id, index, from: null, forward: true });
+/** The first hunk starting after row `from`, or with `forward` false the last one before it. */
+export const compareHunkFrom = (id: number, from: number, forward: boolean) =>
+  invoke<HunkRows | null>("compare_hunk", { id, index: null, from, forward });
+/** Makes the lines of hunk `index` on side `to` what they are on the other: an edit of that document. */
+export const compareMerge = (id: number, index: number, to: Side) => invoke<{ doc: number; result: EditResult }>("compare_merge", { id, index, to });
+export const compareClose = (id: number) => invoke<void>("compare_close", { id });
+export const openCompareWindow = (start: unknown) => invoke<void>("open_compare_window", { start });

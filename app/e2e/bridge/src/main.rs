@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use hu_core::compare::{Comparison, Side};
 use hu_core::files::{self, FileSearch, Globs, Source};
 use hu_core::{
     BlockKind, BoxRows, Document, EditKind, Encoding, Eol, FindResult, Query, ViewTarget, dir,
@@ -23,6 +24,9 @@ use hu_core::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+/// A comparison's documents, and it once compared.
+type Compared = ([u32; 2], Option<Comparison>);
 
 #[derive(Default)]
 struct Bridge {
@@ -35,6 +39,9 @@ struct Bridge {
     clipboard: Mutex<String>,
     /// What the file manager or a terminal was asked to show.
     launched: Mutex<Vec<Value>>,
+    /// The documents of each comparison, and it once compared.
+    comparisons: Mutex<HashMap<u32, Compared>>,
+    next_comparison: AtomicU32,
 }
 
 fn main() {
@@ -148,6 +155,28 @@ impl Bridge {
             moved.push(json!({ "id": id, "path": new, "name": file_name(&new) }));
         }
         moved
+    }
+
+    fn doc_of(&self, id: u32) -> Result<Arc<Document>, String> {
+        let docs = self.docs.lock().unwrap();
+        docs.get(&id).cloned().ok_or_else(|| "not open".to_string())
+    }
+
+    /// As in the app: `f` on comparison `id`, with both documents as they are now.
+    fn compared<T>(
+        &self,
+        args: &Value,
+        f: impl FnOnce(&mut Comparison, [Arc<Document>; 2]) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let id: u32 = arg(args, "id")?;
+        let mut all = self.comparisons.lock().unwrap();
+        let (ids, slot) = all.get_mut(&id).ok_or("comparison not open")?;
+        let docs = [self.doc_of(ids[0])?, self.doc_of(ids[1])?];
+        let comparison = slot.as_mut().ok_or("not compared yet")?;
+        for (side, doc) in [Side::Left, Side::Right].into_iter().zip(&docs) {
+            comparison.sync(side, doc.text()).map_err(problem)?;
+        }
+        f(comparison, docs)
     }
 
     fn dispatch(&self, cmd: &str, args: &Value) -> Result<Value, String> {
@@ -291,6 +320,94 @@ impl Bridge {
                     .unwrap()
                     .insert(label.clone(), start);
                 json!(label)
+            }
+            "open_compare_window" => {
+                let id = self.next_window.fetch_add(1, Ordering::Relaxed) + 1;
+                let label = format!("compare-{id}");
+                let start: Value = arg(args, "start")?;
+                self.window_starts
+                    .lock()
+                    .unwrap()
+                    .insert(label.clone(), start);
+                json!(label)
+            }
+            "compare_new" => {
+                let ids: [u32; 2] = [arg(args, "left")?, arg(args, "right")?];
+                let work = 2 * (self.doc_of(ids[0])?.len() + self.doc_of(ids[1])?.len());
+                let id = self.next_comparison.fetch_add(1, Ordering::Relaxed) + 1;
+                self.comparisons.lock().unwrap().insert(id, (ids, None));
+                json!({ "id": id, "work": work })
+            }
+            "compare_run" => {
+                let id: u32 = arg(args, "id")?;
+                let ids = self
+                    .comparisons
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .ok_or("comparison not open")?
+                    .0;
+                let (left, right) = (self.doc_of(ids[0])?, self.doc_of(ids[1])?);
+                left.wait_for_index();
+                right.wait_for_index();
+                let work = 2 * (left.len() + right.len());
+                let made = Comparison::new(left.text(), right.text(), &never, &mut |_| {})
+                    .map_err(problem)?;
+                let comparison = made.expect("not cancelled");
+                let compared =
+                    json!({ "rows": comparison.rows(), "hunks": comparison.hunk_count() });
+                if let Some(entry) = self.comparisons.lock().unwrap().get_mut(&id) {
+                    entry.1 = Some(comparison);
+                }
+                json!({ "__channels": { "onProgress": [work, u64::MAX] }, "value": compared })
+            }
+            "compare_view" => {
+                let (top, rows): (u64, usize) = (arg(args, "top")?, arg(args, "rows")?);
+                self.compared(args, |c, _| to_json(c.view(top, rows).map_err(problem)?))?
+            }
+            "compare_overview" => {
+                let buckets: usize = arg(args, "buckets")?;
+                self.compared(args, |c, _| Ok(json!(c.overview(buckets.min(1 << 16)))))?
+            }
+            "compare_hunk" => {
+                let index: Option<usize> = arg(args, "index")?;
+                let from: Option<u64> = arg(args, "from")?;
+                let forward: bool = arg(args, "forward")?;
+                self.compared(args, |c, _| {
+                    to_json(match (index, from) {
+                        (Some(index), _) => c.hunk_rows(index),
+                        (None, Some(row)) => c.hunk_from(row, forward),
+                        (None, None) => None,
+                    })
+                })?
+            }
+            "compare_merge" => {
+                let index: usize = arg(args, "index")?;
+                let to: Side = arg(args, "to")?;
+                let ids = {
+                    let id: u32 = arg(args, "id")?;
+                    self.comparisons
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .ok_or("comparison not open")?
+                        .0
+                };
+                let side = if to == Side::Left { 0 } else { 1 };
+                self.compared(args, |c, docs| {
+                    let target = &docs[side];
+                    let merge = c.merge(index, to).map_err(problem)?;
+                    let before = (merge.start, merge.start);
+                    let result =
+                        target.edit(merge.start, merge.end, &merge.text, EditKind::Other, before);
+                    c.sync(to, target.text()).map_err(problem)?;
+                    Ok(json!({ "doc": ids[side], "result": to_json(result)? }))
+                })?
+            }
+            "compare_close" => {
+                let id: u32 = arg(args, "id")?;
+                self.comparisons.lock().unwrap().remove(&id);
+                Value::Null
             }
             "window_start" => {
                 let label: String = arg(args, "label")?;

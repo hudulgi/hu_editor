@@ -1725,38 +1725,6 @@
     color: #f8d7da;
     font-family: var(--ui);
   }
-  .lines :global(.comment) {
-    color: #6a9955;
-  }
-  .lines :global(.keyword) {
-    color: #569cd6;
-  }
-  .lines :global(.param) {
-    color: #9cdcfe;
-  }
-  .lines :global(.value) {
-    color: #ce9178;
-  }
-  .lines :global(.card) {
-    color: #4ec9b0;
-  }
-  .lines :global(.number) {
-    color: #b5cea8;
-  }
-  .lines :global(.fn) {
-    color: #dcdcaa;
-  }
-  .lines :global(.cont),
-  .lines :global(.punct),
-  .lines :global(.truncated) {
-    color: #808080;
-  }
-  .lines :global(.fb) {
-    background: rgba(255, 255, 255, 0.06);
-  }
-  .no-shading .lines :global(.fb) {
-    background: none;
-  }
   /* Rainbow columns: a color for each field, around again after eight. */
   .rainbow .lines :global(.rb0) {
     color: #9cdcfe;

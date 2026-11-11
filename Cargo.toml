@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hu-core", "crates/hu-gen", "app/src-tauri", "app/e2e/bridge"]
+members = ["crates/hu-core", "crates/hu-diff", "crates/hu-gen", "app/src-tauri", "app/e2e/bridge"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,13 @@ edition = "2024"
 opt-level = 3
 
 [profile.dev.package.memchr]
+opt-level = 3
+
+# Comparing hashes and diffs every line: as slow as the core unoptimized.
+[profile.dev.package.hu-diff]
+opt-level = 3
+
+[profile.dev.package.xxhash-rust]
 opt-level = 3
 
 [profile.release]

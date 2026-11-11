@@ -1,0 +1,429 @@
+<script lang="ts">
+  // The two documents of a comparison side by side, row by row, as many rows as
+  // fit: an equal line on both sides, or a hunk, its shorter side padded. Only
+  // the rows on screen are fetched, so any size scrolls alike. On the right, the
+  // overview of where the hunks are, which also scrolls; between the sides, the
+  // buttons that copy a hunk across.
+
+  import { onMount } from "svelte";
+  import * as api from "./api";
+  import { t } from "./i18n";
+  import { lineHeight, settings } from "./settings.svelte";
+  import { applyMarks, tokenizeLines, type Lang, type Mark, type Token } from "./syntax";
+
+  interface Props {
+    id: number;
+    langs: [Lang, Lang];
+    /** Bumped when a document changed, to fetch again. */
+    version: number;
+    /** The hunk the keyboard works on. */
+    current?: number | null;
+    onmerge: (index: number, to: api.Side) => unknown;
+    /** What the comparison now holds. */
+    onstats: (total: number, hunks: number) => void;
+  }
+
+  let { id, langs, version, current = $bindable(null), onmerge, onstats }: Props = $props();
+
+  const SIDES = ["left", "right"] as const;
+  const OVERVIEW_COLORS = ["", "#c19c00", "#f14c4c", "#73c991"];
+
+  let root: HTMLElement;
+  let body = $state<HTMLElement>();
+  let bodyH = $state(0);
+  let lineH = $derived(lineHeight(settings.fontSize));
+  let visible = $derived(Math.max(1, Math.floor(bodyH / lineH)));
+  let top = $state(0);
+  let view = $state<api.CompareView | null>(null);
+  let total = $derived(view?.total ?? 0);
+  let maxTop = $derived(Math.max(0, total - visible));
+  let asked = 0;
+
+  async function load() {
+    const n = ++asked;
+    const got = await api.compareView(id, top, visible + 1).catch(() => null);
+    if (n !== asked || !got) return;
+    view = got;
+    onstats(got.total, got.hunks);
+    if (top > Math.max(0, got.total - visible)) top = Math.max(0, got.total - visible);
+  }
+
+  $effect(() => {
+    void [id, version, top, visible];
+    load();
+  });
+
+  export function scrollTo(row: number) {
+    top = Math.round(Math.max(0, Math.min(row, maxTop)));
+  }
+
+  const scrollBy = (rows: number) => scrollTo(top + rows);
+
+  /** Whether hunk `index` has a row on screen. */
+  const onScreen = (index: number | null) => index !== null && !!view?.rows.some((row) => row.hunk === index);
+
+  /** Shows a hunk: whole if it fits, with some lines above it. */
+  function reveal(hunk: api.HunkRows) {
+    const fits = hunk.end - hunk.start <= visible;
+    if (fits && hunk.start >= top && hunk.end <= top + visible) return;
+    scrollTo(hunk.start - (fits ? Math.min(3, Math.floor((visible - (hunk.end - hunk.start)) / 2)) : 0));
+  }
+
+  async function go(found: api.HunkRows | null) {
+    if (!found) return false;
+    current = found.index;
+    reveal(found);
+    return true;
+  }
+
+  /** The next hunk after the current one if it is on screen, else the first from the top down. */
+  export async function next() {
+    if (onScreen(current)) return go(await api.compareHunk(id, current! + 1));
+    return go(await (top === 0 ? api.compareHunk(id, 0) : api.compareHunkFrom(id, top - 1, true)));
+  }
+
+  export async function previous() {
+    if (onScreen(current)) return current! > 0 && go(await api.compareHunk(id, current! - 1));
+    return go(await api.compareHunkFrom(id, top, false));
+  }
+
+  export async function first() {
+    return go(await api.compareHunk(id, 0));
+  }
+
+  export async function last() {
+    const hunks = view?.hunks ?? 0;
+    return hunks > 0 && go(await api.compareHunk(id, hunks - 1));
+  }
+
+  /** Copies the current hunk to `to`, if it is on screen. */
+  export function mergeCurrent(to: api.Side) {
+    if (current !== null && onScreen(current)) return onmerge(current, to);
+  }
+
+  export const focus = () => root.focus();
+
+  // ---- Rows --------------------------------------------------------------------
+
+  interface Shown {
+    row: api.CompareRow;
+    /** The first row of its hunk on screen: the copy buttons go there. */
+    first: boolean;
+    sides: [Token[] | null, Token[] | null];
+  }
+
+  let shown = $derived.by<Shown[]>(() => {
+    if (!view) return [];
+    const rows = view.rows;
+    const tokens = SIDES.map((side, s) => {
+      const lang = settings.syntaxHighlight ? langs[s] : "plain";
+      return tokenizeLines(rows.map((row) => row[side]?.text ?? ""), lang).tokens;
+    });
+    return rows.map((row, i) => ({
+      row,
+      first: row.hunk !== null && (i === 0 || rows[i - 1].hunk !== row.hunk),
+      sides: [segments(row.left, tokens[0][i]), segments(row.right, tokens[1][i])],
+    }));
+  });
+
+  function segments(line: api.CompareLine | null, tokens: Token[] | undefined): Token[] | null {
+    if (!line) return null;
+    const marks: Mark[] = line.marks.map(([a, b]) => [a, b, "mark"]);
+    return applyMarks(tokens ?? [{ text: line.text, cls: null }], marks);
+  }
+
+  /** The look of a row on one side: in a hunk, the left is what went and the right what came. */
+  function kind(row: api.CompareRow, side: api.Side) {
+    if (row.hunk === null) return "";
+    if (!row[side]) return "filler";
+    return side === "left" ? "removed" : "added";
+  }
+
+  let digits = $derived(String(Math.max(1, view?.rows.reduce((most, row) => Math.max(most, (row.left?.line ?? 0) + 1, (row.right?.line ?? 0) + 1), 0) ?? 1)).length);
+
+  // ---- Scrolling ---------------------------------------------------------------
+
+  let wheelPx = 0;
+
+  function onWheel(e: WheelEvent) {
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // horizontal: native
+    e.preventDefault();
+    const scale = e.deltaMode === 1 ? lineH : e.deltaMode === 2 ? visible * lineH : 1;
+    wheelPx += e.deltaY * scale;
+    const n = Math.trunc(wheelPx / lineH);
+    wheelPx -= n * lineH;
+    scrollBy(n);
+  }
+
+  function onkeydown(e: KeyboardEvent) {
+    const mod = e.ctrlKey || e.metaKey;
+    const keys: Record<string, () => void> = {
+      ArrowDown: () => scrollBy(1),
+      ArrowUp: () => scrollBy(-1),
+      PageDown: () => scrollBy(visible - 1),
+      PageUp: () => scrollBy(-(visible - 1)),
+    };
+    if (mod && e.key === "Home") scrollTo(0);
+    else if (mod && e.key === "End") scrollTo(maxTop);
+    else if (!mod && !e.altKey && keys[e.key]) keys[e.key]();
+    else return;
+    e.preventDefault();
+  }
+
+  // Both sides scroll sideways together.
+  let texts: HTMLElement[] = $state([]);
+
+  function sideways(from: HTMLElement) {
+    for (const other of texts) if (other !== from && other.scrollLeft !== from.scrollLeft) other.scrollLeft = from.scrollLeft;
+  }
+
+  // ---- Overview ----------------------------------------------------------------
+
+  let overview = $state<HTMLCanvasElement>();
+  let overviewH = $state(0);
+  let buckets = $state<number[]>([]);
+
+  $effect(() => {
+    void version;
+    const height = Math.floor(overviewH);
+    if (height > 0) api.compareOverview(id, height).then((got) => (buckets = got), () => {});
+  });
+
+  $effect(() => {
+    const canvas = overview;
+    if (!canvas) return;
+    const scale = window.devicePixelRatio || 1;
+    canvas.width = Math.round(canvas.clientWidth * scale);
+    canvas.height = Math.round(buckets.length * scale);
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    buckets.forEach((kind, i) => {
+      if (!kind) return;
+      context.fillStyle = OVERVIEW_COLORS[kind];
+      // At least a pixel and a half: a one-line hunk in a huge file still shows.
+      context.fillRect(0, Math.floor(i * scale), canvas.width, Math.max(1.5 * scale, Math.ceil(scale)));
+    });
+  });
+
+  let thumb = $derived(
+    total > 0 ? { top: (top / total) * overviewH, height: Math.max(6, (Math.min(visible, total) / total) * overviewH) } : null,
+  );
+  let dragging = $state(false);
+
+  /** Puts the row at this point of the overview in the middle of the screen. */
+  function overviewAt(e: PointerEvent) {
+    if (!overview || total === 0) return;
+    const box = overview.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (e.clientY - box.top) / box.height));
+    scrollTo(fraction * total - visible / 2);
+  }
+
+  onMount(() => {
+    // Registered by hand: preventDefault needs a non-passive listener.
+    body?.addEventListener("wheel", onWheel, { passive: false });
+    root.focus();
+    return () => body?.removeEventListener("wheel", onWheel);
+  });
+</script>
+
+<div class="compare-view" bind:this={root} tabindex="-1" role="grid" aria-readonly="true" {onkeydown} style:--digits="{digits}ch">
+  <div class="body" bind:this={body} bind:clientHeight={bodyH}>
+    {#each SIDES as side, s (side)}
+      <div class="side {side}" class:no-shading={!settings.fieldShading}>
+        {#if settings.lineNumbers}
+          <div class="gutter" aria-hidden="true">
+            {#each shown as one, i (i)}
+              <div class="ln" class:current={one.row.hunk !== null && one.row.hunk === current}>{one.row[side] ? one.row[side].line + 1 : ""}</div>
+            {/each}
+          </div>
+        {/if}
+        <div class="text" bind:this={texts[s]} onscroll={(e) => sideways(e.currentTarget)}>
+          <div class="lines">
+            {#each shown as one, i (i)}
+              {@const segs = one.sides[s]}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <div
+                class="line {kind(one.row, side)}"
+                class:current={one.row.hunk !== null && one.row.hunk === current}
+                role="row"
+                tabindex="-1"
+                onclick={() => one.row.hunk !== null && (current = one.row.hunk)}
+              >{#if segs}{#each segs as seg, k (k)}<span class={seg.cls}>{seg.text}</span>{/each}{#if one.row[side]?.truncated}<span class="truncated">⋯</span>{/if}{/if}</div>
+            {/each}
+          </div>
+        </div>
+      </div>
+      {#if s === 0}
+        <div class="middle">
+          {#each shown as one, i (i)}
+            {#if one.first}
+              <div class="copy" style:top="{i * lineH}px">
+                <button title={t("compare.copyRight")} aria-label={t("compare.copyRight")} tabindex="-1" onclick={() => onmerge(one.row.hunk!, "right")}>›</button>
+                <button title={t("compare.copyLeft")} aria-label={t("compare.copyLeft")} tabindex="-1" onclick={() => onmerge(one.row.hunk!, "left")}>‹</button>
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+    {/each}
+    <div
+      class="overview"
+      bind:clientHeight={overviewH}
+      role="scrollbar"
+      aria-controls="compare-rows"
+      aria-valuenow={top}
+      aria-valuemin={0}
+      aria-valuemax={maxTop}
+      tabindex="-1"
+      onpointerdown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        dragging = true;
+        overviewAt(e);
+      }}
+      onpointermove={(e) => dragging && overviewAt(e)}
+      onpointerup={() => (dragging = false)}
+    >
+      <canvas bind:this={overview}></canvas>
+      {#if thumb}
+        <div class="thumb" class:dragging style:top="{thumb.top}px" style:height="{thumb.height}px"></div>
+      {/if}
+    </div>
+  </div>
+</div>
+
+<style>
+  .compare-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    outline: none;
+    font-family: var(--mono);
+    font-size: var(--font-size);
+    line-height: var(--line-h);
+    --removed: rgba(255, 0, 0, 0.14);
+    --removed-mark: rgba(255, 60, 60, 0.38);
+    --added: rgba(155, 185, 85, 0.16);
+    --added-mark: rgba(156, 204, 44, 0.38);
+  }
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .side {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+  }
+  .gutter {
+    flex: none;
+    width: var(--digits);
+    padding: 0 10px 0 8px;
+    text-align: right;
+    color: var(--gutter);
+    user-select: none;
+    overflow: hidden;
+  }
+  .ln,
+  .line {
+    height: var(--line-h);
+  }
+  .ln.current {
+    color: var(--fg);
+  }
+  .text {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .lines {
+    min-width: max-content;
+  }
+  .line {
+    padding-left: 4px;
+    white-space: pre;
+    tab-size: 8;
+    overflow: clip;
+    cursor: default;
+  }
+  .line.removed {
+    background: var(--removed);
+  }
+  .line.added {
+    background: var(--added);
+  }
+  .removed :global(.mark) {
+    background: var(--removed-mark);
+  }
+  .added :global(.mark) {
+    background: var(--added-mark);
+  }
+  .line.filler {
+    background: repeating-linear-gradient(-45deg, transparent 0 5px, rgba(255, 255, 255, 0.05) 5px 7px);
+  }
+  .line.current {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .middle {
+    position: relative;
+    flex: none;
+    width: 40px;
+    border-inline: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .copy {
+    position: absolute;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    gap: 2px;
+    height: var(--line-h);
+  }
+  .copy button {
+    width: 17px;
+    height: calc(var(--line-h) - 2px);
+    margin-top: 1px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--ui);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .copy button:hover {
+    background: #45494e;
+    color: var(--fg);
+  }
+  .overview {
+    position: relative;
+    flex: none;
+    width: 16px;
+    border-left: 1px solid var(--border);
+    cursor: default;
+    touch-action: none;
+  }
+  .overview canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .thumb {
+    position: absolute;
+    left: 1px;
+    right: 1px;
+    border-radius: 2px;
+    background: rgba(121, 121, 121, 0.35);
+    pointer-events: none;
+  }
+  .thumb.dragging {
+    background: rgba(160, 160, 160, 0.5);
+  }
+</style>

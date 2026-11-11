@@ -1,0 +1,7 @@
+[package]
+name = "hu-diff"
+description = "Line and in-line diff for very large files"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

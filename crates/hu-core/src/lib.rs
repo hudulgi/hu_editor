@@ -8,6 +8,7 @@
 //! ([`pieces`]). Reads go through a [`Text`] snapshot addressed by byte
 //! offset, so the viewport never waits for the index.
 
+pub mod compare;
 mod decode;
 pub mod dialect;
 pub mod dir;

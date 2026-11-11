@@ -63,7 +63,7 @@ function tauriInPage({ bridge, settingsPath, launchPath, label }) {
       if (cmd.startsWith("plugin:")) return null;
       if (cmd === "load_settings" || cmd === "save_settings") args = { ...args, path: settingsPath };
       if (cmd === "window_start") args = { label };
-      if (cmd === "open_window" && e2e.failWindow) throw "no more windows";
+      if ((cmd === "open_window" || cmd === "open_compare_window") && e2e.failWindow) throw "no more windows";
       const response = await fetch(bridge, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -71,7 +71,7 @@ function tauriInPage({ bridge, settingsPath, launchPath, label }) {
       });
       const answer = await response.json();
       if ("err" in answer) throw answer.err;
-      if (cmd === "open_window") window.__e2eOpenWindow(answer.ok);
+      if (cmd === "open_window" || cmd === "open_compare_window") window.__e2eOpenWindow(answer.ok);
       // What the app would have streamed, handed to the channels it was for.
       if (answer.ok?.__channels) {
         for (const [name, messages] of Object.entries(answer.ok.__channels)) {

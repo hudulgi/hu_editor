@@ -25,6 +25,8 @@
     onopen: (path: string, preview?: boolean) => void;
     /** Ctrl+Enter: in the pane beside. */
     onopenside: (path: string) => void;
+    /** Two files, in a compare window. */
+    oncompare: (left: string, right: string) => void;
     /** Open documents whose files were renamed or moved. */
     onmoved: (docs: api.MovedDoc[]) => void;
     /** Something was deleted: open files may be gone from the disk. */
@@ -36,7 +38,7 @@
     onerror: (message: string) => void;
   }
 
-  let { active, onopen, onopenside, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
+  let { active, onopen, onopenside, oncompare, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
 
   // Files dragged out to the editors, to open where they are let go. Pointer
   // events, not HTML drag and drop: Tauri takes those for files on Windows.
@@ -166,6 +168,8 @@
   let menu = $state<{ items: DropEntry[]; point: { x: number; y: number } } | null>(null);
   /** What Cut or Copy took, for Paste. */
   let clip = $state<{ paths: string[]; cut: boolean } | null>(null);
+  /** Select for Compare: the file the next one is compared with. */
+  let compareFrom = $state<string | null>(null);
   let pasting = $state(false);
   let editing = $state<Editing | null>(null);
   let editInput = $state<HTMLInputElement>();
@@ -520,7 +524,21 @@
     if (!row) return [...newItems, ...outside, "separator", paste, "separator", ...pathItems];
     if (row.entry.isDir) return [...newItems, ...outside, "separator", ...clipItems, paste, "separator", ...pathItems, "separator", ...change];
     const side: DropEntry = { label: t("explorer.openToSide"), shortcut: "Ctrl+Enter", enabled: !several, run: () => onopenside(row.entry.path) };
-    return [side, ...outside, "separator", ...clipItems, "separator", ...pathItems, "separator", ...change];
+    // As in VS Code: two files picked are compared, the one picked first on the left; or
+    // one is chosen, then compared with another.
+    const target = row.entry.path;
+    const twoFiles = all.length === 2 && all.every((one) => !one.entry.isDir);
+    const order = [...picked];
+    const [first, second] = [...all].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)).map((one) => one.entry.path);
+    const compareItems: DropEntry[] = twoFiles
+      ? [{ label: t("explorer.compareSelected"), run: () => oncompare(first, second) }]
+      : [
+          { label: t("explorer.selectForCompare"), enabled: !several, run: () => (compareFrom = target) },
+          ...(compareFrom !== null && !several && !samePath(compareFrom, target)
+            ? [{ label: t("explorer.compareWith", { name: baseName(compareFrom) }), run: () => compareFrom && oncompare(compareFrom, target) }]
+            : []),
+        ];
+    return [side, ...outside, "separator", ...compareItems, "separator", ...clipItems, "separator", ...pathItems, "separator", ...change];
   }
 
   function openMenu(row: EntryRow | null, x: number, y: number) {

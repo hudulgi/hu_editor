@@ -40,12 +40,12 @@
     type Tree,
   } from "./lib/layout";
   import MenuBar, { type Menu, type MenuEntry } from "./lib/MenuBar.svelte";
+  import { DOC_NEWS, QUIT, type CompareSide, type CompareStart, type DocNews, type Loaded } from "./lib/news";
   import Picker, { type PickerItem } from "./lib/Picker.svelte";
+  import SavePrompt, { type Choice } from "./lib/SavePrompt.svelte";
   import SettingsDialog, { type Category } from "./lib/SettingsDialog.svelte";
   import { settings, settingsFile } from "./lib/settings.svelte";
   import TabBar, { type TabItem } from "./lib/TabBar.svelte";
-
-  type Choice = "save" | "discard" | "cancel";
 
   /** An open document and what the app shows about it; several panes can show it. */
   interface Tab {
@@ -60,13 +60,6 @@
     chosenEncoding: boolean;
     /** Line to go to once the line index has reached it. */
     goto: number | null;
-  }
-
-  /** A document just opened, ready for a tab. */
-  interface Loaded {
-    doc: api.DocInfo;
-    lang: Lang;
-    chosenEncoding: boolean;
   }
 
   /** One part of the layout, with its tabs in order. Each tab keeps its own editor
@@ -796,17 +789,8 @@
 
   // ---- Other windows ----------------------------------------------------------
 
-  /**
-   * What happens to a document shown in several windows is told to the others.
-   * Each window has its own panes and tabs; the backend holds the one document,
-   * until the last window lets go of it.
-   */
-  type DocNews =
-    | { kind: "edited"; id: number; change: api.Change; state: api.DocState }
-    | { kind: "saved"; id: number; state: api.DocState; path: string | null; name: string; lang: Lang }
-    | { kind: "encoding"; id: number; encoding: api.Encoding; chosen: boolean }
-    | { kind: "replaced"; id: number; loaded: Loaded; goto: number | null }
-    | { kind: "moved"; id: number; path: string; name: string; lang: Lang };
+  // What happens to a document shown in several windows is told to the others
+  // (news.ts). Each window has its own panes and tabs.
 
   /** Where an editor is: its selection and its first line on screen. */
   type Place = ReturnType<NonNullable<typeof editor>["place"]>;
@@ -817,7 +801,6 @@
   }
   type EmptyStart = { empty: true };
 
-  const DOC_NEWS = "hu://doc";
   const thisWindow = getCurrentWindow().label;
   /** Documents that another window may be showing too. */
   const sharedDocs = new Set<number>();
@@ -846,6 +829,44 @@
       sharedDocs.add(news.loaded.doc.id);
       add(news.loaded, tab, news.goto, false);
     }
+  }
+
+  // ---- Comparing -----------------------------------------------------------------
+
+  /**
+   * Opens a compare window of two files. A file open here goes as its document,
+   * unsaved changes and all, shared with that window from now on.
+   */
+  async function openCompare(left: string, right: string) {
+    const sides: CompareSide[] = [];
+    const retained: number[] = [];
+    for (const path of [left, right]) {
+      const tab = tabOfPath(path);
+      if (!tab) {
+        sides.push({ path, loaded: null });
+        continue;
+      }
+      const id = tab.doc.id;
+      await flush(id);
+      await api.retainDocument(id);
+      retained.push(id);
+      sharedDocs.add(id);
+      sides.push({ path, loaded: $state.snapshot({ doc: { ...tab.doc, state: tab.state }, lang: tab.lang, chosenEncoding: tab.chosenEncoding }) });
+    }
+    try {
+      await api.openCompareWindow({ left: sides[0], right: sides[1] } satisfies CompareStart);
+    } catch (e) {
+      for (const id of retained) api.closeDocument(id);
+      notice = describeError(e);
+    }
+  }
+
+  /** Compare Active File With…: the file picked on the left, as VS Code has it. */
+  async function compareActiveWith() {
+    const path = active?.doc.path;
+    if (!path) return;
+    const other = await openDialog({ multiple: false, directory: false, filters: openTypes() });
+    if (typeof other === "string") await openCompare(other, path);
   }
 
   /** Shows the active tab in a new window, at the same place; `move` closes it here. */
@@ -1363,8 +1384,6 @@
     }
   }
 
-  const QUIT = "hu://quit";
-
   /** Exit: every window closes, each asking about its own unsaved changes. */
   function quit() {
     emit(QUIT, { from: thisWindow });
@@ -1602,6 +1621,7 @@
               { label: t("menu.clearRecent"), key: "C", enabled: recentFiles.length > 0, run: () => setRecent([]) },
             ],
           },
+          { label: t("menu.compareWith"), key: "P", enabled: !!tab?.doc.path, run: compareActiveWith },
           "separator",
           {
             label: t("menu.save"),
@@ -2255,6 +2275,7 @@
         active={active?.doc.path ?? null}
         onopen={(path, preview) => openPath(path, false, preview)}
         onopenside={openToSide}
+        oncompare={openCompare}
         onmoved={followMoves}
         ondeleted={checkDisk}
         ondragfile={dragFiles}
@@ -2568,28 +2589,7 @@
   {/if}
 
   {#if prompt}
-    <div class="backdrop" role="presentation">
-      <div class="dialog" role="alertdialog" aria-labelledby="save-title">
-        {#if prompt.names.length === 1}
-          <p id="save-title">{t("prompt.saveOne", { name: prompt.names[0] })}</p>
-        {:else}
-          <p id="save-title">{t("prompt.saveMany", { count: prompt.names.length })}</p>
-          <ul>
-            {#each prompt.names as name, i (i)}
-              <li>{name}</li>
-            {/each}
-          </ul>
-        {/if}
-        <p class="muted">{t("prompt.lost")}</p>
-        <div class="buttons">
-          <button class="primary" use:takeFocus onclick={() => answer("save")}
-            >{t(prompt.names.length === 1 ? "prompt.save" : "prompt.saveAll")}</button
-          >
-          <button onclick={() => answer("discard")}>{t("prompt.discard")}</button>
-          <button onclick={() => answer("cancel")}>{t("prompt.cancel")}</button>
-        </div>
-      </div>
-    </div>
+    <SavePrompt names={prompt.names} onanswer={answer} />
   {/if}
 </main>
 
@@ -2878,12 +2878,6 @@
   .dialog .product {
     font-size: 16px;
     font-weight: 600;
-  }
-  .dialog ul {
-    max-height: 200px;
-    margin: 0 0 8px;
-    padding-left: 20px;
-    overflow: auto;
   }
   .buttons {
     display: flex;

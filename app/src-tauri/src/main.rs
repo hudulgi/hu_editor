@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod compare;
 
 fn main() {
     tauri::Builder::default()
@@ -10,6 +11,7 @@ fn main() {
         .manage(commands::Docs::default())
         .manage(commands::WindowStarts::default())
         .manage(commands::FileSearches::default())
+        .manage(compare::Comparisons::default())
         .invoke_handler(tauri::generate_handler![
             commands::launch_path,
             commands::notices_path,
@@ -67,6 +69,14 @@ fn main() {
             commands::copy_lines,
             commands::duplicate_selection,
             commands::block_around,
+            compare::compare_new,
+            compare::compare_run,
+            compare::compare_view,
+            compare::compare_overview,
+            compare::compare_hunk,
+            compare::compare_merge,
+            compare::compare_close,
+            compare::open_compare_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

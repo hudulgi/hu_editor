@@ -26,8 +26,8 @@ pub struct Docs {
     next_id: AtomicU32,
 }
 
-struct OpenDoc {
-    doc: Document,
+pub(crate) struct OpenDoc {
+    pub(crate) doc: Document,
     /// Cancels the running search; a new search replaces it.
     find_cancel: Mutex<Arc<AtomicBool>>,
     /// Cancels the running count of matches; a new count replaces it.
@@ -69,7 +69,7 @@ impl Docs {
         info
     }
 
-    fn get(&self, id: u32) -> Result<Arc<OpenDoc>, String> {
+    pub(crate) fn get(&self, id: u32) -> Result<Arc<OpenDoc>, String> {
         self.open
             .lock()
             .unwrap()
@@ -163,7 +163,7 @@ fn at_path(path: &Path, error: &std::io::Error) -> String {
 }
 
 /// Runs blocking work (disk reads) off the async runtime.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     spawn_blocking(f).await.map_err(|e| e.to_string())?
@@ -473,21 +473,34 @@ pub async fn open_window(
     app: AppHandle,
     starts: State<'_, WindowStarts>,
 ) -> Result<(), String> {
-    let label = format!(
-        "editor-{}",
-        starts.next_id.fetch_add(1, Ordering::Relaxed) + 1
-    );
-    starts.waiting.lock().unwrap().insert(label.clone(), start);
-    let built = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("HU Editor")
-        .inner_size(1280.0, 800.0)
-        .min_inner_size(480.0, 320.0)
-        .build();
-    if let Err(error) = built {
-        starts.waiting.lock().unwrap().remove(&label);
-        return Err(error.to_string());
+    starts.open(&app, "editor", start, (1280.0, 800.0))
+}
+
+impl WindowStarts {
+    /// A window labelled `kind` and a number, which gets `start` from `window_start`.
+    pub(crate) fn open(
+        &self,
+        app: &AppHandle,
+        kind: &str,
+        start: Value,
+        (width, height): (f64, f64),
+    ) -> Result<(), String> {
+        let label = format!(
+            "{kind}-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        self.waiting.lock().unwrap().insert(label.clone(), start);
+        let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::default())
+            .title("HU Editor")
+            .inner_size(width, height)
+            .min_inner_size(480.0, 320.0)
+            .build();
+        if let Err(error) = built {
+            self.waiting.lock().unwrap().remove(&label);
+            return Err(error.to_string());
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// What this window was opened to show; `None` for the first window.
@@ -703,7 +716,7 @@ fn replace_cancel(slot: &Mutex<Arc<AtomicBool>>) -> Arc<AtomicBool> {
 }
 
 /// Sends progress to the frontend ten times a second at most.
-fn throttled(channel: Channel<u64>) -> impl FnMut(u64) {
+pub(crate) fn throttled(channel: Channel<u64>) -> impl FnMut(u64) {
     let mut last = Instant::now();
     move |done| {
         if last.elapsed() >= Duration::from_millis(100) {

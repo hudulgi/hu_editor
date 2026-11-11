@@ -46,6 +46,7 @@ export default async function (t) {
     "Open…|Ctrl+O",
     "Open Folder…|",
     "Open Recent|›",
+    "-Compare Active File With…|",
     "-Save|Ctrl+S",
     "-Save As…|Ctrl+Shift+S",
     "-Save All|Ctrl+K S",
@@ -329,9 +330,11 @@ export default async function (t) {
   await press("ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown");
   await until("down to Open Recent", focusIn, "item Open Recent");
   await press("ArrowDown");
+  await until("down to Compare", focusIn, "item Compare Active File With…");
+  await press("ArrowDown");
   await until("down skips what is unavailable", focusIn, "item Save As…");
   await press("ArrowUp");
-  await until("up skips it too", focusIn, "item Open Recent");
+  await until("up skips it too", focusIn, "item Compare Active File With…");
   await press("End");
   await until("end", focusIn, "item Exit");
   await press("ArrowDown");
@@ -488,6 +491,7 @@ export default async function (t) {
       "열기(O)…",
       "폴더 열기(D)…",
       "최근 항목 열기(R)",
+      "현재 파일과 비교(P)…",
       "저장(S)",
       "다른 이름으로 저장(A)…",
       "모두 저장(L)",
@@ -509,7 +513,7 @@ export default async function (t) {
   check(
     "the marked letters",
     await page.$$eval(`${PANEL} .label`, (els) => els.map((e) => `${e.querySelector("u").previousSibling?.textContent ?? ""}[${e.querySelector("u").textContent}]`)),
-    ["[N]", "New [F]", "New [W]", "[O]", "Open Fol[d]", "Open [R]", "[S]", "Save [A]", "Save A[l]", "[E]", "A[u]", "Re[v]", "[C]", "Close W[i]", "Se[t]", "E[x]"],
+    ["[N]", "New [F]", "New [W]", "[O]", "Open Fol[d]", "Open [R]", "Com[p]", "[S]", "Save [A]", "Save A[l]", "[E]", "A[u]", "Re[v]", "[C]", "Close W[i]", "Se[t]", "E[x]"],
   );
   await page.keyboard.press("Escape");
 }

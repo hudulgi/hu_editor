@@ -156,6 +156,15 @@ impl Text {
     }
 
     fn view_line(&self, start: u64, content_end: u64) -> io::Result<ViewLine> {
+        Ok(self.view_line_and_bytes(start, content_end)?.0)
+    }
+
+    /// A line for the view, and the bytes it shows.
+    pub(crate) fn view_line_and_bytes(
+        &self,
+        start: u64,
+        content_end: u64,
+    ) -> io::Result<(ViewLine, Vec<u8>)> {
         let truncated = content_end - start > MAX_LINE_DISPLAY;
         let mut bytes = self.read_range(start, content_end.min(start + MAX_LINE_DISPLAY))?;
         let mut len = content_end - start;
@@ -164,13 +173,61 @@ impl Text {
             len -= 1;
         }
         let decoded = decode_line(&bytes, self.decoding);
-        Ok(ViewLine {
+        let line = ViewLine {
             offset: start,
             len,
             text: decoded.text,
             char_starts: decoded.starts,
             truncated,
-        })
+        };
+        Ok((line, bytes))
+    }
+
+    /// The bytes `self` and `other`, two snapshots of one document, have in
+    /// common at the start and at the end, from their pieces alone: what
+    /// lies where it was. Text deleted and typed again counts as changed.
+    pub(crate) fn common_ends(&self, other: &Text) -> (u64, u64) {
+        let same = |a: &crate::pieces::Piece, b: &crate::pieces::Piece| a.source == b.source;
+        let (pa, pb) = (self.pieces.pieces(), other.pieces.pieces());
+        // From the start: (piece, bytes into it) on each side.
+        let (mut i, mut j, mut ia, mut jb, mut head) = (0, 0, 0, 0, 0);
+        while i < pa.len() && j < pb.len() {
+            let (a, b) = (&pa[i], &pb[j]);
+            if !same(a, b) || a.start + ia != b.start + jb {
+                break;
+            }
+            let step = (a.len - ia).min(b.len - jb);
+            head += step;
+            ia += step;
+            jb += step;
+            if ia == a.len {
+                (i, ia) = (i + 1, 0);
+            }
+            if jb == b.len {
+                (j, jb) = (j + 1, 0);
+            }
+        }
+        // From the end, not into the head: (pieces left, bytes left of the last).
+        let room = self.len().min(other.len()) - head;
+        let (mut i, mut j) = (pa.len(), pb.len());
+        let (mut ia, mut jb, mut tail) = (0, 0, 0);
+        while i > 0 && j > 0 && tail < room {
+            let (a, b) = (&pa[i - 1], &pb[j - 1]);
+            if !same(a, b) || a.end() - ia != b.end() - jb {
+                break;
+            }
+            let step = (a.len - ia).min(b.len - jb).min(room - tail);
+            tail += step;
+            ia += step;
+            jb += step;
+            if ia == a.len {
+                (i, ia) = (i - 1, 0);
+            }
+            if jb == b.len {
+                (j, jb) = (j - 1, 0);
+            }
+        }
+        (head, tail)
     }
 
     /// 0-based line number of the line containing `offset`, once known.

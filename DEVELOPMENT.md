@@ -5,7 +5,8 @@
 ## 구조
 
 ```
-crates/hu-core/   디스크 기반 문서: 블록 캐시, 백그라운드 줄 인덱스, 뷰포트, 검색, Markdown 변환 (UI 의존성 없음)
+crates/hu-core/   디스크 기반 문서: 블록 캐시, 백그라운드 줄 인덱스, 뷰포트, 검색, Markdown 변환, 파일 비교 (UI 의존성 없음)
+crates/hu-diff/   줄 해시 수열의 비교(patience + Myers)와 줄 안 비교. 문서와 무관한 알고리즘만
 crates/hu-gen/    합성 테스트 덱 생성기 (Abaqus .inp / Nastran .bdf)
 app/              Tauri 2 앱 (src-tauri: IPC 커맨드, src: Svelte 프론트엔드, e2e: 화면 시나리오)
 ```
