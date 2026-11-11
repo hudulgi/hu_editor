@@ -15,6 +15,7 @@
   import EncodingMenu from "./lib/EncodingMenu.svelte";
   import Explorer from "./lib/Explorer.svelte";
   import SearchView from "./lib/SearchView.svelte";
+  import ComparePanel from "./lib/ComparePanel.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import MarkdownView from "./lib/MarkdownView.svelte";
   import DropMenu, { type DropEntry } from "./lib/DropMenu.svelte";
@@ -117,6 +118,7 @@
   let findBar = $state<ReturnType<typeof FindBar>>();
   let explorer = $state<ReturnType<typeof Explorer>>();
   let searchView = $state<ReturnType<typeof SearchView>>();
+  let comparePanel = $state<ReturnType<typeof ComparePanel>>();
   let findOpen = $state(false);
   let replacing = $state(false);
   // Outlives the bar, so that F3 can go on and Ctrl+F shows it again.
@@ -159,7 +161,9 @@
   const saved = (key: string) => localStorage.getItem(`hu.${key}`);
   let sidebarOpen = $state(saved("sidebarOpen") !== "false");
   /** What the sidebar shows, picked in the activity bar beside it. */
-  let sideView = $state<"explorer" | "search">(saved("sideView") === "search" ? "search" : "explorer");
+  type SideView = "explorer" | "search" | "compare";
+  const SIDE_VIEWS: SideView[] = ["explorer", "search", "compare"];
+  let sideView = $state<SideView>(SIDE_VIEWS.find((view) => view === saved("sideView")) ?? "explorer");
   $effect(() => localStorage.setItem("hu.sideView", sideView));
   let sidebarWidth = $state(Number(saved("sidebarWidth")) || 280);
 
@@ -1349,7 +1353,7 @@
   }
 
   /** The activity bar: a click on the view showing hides the sidebar, as in VS Code. */
-  function pickSideView(view: "explorer" | "search") {
+  function pickSideView(view: SideView) {
     if (sidebarOpen && sideView === view) sidebarOpen = false;
     else {
       sidebarOpen = true;
@@ -2181,10 +2185,19 @@
         const dragged = e.payload;
         if (dragged.type === "leave") {
           dropZone = null;
+          comparePanel?.dragOver(null);
           return;
         }
         // Called physical, but only Windows sends device pixels; macOS and Linux send CSS pixels already.
         const { x, y } = dragged.position.toLogical(isWindows ? window.devicePixelRatio : 1);
+        // Onto a side of the compare view: files for comparing, not to open.
+        const side = sidebarOpen && sideView === "compare" ? (comparePanel?.sideAt(x, y) ?? null) : null;
+        comparePanel?.dragOver(side);
+        if (side) {
+          dropZone = null;
+          if (dragged.type === "drop") comparePanel?.drop(side, dragged.paths);
+          return;
+        }
         dragFiles(x, y);
         if (dragged.type === "drop") await dropFiles(dragged.paths, true);
       })
@@ -2259,6 +2272,15 @@
       >
         <svg viewBox="0 0 24 24"><circle cx="13.5" cy="9.5" r="6" /><path d="M9.2 13.8L3 20" /></svg>
       </button>
+      <button
+        class:on={sidebarOpen && sideView === "compare"}
+        title={t("activity.compare")}
+        aria-label={t("activity.compare")}
+        aria-pressed={sidebarOpen && sideView === "compare"}
+        onclick={() => pickSideView("compare")}
+      >
+        <svg viewBox="0 0 24 24"><path d="M3.5 3.5h7v17h-7zM13.5 3.5h7v17h-7zM5.5 12h3M15.5 12h3M17 10.5v3" /></svg>
+      </button>
     </nav>
     <div class="sidebar" class:hidden={!sidebarOpen} style:width="{sidebarWidth}px">
       <div class="view" class:hidden={sideView !== "search"}>
@@ -2269,6 +2291,9 @@
           onreplaced={replacedIn}
         />
       </div>
+      <div class="view" class:hidden={sideView !== "compare"}>
+        <ComparePanel bind:this={comparePanel} active={active?.doc.path ?? null} oncompare={openCompare} />
+      </div>
       <div class="view" class:hidden={sideView !== "explorer"}>
       <Explorer
         bind:this={explorer}
@@ -2276,6 +2301,7 @@
         onopen={(path, preview) => openPath(path, false, preview)}
         onopenside={openToSide}
         oncompare={openCompare}
+        onchooseforcompare={(path) => comparePanel?.setSide("left", path)}
         onmoved={followMoves}
         ondeleted={checkDisk}
         ondragfile={dragFiles}

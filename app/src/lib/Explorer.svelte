@@ -27,6 +27,8 @@
     onopenside: (path: string) => void;
     /** Two files, in a compare window. */
     oncompare: (left: string, right: string) => void;
+    /** Select for Compare: the file the next one is compared with. */
+    onchooseforcompare?: (path: string) => void;
     /** Open documents whose files were renamed or moved. */
     onmoved: (docs: api.MovedDoc[]) => void;
     /** Something was deleted: open files may be gone from the disk. */
@@ -38,7 +40,7 @@
     onerror: (message: string) => void;
   }
 
-  let { active, onopen, onopenside, oncompare, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
+  let { active, onopen, onopenside, oncompare, onchooseforcompare, onmoved, ondeleted, ondragfile, ondropfile, onerror }: Props = $props();
 
   // Files dragged out to the editors, to open where they are let go. Pointer
   // events, not HTML drag and drop: Tauri takes those for files on Windows.
@@ -533,7 +535,14 @@
     const compareItems: DropEntry[] = twoFiles
       ? [{ label: t("explorer.compareSelected"), run: () => oncompare(first, second) }]
       : [
-          { label: t("explorer.selectForCompare"), enabled: !several, run: () => (compareFrom = target) },
+          {
+            label: t("explorer.selectForCompare"),
+            enabled: !several,
+            run: () => {
+              compareFrom = target;
+              onchooseforcompare?.(target);
+            },
+          },
           ...(compareFrom !== null && !several && !samePath(compareFrom, target)
             ? [{ label: t("explorer.compareWith", { name: baseName(compareFrom) }), run: () => compareFrom && oncompare(compareFrom, target) }]
             : []),
