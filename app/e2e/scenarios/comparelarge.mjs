@@ -21,7 +21,7 @@ export default async function (t) {
   await until("a compare window", () => app.opened.length, 1);
   const cp = app.opened[0].page;
   await cp.waitForSelector(".compare-view .line");
-  const status = () => cp.textContent(".statusbar");
+  const status = async () => (await cp.textContent(".statusbar")).split(" · ")[0];
   const firstNumber = async (side) => Number(await cp.textContent(`.side.${side} .gutter .ln >> nth=0`));
   await until("three hunks", status, "3 differences");
   const drawn = await cp.locator(".side.left .line").count();

@@ -30,6 +30,9 @@
   let ready = $state(false);
   let failed = $state<string | null>(null);
   let hunks = $state(0);
+  /** The rows of all the hunks by kind, and of the current one. */
+  let lines = $state<api.HunkLines | null>(null);
+  let currentLines = $state<api.HunkLines | null>(null);
   let current = $state<number | null>(null);
   /** Bumped when a document changed. */
   let version = $state(0);
@@ -220,6 +223,40 @@
 
   let can = $derived(ready && hunks > 0);
 
+  // What the current hunk holds, for the status bar.
+  $effect(() => {
+    const [index, id] = [current, comparison];
+    void version;
+    currentLines = null;
+    if (index === null || id === null || !ready) return;
+    api.compareHunk(id, index).then((found) => {
+      if (found && current === index) currentLines = found.lines;
+    }, () => {});
+  });
+
+  /** "2 changed, 1 only on the left", leaving out the kinds there are none of. */
+  function described(of: api.HunkLines) {
+    const parts: [number, "compare.changedLines" | "compare.onlyLeft" | "compare.onlyRight"][] = [
+      [of.changed, "compare.changedLines"],
+      [of.onlyLeft, "compare.onlyLeft"],
+      [of.onlyRight, "compare.onlyRight"],
+    ];
+    return parts
+      .filter(([count]) => count > 0)
+      .map(([count, key]) => t(key, { count: fmt(count) }))
+      .join(", ");
+  }
+
+  let differences = $derived.by(() => {
+    if (hunks === 0) return t("compare.same");
+    if (current !== null) {
+      const at = t("compare.at", { n: fmt(current + 1), count: fmt(hunks) });
+      return currentLines ? `${at} · ${described(currentLines)}` : at;
+    }
+    const count = t(hunks === 1 ? "compare.one" : "compare.count", { count: fmt(hunks) });
+    return lines ? `${count} · ${described(lines)}` : count;
+  });
+
   let menus = $derived<Menu[]>([
     {
       label: t("menu.file"),
@@ -363,7 +400,10 @@
         {langs}
         {version}
         onmerge={(index, to) => act(() => merge(index, to))}
-        onstats={(_total, count) => (hunks = count)}
+        onstats={(view) => {
+          hunks = view.hunks;
+          lines = view.lines;
+        }}
       />
     {:else}
       <p class="message">{progress === null ? t("compare.finding") : t("compare.comparing", { percent: Math.floor(progress * 100) })}</p>
@@ -374,13 +414,7 @@
   </div>
   <footer class="statusbar">
     {#if ready}
-      <span class="differences"
-        >{hunks === 0
-          ? t("compare.same")
-          : current !== null
-            ? t("compare.at", { n: fmt(current + 1), count: fmt(hunks) })
-            : t(hunks === 1 ? "compare.one" : "compare.count", { count: fmt(hunks) })}</span
-      >
+      <span class="differences">{differences}</span>
     {/if}
   </footer>
   {#if prompt}

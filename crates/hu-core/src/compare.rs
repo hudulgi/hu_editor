@@ -54,7 +54,32 @@ pub struct CompareView {
     /// Rows in all.
     pub total: u64,
     pub hunks: usize,
+    /// The rows of all the hunks, by kind.
+    pub lines: HunkLines,
     pub rows: Vec<CompareRow>,
+}
+
+/// Rows of hunks by kind: a line on each side that differ, a line only on
+/// the left, a line only on the right. A hunk pairs its lines from the top,
+/// the rest of its longer side being on that side only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HunkLines {
+    pub changed: u64,
+    pub only_left: u64,
+    pub only_right: u64,
+}
+
+impl HunkLines {
+    fn of(h: &Hunk) -> Self {
+        let (a, b) = (h.a_len() as u64, h.b_len() as u64);
+        let changed = a.min(b);
+        HunkLines {
+            changed,
+            only_left: a - changed,
+            only_right: b - changed,
+        }
+    }
 }
 
 /// A line on each side, or on one side only, in a hunk or not.
@@ -84,10 +109,12 @@ pub struct HunkRows {
     pub index: usize,
     pub start: u64,
     pub end: u64,
+    pub lines: HunkLines,
 }
 
 /// How a stretch of rows looks in the overview: nothing, lines changed,
-/// lines only on the left, lines only on the right.
+/// lines only on the left, lines only on the right (as the rows themselves
+/// show: a hunk is all of them that it has).
 pub const OVERVIEW_CHANGED: u8 = 1;
 pub const OVERVIEW_LEFT: u8 = 2;
 pub const OVERVIEW_RIGHT: u8 = 3;
@@ -181,6 +208,7 @@ impl Comparison {
             index,
             start,
             end: start + rows_of(h),
+            lines: HunkLines::of(h),
         })
     }
 
@@ -253,10 +281,17 @@ impl Comparison {
                 right: line(right.take(), marks.1),
             });
         }
+        let mut lines = HunkLines::default();
+        for one in self.hunks.iter().map(HunkLines::of) {
+            lines.changed += one.changed;
+            lines.only_left += one.only_left;
+            lines.only_right += one.only_right;
+        }
         Ok(CompareView {
             top,
             total,
             hunks: self.hunks.len(),
+            lines,
             rows,
         })
     }
@@ -276,17 +311,28 @@ impl Comparison {
             first.min(buckets - 1)..past.clamp(first + 1, buckets)
         };
         for (h, &start) in self.hunks.iter().zip(&self.starts) {
-            let kind = match (h.a_len(), h.b_len()) {
-                (_, 0) => OVERVIEW_LEFT,
-                (0, _) => OVERVIEW_RIGHT,
-                _ => OVERVIEW_CHANGED,
+            // As its rows show: the lines paired from the top changed, the rest on one side only.
+            let lines = HunkLines::of(h);
+            let alone = if lines.only_left > 0 {
+                OVERVIEW_LEFT
+            } else {
+                OVERVIEW_RIGHT
             };
-            for one in &mut out[covered(start, start + rows_of(h))] {
-                *one = if *one == 0 || *one == kind {
-                    kind
-                } else {
-                    OVERVIEW_CHANGED
-                };
+            let paired = start + lines.changed;
+            for (from, to, kind) in [
+                (start, paired, OVERVIEW_CHANGED),
+                (paired, start + rows_of(h), alone),
+            ] {
+                if from == to {
+                    continue;
+                }
+                for one in &mut out[covered(from, to)] {
+                    *one = if *one == 0 || *one == kind {
+                        kind
+                    } else {
+                        OVERVIEW_CHANGED
+                    };
+                }
             }
         }
         out

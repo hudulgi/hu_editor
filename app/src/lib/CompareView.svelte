@@ -20,13 +20,15 @@
     current?: number | null;
     onmerge: (index: number, to: api.Side) => unknown;
     /** What the comparison now holds. */
-    onstats: (total: number, hunks: number) => void;
+    onstats: (view: api.CompareView) => void;
   }
 
   let { id, langs, version, current = $bindable(null), onmerge, onstats }: Props = $props();
 
   const SIDES = ["left", "right"] as const;
-  const OVERVIEW_COLORS = ["", "#c19c00", "#f14c4c", "#73c991"];
+  // Lines changed, only on the left, only on the right: as in the rows.
+  const OVERVIEW_COLORS = ["", "#4fa3e8", "#f14c4c", "#73c991"];
+  const SIGNS = { changed: "~", removed: "−", added: "+", filler: "", "": "" };
 
   let root: HTMLElement;
   let body = $state<HTMLElement>();
@@ -44,7 +46,7 @@
     const got = await api.compareView(id, top, visible + 1).catch(() => null);
     if (n !== asked || !got) return;
     view = got;
-    onstats(got.total, got.hunks);
+    onstats(got);
     if (top > Math.max(0, got.total - visible)) top = Math.max(0, got.total - visible);
   }
 
@@ -132,11 +134,26 @@
     return applyMarks(tokens ?? [{ text: line.text, cls: null }], marks);
   }
 
-  /** The look of a row on one side: in a hunk, the left is what went and the right what came. */
-  function kind(row: api.CompareRow, side: api.Side) {
+  type Kind = keyof typeof SIGNS;
+
+  /**
+   * The look of a row on one side: in a hunk, a line on each side that differ
+   * (changed), or a line on one side only (removed on the left, added on the
+   * right) with nothing across (filler).
+   */
+  function kind(row: api.CompareRow, side: api.Side): Kind {
     if (row.hunk === null) return "";
     if (!row[side]) return "filler";
+    if (row.left && row.right) return "changed";
     return side === "left" ? "removed" : "added";
+  }
+
+  /** Where a run of filler rows starts and ends: lines are drawn there. */
+  function edges(i: number, side: api.Side) {
+    const rows = view?.rows ?? [];
+    const filler = (at: number) => !!rows[at] && rows[at].hunk !== null && !rows[at][side];
+    if (!filler(i)) return "";
+    return `${filler(i - 1) ? "" : "first"} ${filler(i + 1) ? "" : "last"}`;
   }
 
   let digits = $derived(String(Math.max(1, view?.rows.reduce((most, row) => Math.max(most, (row.left?.line ?? 0) + 1, (row.right?.line ?? 0) + 1), 0) ?? 1)).length);
@@ -238,13 +255,19 @@
             {/each}
           </div>
         {/if}
+        <div class="signs" aria-hidden="true">
+          {#each shown as one, i (i)}
+            {@const k = kind(one.row, side)}
+            <div class="sign {k}">{SIGNS[k]}</div>
+          {/each}
+        </div>
         <div class="text" bind:this={texts[s]} onscroll={(e) => sideways(e.currentTarget)}>
           <div class="lines">
             {#each shown as one, i (i)}
               {@const segs = one.sides[s]}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div
-                class="line {kind(one.row, side)}"
+                class="line {kind(one.row, side)} {edges(i, side)}"
                 class:current={one.row.hunk !== null && one.row.hunk === current}
                 role="row"
                 tabindex="-1"
@@ -302,10 +325,10 @@
     font-family: var(--mono);
     font-size: var(--font-size);
     line-height: var(--line-h);
+    --changed: rgba(38, 125, 210, 0.2);
+    --changed-mark: rgba(70, 160, 255, 0.45);
     --removed: rgba(255, 0, 0, 0.14);
-    --removed-mark: rgba(255, 60, 60, 0.38);
     --added: rgba(155, 185, 85, 0.16);
-    --added-mark: rgba(156, 204, 44, 0.38);
   }
   .body {
     display: flex;
@@ -328,8 +351,25 @@
     overflow: hidden;
   }
   .ln,
+  .sign,
   .line {
     height: var(--line-h);
+  }
+  /* What a row is, apart from its color: ~ changed, − only on the left, + only on the right. */
+  .signs {
+    flex: none;
+    width: 1.5ch;
+    text-align: center;
+    user-select: none;
+  }
+  .sign.changed {
+    color: #4fa3e8;
+  }
+  .sign.removed {
+    color: #f14c4c;
+  }
+  .sign.added {
+    color: #73c991;
   }
   .ln.current {
     color: var(--fg);
@@ -350,23 +390,43 @@
     overflow: clip;
     cursor: default;
   }
+  .line.changed {
+    background: var(--changed);
+  }
+  .changed :global(.mark) {
+    background: var(--changed-mark);
+  }
   .line.removed {
     background: var(--removed);
   }
   .line.added {
     background: var(--added);
   }
-  .removed :global(.mark) {
-    background: var(--removed-mark);
-  }
-  .added :global(.mark) {
-    background: var(--added-mark);
-  }
+  /* Nothing here: what is across has no line on this side. */
   .line.filler {
-    background: repeating-linear-gradient(-45deg, transparent 0 5px, rgba(255, 255, 255, 0.05) 5px 7px);
+    background: repeating-linear-gradient(-45deg, transparent 0 4px, rgba(255, 255, 255, 0.1) 4px 6px);
   }
+  .line.filler.first {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
+  .line.filler.last {
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  }
+  .line.filler.first.last {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  }
+  /* A bar of its own, so as not to take the place of the filler's lines. */
   .line.current {
-    box-shadow: inset 3px 0 0 var(--accent);
+    position: relative;
+  }
+  .line.current::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--accent);
   }
   .middle {
     position: relative;

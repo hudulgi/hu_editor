@@ -31,17 +31,28 @@ export default async function (t) {
   await cp.waitForSelector(".compare-view .line");
   const side = (name) =>
     cp.$$eval(`.side.${name} .line`, (els) =>
-      els.map((e) => `${e.classList.contains("removed") ? "-" : e.classList.contains("added") ? "+" : e.classList.contains("filler") ? "~" : " "}${e.textContent}`),
+      els.map((e) => {
+        const kind = ["changed", "removed", "added", "filler"].find((one) => e.classList.contains(one));
+        return `${{ changed: "~", removed: "-", added: "+", filler: "#" }[kind] ?? " "}${e.textContent}`;
+      }),
     );
-  const status = () => cp.textContent(".statusbar");
+  /** Where in the differences, without what the hunk holds. */
+  const status = async () => (await cp.textContent(".statusbar")).split(" · ")[0];
+  const signs = (name) => cp.$$eval(`.side.${name} .signs .sign`, (els) => els.map((e) => e.textContent));
+  // A line on each side that differ is changed on both; one alone is removed or added, nothing across.
   await until("both sides, row by row", async () => [await side("left"), await side("right")], [
-    [" *Heading", "-** model v1", " *Node", " 1, 0., 0., 0.", "-2, 1., 0., 0.", "-3, 1., 1., 0.", " *Element, type=S4R", " 1, 1, 2, 3, 4", "~", " *End Step", " "],
-    [" *Heading", "+** model v2", " *Node", " 1, 0., 0., 0.", "+2, 1.5, 0., 0.", "~", " *Element, type=S4R", " 1, 1, 2, 3, 4", "+2, 2, 3, 4, 5", " *End Step", " "],
+    [" *Heading", "~** model v1", " *Node", " 1, 0., 0., 0.", "~2, 1., 0., 0.", "-3, 1., 1., 0.", " *Element, type=S4R", " 1, 1, 2, 3, 4", "#", " *End Step", " "],
+    [" *Heading", "~** model v2", " *Node", " 1, 0., 0., 0.", "~2, 1.5, 0., 0.", "#", " *Element, type=S4R", " 1, 1, 2, 3, 4", "+2, 2, 3, 4, 5", " *End Step", " "],
   ]);
+  check("and by a sign beside the numbers", [await signs("left"), await signs("right")], [
+    ["", "~", "", "", "~", "−", "", "", "", "", ""],
+    ["", "~", "", "", "~", "", "", "", "+", "", ""],
+  ]);
+  check("nothing across: lined above and below", await cp.$$eval(".side.right .line.filler", (els) => els.map((e) => e.className.includes("first") && e.className.includes("last"))), [true]);
   check("the one picked first on the left", await cp.$$eval(".head .name", (els) => els.map((e) => e.textContent)), ["old.inp", "new.inp"]);
   check("what changed in a line, marked", await cp.$$eval(".side.right .line .mark", (els) => els.map((e) => e.textContent)), ["v2", "1.5"]);
   check("the title", await cmp.title(), "old.inp ↔ new.inp - HU Editor");
-  await until("how many", status, "3 differences");
+  await until("how many, and of what", () => cp.textContent(".statusbar"), "3 differences · 2 changed, 1 only on the left, 1 only on the right");
   await cmp.shot("compare");
 
   // ---- Going through them --------------------------------------------------------
@@ -51,6 +62,7 @@ export default async function (t) {
   await until("F7: the first", async () => [await status(), await current()], ["Difference 1 of 3", ["** model v1"]]);
   await cp.keyboard.press("F7");
   await until("and the next", async () => [await status(), await current()], ["Difference 2 of 3", ["2, 1., 0., 0.", "3, 1., 1., 0."]]);
+  await until("what it holds", () => cp.textContent(".statusbar"), "Difference 2 of 3 · 1 changed, 1 only on the left");
   await cp.keyboard.press("Alt+ArrowDown");
   await until("Alt+Down too", status, "Difference 3 of 3");
   await cp.keyboard.press("F7");
@@ -85,7 +97,7 @@ export default async function (t) {
   await until("in the editor too, open there", async () => (await mainLines())[1], "** model v1");
   check("its tab unsaved there", await app.tabs(), ["*new.inp ●"]);
   await cp.keyboard.press("ControlOrMeta+z");
-  await until("undone", async () => [await status(), (await side("right"))[1], (await mainLines())[1]], ["3 differences", "+** model v2", "** model v2"]);
+  await until("undone", async () => [await status(), (await side("right"))[1], (await mainLines())[1]], ["3 differences", "~** model v2", "** model v2"]);
   await cp.keyboard.press("ControlOrMeta+y");
   await until("done again", async () => [await status(), (await mainLines())[1]], ["2 differences", "** model v1"]);
   // A button between the sides copies its hunk the other way.
@@ -100,7 +112,8 @@ export default async function (t) {
   await page.click(".slot:not(.hidden) .lines .line >> nth=0");
   await page.keyboard.press("ControlOrMeta+End");
   await page.keyboard.type("** tail");
-  await until("what is typed there is compared", async () => [await status(), (await side("right")).at(-1)], ["2 differences", "+** tail"]);
+  // Typed on the empty last line: a line on each side, changed.
+  await until("what is typed there is compared", async () => [await status(), (await side("right")).at(-1)], ["2 differences", "~** tail"]);
 
   // ---- Saving and closing ------------------------------------------------------------
 
@@ -139,7 +152,7 @@ export default async function (t) {
   const second = app.opened[1];
   await second.page.waitForSelector(".compare-view .line");
   check("the one chosen on the left", await second.page.$$eval(".head .name", (els) => els.map((e) => e.textContent)), ["old.inp", "new.inp"]);
-  await until("as saved: the nodes, and the tail typed", () => second.page.textContent(".statusbar"), "2 differences");
+  await until("as saved: the nodes, and the tail typed", () => second.page.textContent(".statusbar"), "2 differences · 2 changed, 1 only on the left");
   await second.page.keyboard.press("ControlOrMeta+w");
   await until("closed without asking", second.destroyed, 1);
 
@@ -170,7 +183,7 @@ export default async function (t) {
   await page.click(".slot:not(.hidden) .lines .line >> nth=0");
   await page.keyboard.press("End");
   await page.keyboard.type(" again");
-  await until("typed in the editor", () => same.page.textContent(".statusbar"), "1 difference");
+  await until("typed in the editor", () => same.page.textContent(".statusbar"), "1 difference · 1 changed");
   await app.menu("File", "Revert File");
   await until("read again there: compared again here", () => same.page.textContent(".statusbar"), "No differences");
   await same.page.keyboard.press("ControlOrMeta+w");
@@ -181,7 +194,7 @@ export default async function (t) {
 
   const korean = await t.launch({ settings: { language: "ko" }, launchPath: t.path("new.inp") });
   await korean.page.waitForSelector(".line");
-  await korean.answerDialog(t.path("copy.inp"));
+  await korean.answerDialog(t.path("old.inp"));
   await korean.page.click(".menubar .title >> nth=0");
   await korean.page.click(".menubar .panel .label:has-text('현재 파일과 비교')");
   await until("a compare window", () => korean.opened.length, 1);
@@ -189,7 +202,7 @@ export default async function (t) {
   await kp.waitForSelector(".compare-view .line");
   check("its menus", await kp.$$eval(".menubar .title", (els) => els.map((e) => e.textContent)), ["파일(F)", "편집(E)", "비교(C)"]);
   check("its buttons", await kp.$$eval(".heads .nav button", (els) => els.map((e) => e.title)), ["이전 차이 (Shift+F7)", "다음 차이 (F7)"]);
-  await until("and its words", () => kp.textContent(".statusbar"), "차이 없음");
+  await until("and its words", async () => /^차이 \d+개 · 바뀐 줄 \d+, 왼쪽에만 \d+$/.test(await kp.textContent(".statusbar")), true);
   await kp.click(".menubar .title >> nth=2");
   check("what it does", await kp.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent)), [
     "다음 차이(N)",

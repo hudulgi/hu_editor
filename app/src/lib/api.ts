@@ -437,7 +437,16 @@ export interface CompareView {
   /** Rows in all. */
   total: number;
   hunks: number;
+  /** The rows of all the hunks, by kind. */
+  lines: HunkLines;
   rows: CompareRow[];
+}
+
+/** Rows of hunks by kind: a line on each side that differ, or a line on one side only. */
+export interface HunkLines {
+  changed: number;
+  onlyLeft: number;
+  onlyRight: number;
 }
 
 /** The rows a hunk takes, `end` past its last. */
@@ -445,6 +454,7 @@ export interface HunkRows {
   index: number;
   start: number;
   end: number;
+  lines: HunkLines;
 }
 
 /** How a stretch of rows looks in the overview. */

@@ -100,12 +100,18 @@ fn side_by_side() {
     let c = compare(&left, &right);
     assert_eq!(rows(&c), ["a|a", "*b|B", "c|c", "*-|x", "d|d", "|"]);
     assert_eq!((c.rows(), c.hunk_count()), (6, 2));
+    let only_right = HunkLines {
+        changed: 0,
+        only_left: 0,
+        only_right: 1,
+    };
     assert_eq!(
         c.hunk_rows(1),
         Some(HunkRows {
             index: 1,
             start: 3,
-            end: 4
+            end: 4,
+            lines: only_right,
         })
     );
     assert_eq!(c.hunk_from(0, true).map(|h| h.index), Some(0));
@@ -115,6 +121,12 @@ fn side_by_side() {
     assert_eq!(c.hunk_from(3, true), None);
     assert_eq!((c.hunk_at(1), c.hunk_at(2)), (Some(0), None));
     let view = c.view(3, 2).unwrap();
+    let both = HunkLines {
+        changed: 1,
+        only_left: 0,
+        only_right: 1,
+    };
+    assert_eq!(view.lines, both);
     assert_eq!((view.top, view.total, view.rows.len()), (3, 6, 2));
     assert_eq!(view.rows[1].left.as_ref().map(|l| l.line), Some(3));
     assert_eq!(view.rows[1].right.as_ref().map(|l| l.line), Some(4));
@@ -204,6 +216,12 @@ fn overview() {
         )
     );
     assert!(c.overview(0).is_empty());
+    // A hunk of both kinds: its rows changed, then its rows on one side only.
+    let (_c, left) = open("a\nb\nc\nd\n");
+    let (_d, right) = open("a\nB\nd\n");
+    let c = compare(&left, &right);
+    assert_eq!(rows(&c), ["a|a", "*b|B", "*c|-", "d|d", "|"]);
+    assert_eq!(c.overview(5), [0, OVERVIEW_CHANGED, OVERVIEW_LEFT, 0, 0]);
 }
 
 #[test]

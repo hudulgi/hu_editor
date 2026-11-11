@@ -34,7 +34,7 @@ export default async function (t) {
   const first = app.opened[0];
   await first.page.waitForSelector(".compare-view .line");
   check("left and right as given", await heads(first), ["v1.inp", "v2.inp"]);
-  await until("compared", () => first.page.textContent(".statusbar"), "1 difference");
+  await until("compared", () => first.page.textContent(".statusbar"), "1 difference · 1 changed");
   await first.page.keyboard.press("ControlOrMeta+w");
   await until("closed", first.destroyed, 1);
   check("the sides stay", await sides(), [t.path("v1.inp"), t.path("v2.inp")]);
