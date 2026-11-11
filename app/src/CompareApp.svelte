@@ -12,7 +12,7 @@
   import { dirName, formatNumber as fmt } from "./lib/format";
   import { describeError, t } from "./lib/i18n";
   import MenuBar, { type Menu } from "./lib/MenuBar.svelte";
-  import { DOC_NEWS, QUIT, type CompareSide, type CompareStart, type DocNews } from "./lib/news";
+  import { DOC_NEWS, QUIT, SHOW, type CompareSide, type CompareStart, type DocNews, type ShowNews } from "./lib/news";
   import SavePrompt, { type Choice } from "./lib/SavePrompt.svelte";
   import { settings } from "./lib/settings.svelte";
   import { dependsOnContent, detectLang, type Lang } from "./lib/syntax";
@@ -21,6 +21,7 @@
     doc: api.DocInfo;
     lang: Lang;
     state: api.DocState;
+    chosenEncoding: boolean;
   }
 
   let sides = $state<Side[]>([]);
@@ -37,6 +38,8 @@
   /** Bumped when a document changed. */
   let version = $state(0);
   let notice = $state<string | null>(null);
+  /** The window that opened this one: where Open in Editor shows a line. */
+  let opener = $state<string | null>(null);
   let prompt = $state<{ names: string[]; answer: (choice: Choice) => void } | null>(null);
   let viewer = $state<ReturnType<typeof CompareView>>();
   let menuBar = $state<ReturnType<typeof MenuBar>>();
@@ -63,14 +66,15 @@
   }
 
   async function open(side: CompareSide): Promise<Side> {
-    if (side.loaded) return { doc: side.loaded.doc, lang: side.loaded.lang, state: side.loaded.doc.state };
+    if (side.loaded) return { doc: side.loaded.doc, lang: side.loaded.lang, state: side.loaded.doc.state, chosenEncoding: side.loaded.chosenEncoding };
     const doc = await api.openDocument(side.path, null, settings.fallbackEncoding);
-    return { doc, lang: await langOf(doc.id, doc.name), state: doc.state };
+    return { doc, lang: await langOf(doc.id, doc.name), state: doc.state, chosenEncoding: false };
   }
 
   async function start() {
     const begun = await api.windowStart<CompareStart>();
     if (!begun) return;
+    opener = begun.opener;
     const opened = await Promise.allSettled([open(begun.left), open(begun.right)]);
     for (const one of opened) if (one.status === "fulfilled") sides.push(one.value);
     const problem = opened.find((one) => one.status === "rejected");
@@ -125,6 +129,34 @@
     }
   }
 
+  /** A line edited where it is shown, as an edit of its document. */
+  async function editLine(side: api.Side, line: number, text: string) {
+    if (!ready || comparison === null) return;
+    try {
+      const { doc, result } = await api.compareEditLine(comparison, side, line, text);
+      changed(doc, result);
+      undoable.push(doc);
+      redoable = [];
+    } catch (e) {
+      notice = describeError(e);
+    }
+  }
+
+  /** The window that opened this one shows the line, in its document: edited there, compared here. */
+  async function showInEditor(side: api.Side, line: number) {
+    const one = sides[side === "left" ? 0 : 1];
+    if (!one || !opener) return;
+    // Held for that window, which lets go of it if it holds it already.
+    await api.retainDocument(one.doc.id);
+    const loaded = $state.snapshot({ doc: { ...one.doc, state: one.state }, lang: one.lang, chosenEncoding: one.chosenEncoding });
+    emit(SHOW, { to: opener, loaded, line, from: thisWindow } satisfies ShowNews & { from: string });
+  }
+
+  function showPicked() {
+    const at = viewer?.pickedLine();
+    if (at) showInEditor(at.side, at.line);
+  }
+
   async function undo() {
     const id = undoable.pop();
     if (id === undefined) return;
@@ -156,7 +188,7 @@
     } else if (news.kind === "encoding") side.doc.encoding = news.encoding;
     else {
       // Read again from the disk, as a new document, held for this window too.
-      sides[at] = { doc: news.loaded.doc, lang: news.loaded.lang, state: news.loaded.doc.state };
+      sides[at] = { doc: news.loaded.doc, lang: news.loaded.lang, state: news.loaded.doc.state, chosenEncoding: news.loaded.chosenEncoding };
       api.closeDocument(news.id);
       undoable = undoable.filter((id) => id !== news.id);
       redoable = redoable.filter((id) => id !== news.id);
@@ -277,6 +309,9 @@
       items: [
         { label: t("menu.undo"), key: "U", shortcut: "Ctrl+Z", enabled: undoable.length > 0, run: () => act(undo) },
         { label: t("menu.redo"), key: "R", shortcut: "Ctrl+Y", enabled: redoable.length > 0, run: () => act(redo) },
+        "separator",
+        { label: t("compare.editLine"), key: "L", shortcut: "F2", enabled: ready, run: () => viewer?.edit() },
+        { label: t("compare.showInEditor"), key: "O", shortcut: "Ctrl+E", enabled: ready && !!opener, run: showPicked },
       ],
     },
     {
@@ -309,6 +344,8 @@
       if (e.key === "Escape") answer("cancel");
       return;
     }
+    // Typing in a line edited where it is shown: its keys are its own.
+    if (e.target instanceof HTMLInputElement) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const alt: Record<string, () => unknown> = {
@@ -326,6 +363,8 @@
     else if (mod && !e.shiftKey && key === "z") act(undo);
     else if (mod && (key === "y" || (e.shiftKey && key === "z"))) act(redo);
     else if (mod && key === "w") closeWindow();
+    else if (key === "F2" && !mod && !e.altKey) viewer?.edit();
+    else if (mod && !e.shiftKey && key === "e") showPicked();
     else return;
     e.preventDefault();
   }
@@ -400,6 +439,9 @@
         {langs}
         {version}
         onmerge={(index, to) => act(() => merge(index, to))}
+        onedit={(side, line, text) => act(() => editLine(side, line, text))}
+        onshow={showInEditor}
+        onnotice={(message) => (notice = message)}
         onstats={(view) => {
           hunks = view.hunks;
           lines = view.lines;

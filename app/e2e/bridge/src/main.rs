@@ -407,6 +407,28 @@ impl Bridge {
                     Ok(json!({ "doc": ids[side], "result": to_json(result)? }))
                 })?
             }
+            "compare_edit_line" => {
+                let side: Side = arg(args, "side")?;
+                let line: u64 = arg(args, "line")?;
+                let text: String = arg(args, "text")?;
+                let ids = {
+                    let id: u32 = arg(args, "id")?;
+                    self.comparisons
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .ok_or("comparison not open")?
+                        .0
+                };
+                let at = if side == Side::Left { 0 } else { 1 };
+                self.compared(args, |c, docs| {
+                    let target = &docs[at];
+                    let (start, end) = c.line_range(side, line).map_err(problem)?;
+                    let result = target.edit(start, end, &text, EditKind::Other, (start, start));
+                    c.sync(side, target.text()).map_err(problem)?;
+                    Ok(json!({ "doc": ids[at], "result": to_json(result)? }))
+                })?
+            }
             "compare_close" => {
                 let id: u32 = arg(args, "id")?;
                 self.comparisons.lock().unwrap().remove(&id);

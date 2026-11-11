@@ -412,6 +412,15 @@ impl Comparison {
         })
     }
 
+    /// Where the content of `line` on `side` is, without its line break: to
+    /// edit the line where it is shown.
+    pub fn line_range(&self, side: Side, line: u64) -> io::Result<(u64, u64)> {
+        if line >= self.lines(side) {
+            return Err(io::Error::other("no such line"));
+        }
+        Ok((self.line_start(side, line)?, self.content_end(side, line)?))
+    }
+
     /// Takes `text`, the document on `side` as it is now, comparing again
     /// what changed since the last one.
     pub fn sync(&mut self, side: Side, text: Text) -> io::Result<()> {

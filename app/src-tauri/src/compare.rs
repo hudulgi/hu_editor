@@ -235,6 +235,33 @@ pub async fn compare_merge(
     .await
 }
 
+/// Replaces the content of `line` on `side` with `text`: a line edited where
+/// it is shown, found in the document as it is now.
+#[tauri::command]
+pub async fn compare_edit_line(
+    id: u32,
+    side: Side,
+    line: u64,
+    text: String,
+    docs: State<'_, Docs>,
+    comparisons: State<'_, Comparisons>,
+) -> Result<Merged, String> {
+    let both = get(id, &docs, &comparisons)?;
+    let at = if side == Side::Left { 0 } else { 1 };
+    let doc = both.0.docs[at];
+    blocking(move || {
+        let result = with(&both, |c, docs| {
+            let target = &docs[at].doc;
+            let (start, end) = c.line_range(side, line).map_err(|e| ipc_message(&e))?;
+            let result = target.edit(start, end, &text, EditKind::Other, (start, start));
+            c.sync(side, target.text()).map_err(|e| ipc_message(&e))?;
+            Ok(result)
+        })?;
+        Ok(Merged { doc, result })
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn compare_close(id: u32, comparisons: State<'_, Comparisons>) {
     if let Some(open) = comparisons.open.lock().unwrap().remove(&id) {

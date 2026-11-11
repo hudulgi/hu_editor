@@ -413,6 +413,9 @@ export const ko: Record<keyof typeof en, string> = {
   "compare.last": "마지막 차이",
   "compare.copyRight": "오른쪽으로 복사",
   "compare.copyLeft": "왼쪽으로 복사",
+  "compare.editLine": "줄 고치기",
+  "compare.showInEditor": "편집기에서 열기",
+  "compare.tooLong": "줄이 너무 길어 여기서는 고칠 수 없습니다. 편집기에서 여세요.",
 
   "comparePanel.title": "비교",
   "comparePanel.left": "왼쪽",

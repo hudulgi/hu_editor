@@ -277,6 +277,21 @@ fn merging_each_kind_of_hunk() {
 }
 
 #[test]
+fn a_line_edited_where_it_is_shown() {
+    let (_a, left) = open("a\r\nb\r\nc");
+    let (_b, right) = open("a\nB\nc");
+    let mut c = compare(&left, &right);
+    assert_eq!(c.line_range(Side::Left, 1).unwrap(), (3, 4));
+    assert_eq!(c.line_range(Side::Right, 2).unwrap(), (4, 5));
+    assert!(c.line_range(Side::Right, 3).is_err());
+    let (start, end) = c.line_range(Side::Left, 1).unwrap();
+    left.edit(start, end, "B", EditKind::Other, (start, start));
+    c.sync(Side::Left, left.text()).unwrap();
+    assert_eq!(content(&left), "a\r\nB\r\nc");
+    assert_eq!(c.hunk_count(), 0);
+}
+
+#[test]
 fn merging_keeps_the_rest() {
     let (_a, left) = open("a\nb\nc\nd\ne\nf\n");
     let (_b, right) = open("a\nB\nc\nd\nE\nf\nnew\n");

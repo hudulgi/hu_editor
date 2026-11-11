@@ -22,6 +22,15 @@ export type DocNews =
 export const DOC_NEWS = "hu://doc";
 /** Exit: every window closes, each asking about its own unsaved changes. */
 export const QUIT = "hu://quit";
+/** A compare window asks the window that opened it to show a line of one of its documents. */
+export const SHOW = "hu://show";
+
+/** The document, held for the window `to` already, and the line (0-based) to show in it. */
+export interface ShowNews {
+  to: string;
+  loaded: Loaded;
+  line: number;
+}
 
 /** One side of a compare window as the window opening it gives it: a document open there, or a file to open. */
 export interface CompareSide {
@@ -29,8 +38,9 @@ export interface CompareSide {
   loaded: Loaded | null;
 }
 
-/** What a compare window shows. */
+/** What a compare window shows, and the window that opened it. */
 export interface CompareStart {
   left: CompareSide;
   right: CompareSide;
+  opener: string;
 }

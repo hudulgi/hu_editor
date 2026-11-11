@@ -3,10 +3,11 @@
   // fit: an equal line on both sides, or a hunk, its shorter side padded. Only
   // the rows on screen are fetched, so any size scrolls alike. On the right, the
   // overview of where the hunks are, which also scrolls; between the sides, the
-  // buttons that copy a hunk across.
+  // buttons that copy a hunk across. A line can be edited where it is shown.
 
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import * as api from "./api";
+  import DropMenu, { type DropEntry } from "./DropMenu.svelte";
   import { t } from "./i18n";
   import { lineHeight, settings } from "./settings.svelte";
   import { applyMarks, tokenizeLines, type Lang, type Mark, type Token } from "./syntax";
@@ -19,11 +20,16 @@
     /** The hunk the keyboard works on. */
     current?: number | null;
     onmerge: (index: number, to: api.Side) => unknown;
+    /** A line edited where it is shown: its text is to be `text`. */
+    onedit: (side: api.Side, line: number, text: string) => unknown;
+    /** A line to be shown in an editor, in the window that opened this one. */
+    onshow: (side: api.Side, line: number) => unknown;
+    onnotice: (message: string) => void;
     /** What the comparison now holds. */
     onstats: (view: api.CompareView) => void;
   }
 
-  let { id, langs, version, current = $bindable(null), onmerge, onstats }: Props = $props();
+  let { id, langs, version, current = $bindable(null), onmerge, onedit, onshow, onnotice, onstats }: Props = $props();
 
   const SIDES = ["left", "right"] as const;
   // Lines changed, only on the left, only on the right: as in the rows.
@@ -105,6 +111,87 @@
 
   export const focus = () => root.focus();
 
+  // ---- Lines picked and edited -------------------------------------------------
+
+  type Picked = { side: api.Side; line: number };
+  /** The line F2 and Ctrl+E work on: the one clicked last. */
+  let picked = $state<Picked | null>(null);
+  /** A line being edited where it is shown, and what it was. */
+  let editing = $state<(Picked & { value: string; was: string }) | null>(null);
+  let menu = $state<{ items: DropEntry[]; point: { x: number; y: number } } | null>(null);
+
+  export const pickedLine = () => picked;
+
+  /** A click on a row: its line on that side, and its hunk. */
+  function pick(row: api.CompareRow, side: api.Side) {
+    const line = row[side];
+    if (line) picked = { side, line: line.line };
+    if (row.hunk !== null) current = row.hunk;
+  }
+
+  const lineOf = (side: api.Side, line: number) => view?.rows.find((row) => row[side]?.line === line)?.[side] ?? null;
+
+  /** Edits a line where it is shown, the one picked unless told; one cut short for the screen cannot be. */
+  export async function edit(at: Picked | null = picked) {
+    const line = at && lineOf(at.side, at.line);
+    if (!at || !line) return false;
+    if (line.truncated) {
+      onnotice(t("compare.tooLong"));
+      return false;
+    }
+    picked = at;
+    editing = { ...at, value: line.text, was: line.text };
+    await tick();
+    const input = root.querySelector<HTMLInputElement>("input.edit");
+    input?.focus();
+    input?.select();
+    return true;
+  }
+
+  function commit() {
+    const done = editing;
+    editing = null;
+    root.focus();
+    if (done && done.value !== done.was) onedit(done.side, done.line, done.value);
+  }
+
+  function cancel() {
+    editing = null;
+    root.focus();
+  }
+
+  function editKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter" && !e.isComposing) commit();
+    else if (e.key === "Escape") cancel();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function openMenu(e: MouseEvent, row: api.CompareRow, side: api.Side) {
+    e.preventDefault();
+    pick(row, side);
+    const line = row[side];
+    const items: DropEntry[] = [
+      { label: t("compare.editLine"), shortcut: "F2", enabled: !!line && !line.truncated, run: () => line && edit({ side, line: line.line }) },
+      { label: t("compare.showInEditor"), shortcut: "Ctrl+E", enabled: !!line, run: () => line && onshow(side, line.line) },
+    ];
+    if (row.hunk !== null) {
+      const hunk = row.hunk;
+      items.push(
+        "separator",
+        { label: t("compare.copyRight"), shortcut: "Alt+Right", run: () => onmerge(hunk, "right") },
+        { label: t("compare.copyLeft"), shortcut: "Alt+Left", run: () => onmerge(hunk, "left") },
+      );
+    }
+    menu = { items, point: { x: e.clientX, y: e.clientY } };
+  }
+
+  function closeMenu() {
+    menu = null;
+    if (!editing) root.focus();
+  }
+
   // ---- Rows --------------------------------------------------------------------
 
   interface Shown {
@@ -173,6 +260,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    if (e.target instanceof HTMLInputElement) return;
     const mod = e.ctrlKey || e.metaKey;
     const keys: Record<string, () => void> = {
       ArrowDown: () => scrollBy(1),
@@ -291,14 +379,28 @@
           <div class="lines">
             {#each shown as one, i (i)}
               {@const segs = one.sides[s]}
+              {@const line = one.row[side]}
+              {@const edited = !!line && editing?.side === side && editing.line === line.line}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div
                 class="line {kind(one.row, side)} {edges(i, side)}"
                 class:current={one.row.hunk !== null && one.row.hunk === current}
+                class:picked={!!line && picked?.side === side && picked.line === line.line}
                 role="row"
                 tabindex="-1"
-                onclick={() => one.row.hunk !== null && (current = one.row.hunk)}
-              >{#if segs}{#each segs as seg, k (k)}<span class={seg.cls}>{seg.text}</span>{/each}{#if one.row[side]?.truncated}<span class="truncated">⋯</span>{/if}{/if}</div>
+                onclick={() => pick(one.row, side)}
+                ondblclick={() => line && edit({ side, line: line.line })}
+                oncontextmenu={(e) => openMenu(e, one.row, side)}
+              >{#if edited && editing}<input
+                    class="edit"
+                    bind:value={editing.value}
+                    spellcheck="false"
+                    aria-label={t("compare.editLine")}
+                    onkeydown={editKeydown}
+                    onblur={commit}
+                    onclick={(e) => e.stopPropagation()}
+                    ondblclick={(e) => e.stopPropagation()}
+                  />{:else if segs}{#each segs as seg, k (k)}<span class={seg.cls}>{seg.text}</span>{/each}{#if line?.truncated}<span class="truncated">⋯</span>{/if}{/if}</div>
             {/each}
           </div>
         </div>
@@ -348,6 +450,10 @@
     </div>
   </div>
 </div>
+
+{#if menu}
+  <DropMenu items={menu.items} point={menu.point} onclose={closeMenu} />
+{/if}
 
 <style>
   .compare-view {
@@ -452,6 +558,25 @@
       inset 0 -1px 0 rgba(255, 255, 255, 0.3);
   }
   /* A bar of its own, so as not to take the place of the filler's lines. */
+  /* The line F2 and Ctrl+E work on. */
+  .line.picked {
+    outline: 1px solid rgba(255, 255, 255, 0.2);
+    outline-offset: -1px;
+  }
+  .edit {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 30ch;
+    height: var(--line-h);
+    margin: 0 0 0 -3px;
+    padding: 0 2px;
+    border: 1px solid var(--accent);
+    border-radius: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    line-height: inherit;
+  }
   .line.current {
     position: relative;
   }

@@ -75,6 +75,7 @@ fn main() {
             compare::compare_overview,
             compare::compare_hunk,
             compare::compare_merge,
+            compare::compare_edit_line,
             compare::compare_close,
             compare::open_compare_window,
         ])

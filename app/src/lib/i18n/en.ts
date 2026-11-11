@@ -412,6 +412,9 @@ export const en = {
   "compare.last": "Last Difference",
   "compare.copyRight": "Copy to Right",
   "compare.copyLeft": "Copy to Left",
+  "compare.editLine": "Edit Line",
+  "compare.showInEditor": "Open in Editor",
+  "compare.tooLong": "The line is too long to edit here: open it in the editor.",
 
   "comparePanel.title": "Compare",
   "comparePanel.left": "Left",

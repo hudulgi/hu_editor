@@ -487,5 +487,8 @@ export const compareHunkNear = (id: number, near: number, reach: number) =>
   invoke<HunkRows | null>("compare_hunk", { id, index: null, from: null, forward: true, near, reach });
 /** Makes the lines of hunk `index` on side `to` what they are on the other: an edit of that document. */
 export const compareMerge = (id: number, index: number, to: Side) => invoke<{ doc: number; result: EditResult }>("compare_merge", { id, index, to });
+/** Replaces the content of `line` on `side` with `text`: a line edited where it is shown. */
+export const compareEditLine = (id: number, side: Side, line: number, text: string) =>
+  invoke<{ doc: number; result: EditResult }>("compare_edit_line", { id, side, line, text });
 export const compareClose = (id: number) => invoke<void>("compare_close", { id });
 export const openCompareWindow = (start: unknown) => invoke<void>("open_compare_window", { start });

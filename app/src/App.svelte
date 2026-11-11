@@ -41,7 +41,7 @@
     type Tree,
   } from "./lib/layout";
   import MenuBar, { type Menu, type MenuEntry } from "./lib/MenuBar.svelte";
-  import { DOC_NEWS, QUIT, type CompareSide, type CompareStart, type DocNews, type Loaded } from "./lib/news";
+  import { DOC_NEWS, QUIT, SHOW, type CompareSide, type CompareStart, type DocNews, type Loaded, type ShowNews } from "./lib/news";
   import Picker, { type PickerItem } from "./lib/Picker.svelte";
   import SavePrompt, { type Choice } from "./lib/SavePrompt.svelte";
   import SettingsDialog, { type Category } from "./lib/SettingsDialog.svelte";
@@ -858,11 +858,30 @@
       sides.push({ path, loaded: $state.snapshot({ doc: { ...tab.doc, state: tab.state }, lang: tab.lang, chosenEncoding: tab.chosenEncoding }) });
     }
     try {
-      await api.openCompareWindow({ left: sides[0], right: sides[1] } satisfies CompareStart);
+      await api.openCompareWindow({ left: sides[0], right: sides[1], opener: thisWindow } satisfies CompareStart);
     } catch (e) {
       for (const id of retained) api.closeDocument(id);
       notice = describeError(e);
     }
+  }
+
+  /** A compare window's Open in Editor: its document, in a tab here, at that line. */
+  async function heardShow({ loaded, line }: ShowNews) {
+    const id = loaded.doc.id;
+    const tab = tabOf(id) ?? (loaded.doc.path ? tabOfPath(loaded.doc.path) : undefined);
+    getCurrentWindow().setFocus();
+    if (!tab) {
+      sharedDocs.add(id);
+      add(loaded, null, line);
+      return;
+    }
+    // Held here already, or the file open as another document: the one sent is not needed.
+    api.closeDocument(id);
+    keepOpen(tab.doc.id);
+    activate(tab.doc.id);
+    await tick();
+    editor?.gotoLine(line);
+    editor?.focus();
   }
 
   /** Compare Active File With…: the file picked on the left, as VS Code has it. */
@@ -2214,6 +2233,9 @@
     }).then((u) => unlisten.push(u));
     listen<{ from: string }>(QUIT, ({ payload }) => {
       if (payload.from !== thisWindow) getCurrentWindow().close();
+    }).then((u) => unlisten.push(u));
+    listen<ShowNews>(SHOW, ({ payload }) => {
+      if (payload.to === thisWindow) heardShow(payload);
     }).then((u) => unlisten.push(u));
     restore();
     return () => {
