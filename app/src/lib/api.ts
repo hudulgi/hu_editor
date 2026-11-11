@@ -477,10 +477,14 @@ export const compareView = (id: number, top: number, rows: number) => invoke<Com
 /** The kind of rows in each of `buckets` equal stretches of all the rows, as `OVERVIEW` values. */
 export const compareOverview = (id: number, buckets: number) => invoke<number[]>("compare_overview", { id, buckets });
 /** Hunk `index`. */
-export const compareHunk = (id: number, index: number) => invoke<HunkRows | null>("compare_hunk", { id, index, from: null, forward: true });
+export const compareHunk = (id: number, index: number) =>
+  invoke<HunkRows | null>("compare_hunk", { id, index, from: null, forward: true, near: null, reach: null });
 /** The first hunk starting after row `from`, or with `forward` false the last one before it. */
 export const compareHunkFrom = (id: number, from: number, forward: boolean) =>
-  invoke<HunkRows | null>("compare_hunk", { id, index: null, from, forward });
+  invoke<HunkRows | null>("compare_hunk", { id, index: null, from, forward, near: null, reach: null });
+/** The hunk nearest row `near`, if within `reach` rows of it. */
+export const compareHunkNear = (id: number, near: number, reach: number) =>
+  invoke<HunkRows | null>("compare_hunk", { id, index: null, from: null, forward: true, near, reach });
 /** Makes the lines of hunk `index` on side `to` what they are on the other: an edit of that document. */
 export const compareMerge = (id: number, index: number, to: Side) => invoke<{ doc: number; result: EditResult }>("compare_merge", { id, index, to });
 export const compareClose = (id: number) => invoke<void>("compare_close", { id });

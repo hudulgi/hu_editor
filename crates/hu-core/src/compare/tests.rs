@@ -120,6 +120,14 @@ fn side_by_side() {
     assert_eq!(c.hunk_from(1, false), None);
     assert_eq!(c.hunk_from(3, true), None);
     assert_eq!((c.hunk_at(1), c.hunk_at(2)), (Some(0), None));
+    let near = |row, reach| c.hunk_near(row, reach).map(|h| h.index);
+    assert_eq!(
+        [near(1, 0), near(0, 1), near(2, 0), near(2, 1)],
+        [Some(0), Some(0), None, Some(0)]
+    );
+    // Row 2 is as near to both: the first. Row 4 is one past the second, row 5 two.
+    assert_eq!([near(4, 1), near(4, 0), near(5, 1)], [Some(1), None, None]);
+    assert_eq!(near(3, 0), Some(1));
     let view = c.view(3, 2).unwrap();
     let both = HunkLines {
         changed: 1,

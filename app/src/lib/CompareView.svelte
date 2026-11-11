@@ -228,12 +228,38 @@
   );
   let dragging = $state(false);
 
+  /** How near a hunk's mark a click in the overview goes to it, in pixels. */
+  const OVERVIEW_REACH = 4;
+
+  /** The row at this point of the overview, and the rows a pixel there covers. */
+  function overviewRow(e: PointerEvent) {
+    const box = overview!.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (e.clientY - box.top) / box.height));
+    return { row: Math.min(total - 1, Math.floor(fraction * total)), perPixel: total / box.height };
+  }
+
   /** Puts the row at this point of the overview in the middle of the screen. */
   function overviewAt(e: PointerEvent) {
     if (!overview || total === 0) return;
-    const box = overview.getBoundingClientRect();
-    const fraction = Math.max(0, Math.min(1, (e.clientY - box.top) / box.height));
-    scrollTo(fraction * total - visible / 2);
+    scrollTo(overviewRow(e).row - visible / 2);
+  }
+
+  /** The pointer is near a hunk's mark: a press there goes to it, so it shows as something to click. */
+  let onMark = $state(false);
+
+  /** Whether a mark is drawn within reach of this point, from what the overview drew: a pixel each. */
+  function nearMark(e: PointerEvent) {
+    if (!overview || !buckets.length) return false;
+    const at = Math.floor(e.clientY - overview.getBoundingClientRect().top);
+    return buckets.slice(Math.max(0, at - OVERVIEW_REACH), at + OVERVIEW_REACH + 1).some((kind) => kind !== 0);
+  }
+
+  /** A press on a hunk's mark goes to that hunk, as F7 would; elsewhere it scrolls there. */
+  async function overviewDown(e: PointerEvent) {
+    if (!overview || total === 0) return;
+    const { row, perPixel } = overviewRow(e);
+    const found = await api.compareHunkNear(id, row, Math.ceil(OVERVIEW_REACH * perPixel)).catch(() => null);
+    if (!(await go(found))) scrollTo(row - visible / 2);
   }
 
   onMount(() => {
@@ -302,10 +328,18 @@
       onpointerdown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         dragging = true;
-        overviewAt(e);
+        overviewDown(e);
       }}
-      onpointermove={(e) => dragging && overviewAt(e)}
-      onpointerup={() => (dragging = false)}
+      onpointermove={(e) => {
+        if (dragging) overviewAt(e);
+        else onMark = nearMark(e);
+      }}
+      onpointerup={(e) => {
+        dragging = false;
+        onMark = nearMark(e);
+      }}
+      onpointerleave={() => (onMark = false)}
+      class:on-mark={onMark}
     >
       <canvas bind:this={overview}></canvas>
       {#if thumb}
@@ -468,6 +502,9 @@
     border-left: 1px solid var(--border);
     cursor: default;
     touch-action: none;
+  }
+  .overview.on-mark {
+    cursor: pointer;
   }
   .overview canvas {
     position: absolute;

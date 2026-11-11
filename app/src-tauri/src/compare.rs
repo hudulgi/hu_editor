@@ -180,24 +180,29 @@ pub async fn compare_overview(
     blocking(move || with(&both, |c, _| Ok(c.overview(buckets.min(1 << 16))))).await
 }
 
-/// Hunk `index`, or with `from` the first one starting after that row
-/// (`forward`) or the last one before it.
+/// Hunk `index`; or with `from` the first one starting after that row
+/// (`forward`) or the last one before it; or with `near` the one nearest that
+/// row, within `reach` rows of it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn compare_hunk(
     id: u32,
     index: Option<usize>,
     from: Option<u64>,
     forward: bool,
+    near: Option<u64>,
+    reach: Option<u64>,
     docs: State<'_, Docs>,
     comparisons: State<'_, Comparisons>,
 ) -> Result<Option<HunkRows>, String> {
     let both = get(id, &docs, &comparisons)?;
     blocking(move || {
         with(&both, |c, _| {
-            Ok(match (index, from) {
-                (Some(index), _) => c.hunk_rows(index),
-                (None, Some(row)) => c.hunk_from(row, forward),
-                (None, None) => None,
+            Ok(match (index, from, near) {
+                (Some(index), _, _) => c.hunk_rows(index),
+                (None, Some(row), _) => c.hunk_from(row, forward),
+                (None, None, Some(row)) => c.hunk_near(row, reach.unwrap_or(0)),
+                (None, None, None) => None,
             })
         })
     })

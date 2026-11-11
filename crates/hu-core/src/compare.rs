@@ -224,6 +224,26 @@ impl Comparison {
         self.hunk_rows(index)
     }
 
+    /// The hunk nearest `row`, if it is within `reach` rows of it: for a click
+    /// on the overview, where a hunk of one row in millions is a line.
+    pub fn hunk_near(&self, row: u64, reach: u64) -> Option<HunkRows> {
+        let after = self.starts.partition_point(|&s| s <= row);
+        let distance = |h: &HunkRows| {
+            if row < h.start {
+                h.start - row
+            } else {
+                (row + 1).saturating_sub(h.end)
+            }
+        };
+        // Only the one starting at or before it and the one after can be nearest.
+        [after.checked_sub(1), Some(after)]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.hunk_rows(index))
+            .min_by_key(distance)
+            .filter(|h| distance(h) <= reach)
+    }
+
     /// The hunk that `row` is in.
     pub fn hunk_at(&self, row: u64) -> Option<usize> {
         match self.place(row) {

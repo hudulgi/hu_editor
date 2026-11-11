@@ -373,11 +373,14 @@ impl Bridge {
                 let index: Option<usize> = arg(args, "index")?;
                 let from: Option<u64> = arg(args, "from")?;
                 let forward: bool = arg(args, "forward")?;
+                let near: Option<u64> = arg(args, "near")?;
+                let reach: Option<u64> = arg(args, "reach")?;
                 self.compared(args, |c, _| {
-                    to_json(match (index, from) {
-                        (Some(index), _) => c.hunk_rows(index),
-                        (None, Some(row)) => c.hunk_from(row, forward),
-                        (None, None) => None,
+                    to_json(match (index, from, near) {
+                        (Some(index), _, _) => c.hunk_rows(index),
+                        (None, Some(row), _) => c.hunk_from(row, forward),
+                        (None, None, Some(row)) => c.hunk_near(row, reach.unwrap_or(0)),
+                        (None, None, None) => None,
                     })
                 })?
             }

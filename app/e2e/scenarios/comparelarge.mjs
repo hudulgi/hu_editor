@@ -62,6 +62,26 @@ export default async function (t) {
     return [at(150_001 / 200_002), at(0.4)];
   });
   check("the overview shows the hunks", colors, ["green", "none"]);
+  // A press on a mark goes to its hunk, even a few pixels off; elsewhere it only scrolls.
+  await cp.keyboard.press("ControlOrMeta+Home");
+  await until("from the start", () => firstNumber("left"), 1);
+  const mark = box.y + box.height * (150_000.5 / 200_002);
+  const cursor = () => cp.$eval(".overview", (e) => getComputedStyle(e).cursor);
+  await cp.mouse.move(box.x + box.width / 2, mark + 3);
+  await until("over a mark, the pointer shows it can be pressed", cursor, "pointer");
+  await cp.mouse.move(box.x + box.width / 2, box.y + box.height * 0.4);
+  await until("away from them, not", cursor, "default");
+  await cp.mouse.move(box.x + box.width / 2, mark - 2);
+  await until("near one again", cursor, "pointer");
+  await cp.mouse.move(box.x - 100, mark);
+  await until("off the overview", cursor, "default");
+  await cp.mouse.click(box.x + box.width / 2, mark + 3);
+  await until("a press on its mark: that hunk, shown as F7 shows it", async () => [await status(), await firstNumber("right")], ["Difference 2 of 3", 149_998]);
+  await cp.mouse.click(box.x + box.width / 2, box.y + box.height * 0.4);
+  await until("away from any: only scrolled there", async () => Math.abs((await firstNumber("left")) - 0.4 * 200_002) < 200, true);
+  check("the current hunk stays", await status(), "Difference 2 of 3");
+  await cp.mouse.click(box.x + box.width / 2, box.y + box.height * (1000.5 / 200_002) - 2);
+  await until("the first, near the top", async () => [await status(), await cp.textContent(".side.right .line.current")], ["Difference 1 of 3", "1001, 1000., 2000., 0.5"]);
   await cp.mouse.click(box.x + box.width / 2, box.y + box.height - 1);
   await until("at the bottom: the end", async () => (await firstNumber("left")) > LINES - 1000, true);
 

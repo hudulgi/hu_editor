@@ -73,6 +73,12 @@ export default async function (t) {
   await until("Alt+Home: the first", status, "Difference 1 of 3");
   await cp.locator(".side.right .line", { hasText: /^2, 2, 3, 4, 5$/ }).click();
   await until("a click picks its hunk", status, "Difference 3 of 3");
+  // On the overview, each row is many pixels here: a press on the first hunk's goes to it.
+  const overview = await cp.locator(".overview").boundingBox();
+  await cp.mouse.click(overview.x + overview.width / 2, overview.y + overview.height * (1.5 / 11));
+  await until("a press on its mark", status, "Difference 1 of 3");
+  await cp.locator(".side.right .line", { hasText: /^2, 2, 3, 4, 5$/ }).click();
+  await until("and back with a click", status, "Difference 3 of 3");
   // The buttons over the bar between the sides, as F7 and Shift+F7.
   const nav = (name) => cp.locator(`.heads .nav button[aria-label=${JSON.stringify(name)}]`);
   check("their names say their keys", [await nav("Previous Difference").getAttribute("title"), await nav("Next Difference").getAttribute("title")], [
