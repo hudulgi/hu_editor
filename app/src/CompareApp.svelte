@@ -325,6 +325,31 @@
         {#if side.state.dirty}<span class="dirty" title={t("status.modified")}>●</span>{/if}
         {#if side.doc.path}<span class="folder"><bdi>{dirName(side.doc.path)}</bdi></span>{/if}
       </div>
+      {#if i === 0}
+        <!-- Over the bar between the sides: the keyboard stays where it was. -->
+        <div class="nav">
+          <button
+            title="{t('compare.previous')} (Shift+F7)"
+            aria-label={t("compare.previous")}
+            tabindex="-1"
+            disabled={!can}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => act(() => viewer?.previous())}
+          >
+            <svg viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" /></svg>
+          </button>
+          <button
+            title="{t('compare.next')} (F7)"
+            aria-label={t("compare.next")}
+            tabindex="-1"
+            disabled={!can}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => act(() => viewer?.next())}
+          >
+            <svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+          </button>
+        </div>
+      {/if}
     {/each}
   </div>
   <div class="main">
@@ -379,10 +404,46 @@
   }
   .heads {
     display: flex;
-    gap: 40px;
     padding-right: 17px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+  }
+  /* As wide as the bar between the sides below it. */
+  .nav {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    width: 42px;
+  }
+  .nav button {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .nav button:hover:not(:disabled) {
+    background: #45494e;
+    color: var(--fg);
+  }
+  .nav button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .nav svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    stroke-linecap: round;
   }
   .head {
     display: flex;

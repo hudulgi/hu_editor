@@ -61,6 +61,19 @@ export default async function (t) {
   await until("Alt+Home: the first", status, "Difference 1 of 3");
   await cp.locator(".side.right .line", { hasText: /^2, 2, 3, 4, 5$/ }).click();
   await until("a click picks its hunk", status, "Difference 3 of 3");
+  // The buttons over the bar between the sides, as F7 and Shift+F7.
+  const nav = (name) => cp.locator(`.heads .nav button[aria-label=${JSON.stringify(name)}]`);
+  check("their names say their keys", [await nav("Previous Difference").getAttribute("title"), await nav("Next Difference").getAttribute("title")], [
+    "Previous Difference (Shift+F7)",
+    "Next Difference (F7)",
+  ]);
+  await nav("Previous Difference").click();
+  await until("the button: back", status, "Difference 2 of 3");
+  await nav("Next Difference").click();
+  await until("and on", status, "Difference 3 of 3");
+  check("the arrows still scroll the view", await cp.evaluate(() => !!document.activeElement?.closest(".compare-view")), true);
+  await cp.keyboard.press("Shift+F7");
+  await until("the keyboard still in the view", status, "Difference 2 of 3");
 
   // ---- Copying across --------------------------------------------------------------
 
@@ -150,6 +163,7 @@ export default async function (t) {
   await same.page.waitForSelector(".compare-view .line");
   await until("the same", () => same.page.textContent(".statusbar"), "No differences");
   check("nothing to copy", await same.page.locator(".middle .copy").count(), 0);
+  check("nor to go to", await same.page.$$eval(".heads .nav button", (els) => els.map((e) => e.disabled)), [true, true]);
   await same.page.keyboard.press("F7");
   await same.page.waitForTimeout(100);
   check("nothing to go to", await same.page.textContent(".statusbar"), "No differences");
@@ -174,6 +188,7 @@ export default async function (t) {
   const kp = korean.opened[0].page;
   await kp.waitForSelector(".compare-view .line");
   check("its menus", await kp.$$eval(".menubar .title", (els) => els.map((e) => e.textContent)), ["파일(F)", "편집(E)", "비교(C)"]);
+  check("its buttons", await kp.$$eval(".heads .nav button", (els) => els.map((e) => e.title)), ["이전 차이 (Shift+F7)", "다음 차이 (F7)"]);
   await until("and its words", () => kp.textContent(".statusbar"), "차이 없음");
   await kp.click(".menubar .title >> nth=2");
   check("what it does", await kp.$$eval(".menubar .panel .label", (els) => els.map((e) => e.textContent)), [
